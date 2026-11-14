@@ -656,11 +656,13 @@ static const char *FS_BOX =
    "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 30.0) * 0.8;\n"
    "    return vec4(c + spec, alpha); }\n"
    "  vec3 base;\n"
-   "  if (mode==1) base = tint;\n"
+   "  if (mode==1 || mode==12) base = tint;\n"
    "  else if (mode==3) { float t = texture(tex, vec2(1.0 - v_uv.y, v_uv.x)).a; base = mix(vec3(0.030, 0.030, 0.036), vec3(0.90), t); }\n"
+   "  else if (mode==11) { vec4 tc = texture(tex, v_uv); if (tc.a < 0.5) discard; base = tc.rgb * tint; }\n"
    "  else base = texture(tex, v_uv).rgb * tint;\n"
    "  float diff = 0.50 + 0.50 * ndl;\n"
-   "  float spec = pow(max(dot(reflect(-l, n), v), 0.0), (mode==0) ? 18.0 : 40.0) * ((mode==0) ? 0.10 : 0.35);\n"
+   "  if (mode==12) return vec4(base * (0.62 + 0.38 * ndl), alpha);\n"
+   "  float spec = pow(max(dot(reflect(-l, n), v), 0.0), (mode==0 || mode==11) ? 18.0 : 40.0) * ((mode==0 || mode==11) ? 0.10 : 0.35);\n"
    "  return vec4(base * diff + vec3(spec), alpha);\n"
    "}\n"
    "void main(){\n"
@@ -1065,9 +1067,36 @@ static void game_free_tex(game_t *g)
 /* drawing                                                                   */
 static mat4 g_proj, g_view, g_vp, g_ortho;
 
+static void cost_add_3d(const mat4 *mvp, int mode);
+/* <home>/debug/launch-shots (a test switch, for the simulator): the launch clock steps
+ * exactly 1/30 s per frame and every third frame (0.1 s) is saved to
+ * <home>/debug/shots/launch_NNN.bmp, so the animation can be reviewed frame by frame
+ * however slowly the machine renders it */
+static int g_launch_shots;
+static void launch_shot(int k)
+{
+   char path[400];
+   SDL_Surface *sf = SDL_CreateRGBSurface(0, g_dw, g_dh, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+   int y;
+   unsigned char *row;
+   if (!sf) return;
+   glPixelStorei(GL_PACK_ALIGNMENT, 4);
+   glReadPixels(0, 0, g_dw, g_dh, GL_RGBA, GL_UNSIGNED_BYTE, sf->pixels);
+   row = malloc(sf->pitch);
+   for (y = 0; row && y < g_dh / 2; y++)
+   {  /* GL rows go bottom-up */
+      unsigned char *a = (unsigned char *)sf->pixels + y * sf->pitch, *b = (unsigned char *)sf->pixels + (g_dh - 1 - y) * sf->pitch;
+      memcpy(row, a, sf->pitch); memcpy(a, b, sf->pitch); memcpy(b, row, sf->pitch);
+   }
+   free(row);
+   snprintf(path, sizeof(path), "%s/debug/shots/launch_%03d.bmp", g_home, k);
+   if (SDL_SaveBMP(sf, path)) logf_("launch shot: %s", SDL_GetError());
+   SDL_FreeSurface(sf);
+}
 static void draw_quad_box(mat4 model, GLuint tex, const float tint[3], float alpha, int mode)
 {
    mat4 mvp = m4_mul(g_vp, model);
+   cost_add_3d(&mvp, mode);
    glUniformMatrix4fv(u_mvp, 1, GL_FALSE, mvp.m);
    glUniformMatrix4fv(u_model, 1, GL_FALSE, model.m);
    glUniform3fv(u_tint, 1, tint);
@@ -1091,8 +1120,12 @@ static void case_part(mat4 base, float x, float y, float z, float ry, float rx, 
    draw_quad_box(m, tex, tint, alpha, mode);
 }
 
-static GLuint g_disc_tex;   /* art for the disc being launched (0 = generic CD) */
+static GLuint g_disc_tex;   /* media art of the game being launched: disc art, cartridge photo (0 = none) */
+static char         g_disc_want[512];  /* main thread: art asked for          */
+static char         g_disc_path[512];  /* main thread: art held in g_disc_tex */
+static int          g_disc_w = 1, g_disc_h = 1;   /* its size (cartridge photos keep their aspect) */
 static mat4   g_disc_start; /* world matrix of the disc in the tray (launch)       */
+
 static int    g_detail = 1;  /* 0: skip expensive effects (far cases)               */
 /* effect switches (all on; the bench mode turns them off one at a time) */
 static int    g_fx_refl = 1, g_fx_glass = 1, g_fx_sides = 1, g_fx_text = 1;
@@ -1235,11 +1268,102 @@ static void draw_marquee(const game_t *g, const platform_t *pl, mat4 base, float
    case_part(base, 0, 0, hd, 0, 0, w, h, g->tex, tint, alpha, 7);
 }
 
+/* Cartridge from its photo (<rom>-cart.png, LaunchBox "Cart - Front", transparent
+ * background): the photo is the front, cut out by its alpha (mode 11), on a shell of
+ * the platform colour; the photo's own aspect, height pl->h. */
+static int cart_photo_ok(const game_t *g)
+{
+   return g_disc_tex && g_disc_h > 0 && !strcmp(g_disc_path, g->disc);
+}
+static float cart_photo_w(const platform_t *pl) { return pl->h * (float)g_disc_w / (float)g_disc_h; }
+static void draw_cart_photo(const game_t *g, const platform_t *pl, mat4 base, float alpha)
+{
+   static const float one[3] = { 1, 1, 1 };
+   const float h = pl->h, w = cart_photo_w(pl), d = 0.15f * h, PI = (float)M_PI;
+   const float iw = w * 0.96f, ih = h * 0.97f, hd = d * 0.5f;   /* shell inside the photo's rounded outline */
+   float body[3], dark[3], light[3];
+   int k;
+   (void)g;
+   for (k = 0; k < 3; k++) { body[k] = pl->color[k] * 0.92f; dark[k] = pl->color[k] * 0.60f; light[k] = pl->color[k] * 0.80f + 0.04f; }
+   case_part(base, 0, 0, -hd, PI, 0, iw, ih, 0, dark, alpha, 1);              /* back */
+   case_part(base, iw * 0.5f, 0, 0, PI / 2, 0, d, ih, 0, light, alpha, 1);    /* right */
+   case_part(base, -iw * 0.5f, 0, 0, -PI / 2, 0, d, ih, 0, light, alpha, 1);  /* left */
+   case_part(base, 0, ih * 0.5f, 0, 0, -PI / 2, iw, d, 0, body, alpha, 1);    /* top */
+   case_part(base, 0, -ih * 0.5f, 0, 0, PI / 2, iw, d, 0, dark, alpha, 1);    /* bottom (the contacts) */
+   case_part(base, 0, 0, hd, 0, 0, w, h, g_disc_tex, one, alpha, 11);         /* front: the photo */
+}
+
+/* Top-loading console for the cartridge launch, in its own frame: the slot opening is
+ * centred at the origin of the top surface (y = 0), sw x sd; the body goes down to
+ * -CON_H and towards the camera to +CON_Z1. Plastic in the platform colour, a dark slot
+ * with walls (the body itself hides what goes in), a power LED on the front. */
+#define CON_H  0.46f
+#define CON_Z0 -0.50f
+#define CON_Z1 0.62f
+static void draw_console(const platform_t *pl, mat4 c, float sw, float sd, float led, float shadow)
+{
+   static const float slot[3] = { 0.025f, 0.025f, 0.03f }, rim[3] = { 0.10f, 0.10f, 0.115f };
+   const float PI = (float)M_PI, bw = sw + 1.00f > 2.1f ? sw + 1.00f : 2.1f, hb = bw * 0.5f;
+   const float dz = CON_Z1 - CON_Z0, sdepth = CON_H * 0.85f, hs = sw * 0.5f, hz = sd * 0.5f, r = 0.05f;
+   float top[3], front[3], side[3], groove[3], ledc[3], glow[3];
+   int k;
+   for (k = 0; k < 3; k++)
+   {
+      top[k] = pl->color[k] * 0.95f; front[k] = pl->color[k] * 0.50f; side[k] = pl->color[k] * 0.62f;
+      groove[k] = pl->color[k] * 0.38f;
+   }
+   ledc[0] = 0.25f + 0.75f * led; ledc[1] = 0.03f + 0.10f * led; ledc[2] = 0.03f + 0.06f * led;
+   glow[0] = 1.0f; glow[1] = 0.22f; glow[2] = 0.12f;
+   /* top surface around the opening (4 strips) */
+   case_part(c, 0, 0, (hz + CON_Z1) * 0.5f, 0, -PI / 2, bw, CON_Z1 - hz, 0, top, 1, 12);
+   case_part(c, 0, 0, (CON_Z0 - hz) * 0.5f, 0, -PI / 2, bw, -hz - CON_Z0, 0, top, 1, 12);
+   case_part(c, -(hb + hs) * 0.5f, 0, 0, 0, -PI / 2, hb - hs, sd, 0, top, 1, 12);
+   case_part(c, (hb + hs) * 0.5f, 0, 0, 0, -PI / 2, hb - hs, sd, 0, top, 1, 12);
+   /* dark rim round the opening, just above the top */
+   case_part(c, 0, 0.002f, hz + r * 0.5f, 0, -PI / 2, sw + 2 * r, r, 0, rim, 1, 1);
+   case_part(c, 0, 0.002f, -hz - r * 0.5f, 0, -PI / 2, sw + 2 * r, r, 0, rim, 1, 1);
+   case_part(c, -hs - r * 0.5f, 0.002f, 0, 0, -PI / 2, r, sd, 0, rim, 1, 1);
+   case_part(c, hs + r * 0.5f, 0.002f, 0, 0, -PI / 2, r, sd, 0, rim, 1, 1);
+   /* grooves on the top behind the slot */
+   for (k = 0; k < 4; k++)
+      case_part(c, 0, 0.002f, CON_Z0 + 0.12f + k * 0.07f, 0, -PI / 2, bw * 0.62f, 0.022f, 0, groove, 1, 12);
+   /* slot walls and floor */
+   case_part(c, 0, -sdepth * 0.5f, hz, PI, 0, sw, sdepth, 0, slot, 1, 1);
+   case_part(c, 0, -sdepth * 0.5f, -hz, 0, 0, sw, sdepth, 0, slot, 1, 1);
+   case_part(c, -hs, -sdepth * 0.5f, 0, PI / 2, 0, sd, sdepth, 0, slot, 1, 1);
+   case_part(c, hs, -sdepth * 0.5f, 0, -PI / 2, 0, sd, sdepth, 0, slot, 1, 1);
+   case_part(c, 0, -sdepth, 0, 0, -PI / 2, sw, sd, 0, slot, 1, 1);
+   /* soft shadow of the cartridge on the top, firmer as it comes down (mode 8: radial) */
+   if (shadow > 0.0f)
+   {
+      static const float black[3] = { 0, 0, 0 };
+      glDepthMask(GL_FALSE);
+      case_part(c, 0, 0.004f, 0, 0, -PI / 2, sw * 1.45f, sd + 0.55f, 0, black, shadow, 8);
+      glDepthMask(GL_TRUE);
+   }
+   /* front, sides */
+   case_part(c, 0, -CON_H * 0.5f, CON_Z1, 0, 0, bw, CON_H, 0, front, 1, 12);
+   case_part(c, 0, -0.06f, CON_Z1 + 0.002f, 0, 0, bw, 0.018f, 0, groove, 1, 12);
+   case_part(c, hb, -CON_H * 0.5f, (CON_Z0 + CON_Z1) * 0.5f, PI / 2, 0, dz, CON_H, 0, side, 1, 12);
+   case_part(c, -hb, -CON_H * 0.5f, (CON_Z0 + CON_Z1) * 0.5f, -PI / 2, 0, dz, CON_H, 0, side, 1, 12);
+   /* power LED and its glow */
+   case_part(c, -hb + 0.30f, -CON_H * 0.55f, CON_Z1 + 0.003f, 0, 0, 0.07f, 0.035f, 0, ledc, 1, 1);
+   if (led > 0.0f)
+   {
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+      glDepthMask(GL_FALSE);
+      case_part(c, -hb + 0.30f, -CON_H * 0.55f, CON_Z1 + 0.004f, 0, 0, 0.30f, 0.30f, 0, glow, 0.70f * led, 8);
+      glDepthMask(GL_TRUE);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   }
+}
+
 /* dispatcher: one renderer per declared media kind */
 static void draw_media(const game_t *g, const platform_t *pl, mat4 base, float alpha,
                        float open, float lift, float fly, float spin, float lit)
 {
-   if (pl->kind == KIND_CART) draw_cart(g, pl, base, alpha);
+   if (pl->kind == KIND_CART && cart_photo_ok(g)) draw_cart_photo(g, pl, base, alpha);
+   else if (pl->kind == KIND_CART) draw_cart(g, pl, base, alpha);
    else if (pl->kind == KIND_ARCADE) draw_marquee(g, pl, base, alpha, lit);
    else draw_case(g, base, alpha, open, lift, fly, spin);
 }
@@ -1274,6 +1398,31 @@ static void cost_add(float w, float h, int mode)
    g_cost_draws += 1;
 }
 
+/* 3D quads (unit square in model space): the projected area in device pixels. The box
+ * shader's heavy modes are the glass lid (4), the discs (5, 6), the marquee art and
+ * halo (7, 8) and the coin (9). */
+static void cost_add_3d(const mat4 *mvp, int mode)
+{
+   static const float cx[4] = { -0.5f, 0.5f, 0.5f, -0.5f }, cy[4] = { -0.5f, -0.5f, 0.5f, 0.5f };
+   const float *m = mvp->m;
+   float sx[4], sy[4], area = 0.0f;
+   double px;
+   int k;
+   if (!g_cost_on) return;
+   for (k = 0; k < 4; k++)
+   {
+      float x = m[0] * cx[k] + m[4] * cy[k] + m[12], y = m[1] * cx[k] + m[5] * cy[k] + m[13];
+      float w = m[3] * cx[k] + m[7] * cy[k] + m[15];
+      if (w < 0.01f) w = 0.01f;
+      sx[k] = clampf(x / w, -1.0f, 1.0f) * 0.5f * g_dw; sy[k] = clampf(y / w, -1.0f, 1.0f) * 0.5f * g_dh;
+   }
+   for (k = 0; k < 4; k++) area += sx[k] * sy[(k + 1) & 3] - sx[(k + 1) & 3] * sy[k];
+   px = fabs(area) * 0.5;
+   if (glIsEnabled(GL_BLEND)) g_cost_px_blend += px; else g_cost_px_opaque += px;
+   if (mode >= 4 && mode <= 9) g_cost_px_heavy += px;
+   g_cost_draws += 1;
+}
+
 void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
 {
    if (g_cost_on) cost_add(w, h, mode);
@@ -1300,6 +1449,88 @@ void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4]
    glUniform1i(u2_mode, mode);
    glBindTexture(GL_TEXTURE_2D, tex ? tex : g_white);
    glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
+/* The box shader and its states are only used by the launch animation, so the driver
+ * compiled them on the first launch frame: the sim stalled 560 ms on Play, and again
+ * 210 ms when the disc first showed (the animation jumped 0.6 s and 0.26 s ahead).
+ * PowerVR also builds a variant per blend / depth state. So every launch draw is issued
+ * once at startup, behind the boot splash, with the same programs, states and kinds of
+ * texture (mipmapped RGBA, like covers, spines, backs and disc art), invisible (alpha 0,
+ * a few pixels) before the first frame clears the screen. */
+static void launch_warmup(void)
+{
+   static const float one[3] = { 1, 1, 1 };
+   static game_t wg;
+   double t0 = now_s();
+   GLuint wtexs[2] = { 0, 0 }, wtex, keep_disc = g_disc_tex;
+   const float light[3] = { -0.5f, 0.7f, 1.0f }, cam[3] = { 0.0f, -0.22f, 4.7f };
+   mat4 base = m4_mul(m4_translate(0, 0, 0), m4_scale(0.004f, 0.004f, 0.004f));
+   int p, k, x, done_kind[3] = { 0, 0, 0 };
+   for (x = 0; x < 2; x++)
+   {  /* power-of-two and not (covers are any size): some drivers specialise on it */
+      SDL_Surface *ws = SDL_CreateRGBSurface(0, x ? 10 : 8, x ? 6 : 8, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+      if (ws) { SDL_FillRect(ws, NULL, SDL_MapRGBA(ws->format, 128, 128, 128, 255)); wtexs[x] = surface_to_tex(ws, 1, NULL); SDL_FreeSurface(ws); }
+   }
+   memset(&wg, 0, sizeof(wg));
+   wg.sc.x = 1.0f; wg.al.x = 1.0f;
+   glViewport(0, 0, g_dw, g_dh);
+   g_vp = m4_mul(g_proj, g_view);
+   glEnable(GL_BLEND);
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   glUseProgram(g_prog_box);
+   glUniform1i(u_tex, 0);
+   glUniform3fv(u_light, 1, light);
+   glUniform3fv(u_cam, 1, cam);
+   glEnable(GL_DEPTH_TEST);
+   glDepthFunc(GL_LEQUAL);
+   for (p = 0; p < g_nplat * 2; p++)
+   {
+      const platform_t *gp = &g_plat[p % g_nplat];
+      if (done_kind[gp->kind] & (1 << (p / g_nplat))) continue;
+      done_kind[gp->kind] |= 1 << (p / g_nplat);
+      wtex = wtexs[p / g_nplat];
+      wg.tex = wg.spine_tex = wtex;
+      for (k = 0; k < 4; k++)
+      {  /* back card or not, disc art or the generic CD */
+         wg.back_tex = (k & 1) ? wtex : 0;
+         g_disc_tex = (k & 2) ? wtex : 0;
+         g_detail = 1;
+         glDisable(GL_DEPTH_TEST);   /* reflection pass */
+         glUniform1f(u_refl, -0.5f);
+         draw_media(&wg, gp, base, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f);
+         glUniform1f(u_refl, 100.0f);
+         glEnable(GL_DEPTH_TEST);
+         draw_media(&wg, gp, base, 0.0f, 1.0f, gp->kind == KIND_DISC ? 1.0f : 0.0f, 0.0f, 0.0f, 1.0f);
+         if (gp->kind == KIND_DISC)
+         {
+            glDisable(GL_DEPTH_TEST);
+            draw_flying_disc(0.0f, 0.0f, 0.0f);
+            glEnable(GL_DEPTH_TEST);
+         }
+      }
+      if (gp->kind == KIND_CART) draw_console(gp, base, 0.5f, 0.2f, 1.0f, 0.5f);
+      if (gp->kind == KIND_ARCADE)
+      {  /* coin plate, slot and coin */
+         draw_quad_box(base, 0, one, 0.0f, 1);
+         draw_quad_box(base, 0, one, 0.0f, 9);
+      }
+   }
+   glDisable(GL_DEPTH_TEST);
+   /* 2D: the flash + fade quad (premultiplied blend) */
+   glUseProgram(g_prog_2d);
+   glUniform1i(u2_tex, 0);
+   {
+      const float clear_[4] = { 0, 0, 0, 0 };
+      glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+      draw_2d(0, 0, 0, 1, 1, clear_, 0);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   }
+   glFinish();
+   g_disc_tex = keep_disc;
+   g_disc_start = m4_identity();
+   glDeleteTextures(2, wtexs);
+   logf_("launch warm-up: %.0f ms", (now_s() - t0) * 1000.0);
 }
 
 /* glass rounded rectangle (mode 5): the shader needs the size in pixels for its distance field */
@@ -1544,6 +1775,75 @@ static void bg_request(const char *path)
    bg_req_new = 1;
    SDL_CondSignal(bg_cv);
    SDL_UnlockMutex(bg_mx);
+}
+
+/* ------------------------------------------------------------------------ */
+/* disc art for the launch: decoded on a worker once the selection settles,   */
+/* uploaded on the main thread (decoding the 512 px PNG at Play stalled the    */
+/* first launch frame)                                                         */
+static SDL_mutex   *dc_mx;
+static SDL_cond    *dc_cv;
+static char         dc_req[512];       /* path requested (guarded by dc_mx)  */
+static int          dc_req_new, dc_quit;
+static SDL_Surface *dc_done;           /* decoded surface ready to upload    */
+static char         dc_done_path[512];
+static int          dc_done_new;
+
+static int disc_worker(void *unused)
+{
+   (void)unused;
+   SDL_LockMutex(dc_mx);
+   while (!dc_quit)
+   {
+      char path[512]; SDL_Surface *s, *c = NULL;
+      while (!dc_req_new && !dc_quit) SDL_CondWait(dc_cv, dc_mx);
+      if (dc_quit) break;
+      snprintf(path, sizeof(path), "%s", dc_req);
+      dc_req_new = 0;
+      SDL_UnlockMutex(dc_mx);
+      s = IMG_Load(path);
+      if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
+      if (!c) logf_("disc art failed: %s", path);
+      SDL_LockMutex(dc_mx);
+      if (dc_done) SDL_FreeSurface(dc_done);
+      dc_done = c; dc_done_new = 1;
+      snprintf(dc_done_path, sizeof(dc_done_path), "%s", path);
+   }
+   SDL_UnlockMutex(dc_mx);
+   return 0;
+}
+
+/* ask for the disc art of a game ("" = none: the generic CD) */
+static void disc_want(const char *path)
+{
+   if (!strcmp(path, g_disc_want)) return;
+   snprintf(g_disc_want, sizeof(g_disc_want), "%s", path);
+   if (strcmp(g_disc_path, g_disc_want) && g_disc_tex)
+   {  /* never show another game's disc while the new one decodes */
+      glDeleteTextures(1, &g_disc_tex); g_disc_tex = 0; g_disc_path[0] = 0;
+   }
+   if (!path[0] || !strcmp(g_disc_path, path)) return;
+   SDL_LockMutex(dc_mx);
+   snprintf(dc_req, sizeof(dc_req), "%s", path);
+   dc_req_new = 1;
+   SDL_CondSignal(dc_cv);
+   SDL_UnlockMutex(dc_mx);
+}
+
+static void disc_poll_upload(void)
+{
+   SDL_Surface *s = NULL; char path[512] = "";
+   SDL_LockMutex(dc_mx);
+   if (dc_done_new) { s = dc_done; dc_done = NULL; dc_done_new = 0; snprintf(path, sizeof(path), "%s", dc_done_path); }
+   SDL_UnlockMutex(dc_mx);
+   if (s && !strcmp(path, g_disc_want))
+   {
+      if (g_disc_tex) glDeleteTextures(1, &g_disc_tex);
+      g_disc_tex = surface_to_tex(s, 1, NULL);
+      g_disc_w = s->w; g_disc_h = s->h;
+      snprintf(g_disc_path, sizeof(g_disc_path), "%s", path);
+   }
+   if (s) SDL_FreeSurface(s);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2737,6 +3037,9 @@ int main(int argc, char **argv)
    double b_draw = 0, b_swap = 0;   /* bench: time issuing frames / blocked in the swap */
    SDL_GameController *pad = NULL;
    double t0 = now_s(), last, fps_t, info_t = 0, play_t = -1;
+   float play_pt = 0.0f;   /* launch clock: the sum of the (clamped, <= 50 ms) frame times since
+                            * Play, so a slow frame never skips part of the animation (it was
+                            * t - play_t: a 560 ms stall on the first frame jumped 0.6 s ahead) */
    int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0;
    int held_dir = 0; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
@@ -2847,6 +3150,9 @@ int main(int argc, char **argv)
    cv_mx = SDL_CreateMutex();
    cv_cv = SDL_CreateCond();
    SDL_CreateThread(cover_worker, "covers", NULL);
+   dc_mx = SDL_CreateMutex();
+   dc_cv = SDL_CreateCond();
+   SDL_CreateThread(disc_worker, "disc", NULL);
 
    g_font_title = open_font(fonts_semi, 34);
    g_font_sub   = open_font(fonts_reg, 21);
@@ -2923,6 +3229,17 @@ int main(int argc, char **argv)
       g->x.x = 6.0f + (i % 8) * 0.6f; g->z.x = -3.0f; g->ry.x = -1.2f; g->sc.x = 1.0f; g->al.x = 0.0f;
    }
 
+   launch_warmup();
+   {
+      char sp[300];
+      snprintf(sp, sizeof(sp), "%s/debug/launch-shots", g_home);
+      if ((g_launch_shots = file_exists(sp)))
+      {
+         snprintf(sp, sizeof(sp), "%s/debug/shots", g_home);
+         mkdir(sp, 0755);
+         logf_("launch shots: on (%s)", sp);
+      }
+   }
    last = fps_t = now_s();
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
@@ -2930,6 +3247,8 @@ int main(int argc, char **argv)
    while (running)
    {
       SDL_Event e; double t = now_s(); float dt = (float)(t - last);
+      double t_upd = t, t_pre = t;   /* launch trace: end of the update, start of the swap */
+      const double lp_px = g_cost_px_opaque + g_cost_px_blend, lp_heavy = g_cost_px_heavy;
       platform_t *pl;
       if (g_lib_rescan && play_t < 0)
       {
@@ -3059,13 +3378,12 @@ int main(int argc, char **argv)
          /* the 3D media of the game comes out of the dashboard towards the camera */
          pg->x.x = -1.6f; pg->x.v = 0; pg->z.x = -1.4f; pg->z.v = 0; pg->ry.x = 0.7f; pg->ry.v = 0;
          pg->sc.x = 0.9f; pg->al.x = 0.0f; pg->al.v = 0;
-         if (g_disc_tex) { glDeleteTextures(1, &g_disc_tex); g_disc_tex = 0; }
-         if (pg->disc[0])
-         {
-            SDL_Surface *ds = IMG_Load(pg->disc);
-            if (ds) { g_disc_tex = surface_to_tex(ds, 1, NULL); SDL_FreeSurface(ds); }
-         }
+         disc_want(pg->disc);   /* normally decoded already (selection settled) */
+         play_pt = 0.0f;
       }
+      /* disc art of the settled selection, ready before Play */
+      if (n && pl->kind != KIND_ARCADE && play_t < 0 && t - sel_t > 0.4) disc_want(g_games[pl->first + sel].disc);
+      disc_poll_upload();
 
       /* background: once the selection has settled, the game's image (decoded on the
        * worker) or a background generated from its cover colours */
@@ -3161,25 +3479,31 @@ int main(int argc, char **argv)
       /* animation targets */
       {
          float zoom = 0.0f, open = 0.0f, lift = 0.0f, fly = 0.0f, spin = 0.0f, flash = 0.0f, launching = 0.0f;
-         float drop = 0.0f, tilt = 0.0f, shake = 0.0f, led = 0.0f, slot = 0.0f, lit = 1.0f;
+         float drop = 0.0f, tilt = 0.0f, shake = 0.0f, led = 0.0f, lit = 1.0f;
+         float con = 0.0f, align = 0.0f, ins = 0.0f;   /* cartridge: console rise, line-up, insertion */
          float coin_x = 0.0f, coin_spin = 0.0f, coin_in = 0.0f, credit = 0.0f, insert = 0.0f;
-         int covered;
+         int covered, blackout;
+         float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
+         float pdt = 0.0f;   /* launch clock step this frame */
+         if (play_t >= 0 && t > play_t) { pdt = g_launch_shots ? 1.0f / 30.0f : dt; play_pt += pdt; }
          if (play_t >= 0)
          {
-            float pt = (float)(t - play_t), u, end = 2.8f, fl_t = 2.35f;
+            float pt = play_pt, u, end = 2.8f, fl_t = 2.35f;
 #define SMOOTH(x) ((x) * (x) * (3 - 2 * (x)))
             launching = 1.0f;
             zoom = SMOOTH(clampf(pt / 0.5f, 0, 1));
             if (anim == ANIM_INSERT_CART)
             {
-               u = clampf((pt - 0.45f) / 0.30f, 0, 1); lift = SMOOTH(u);
-               u = clampf((pt - 0.75f) / 0.40f, 0, 1); drop = u * u;
-               tilt = lift * 0.35f;
-               slot = clampf((pt - 0.40f) / 0.35f, 0, 1);
-               if (pt > 1.15f) shake = expf(-(pt - 1.15f) * 9.0f) * sinf((pt - 1.15f) * 70.0f);
-               led = clampf((pt - 1.22f) / 0.12f, 0, 1);
-               fl_t = 1.60f; end = 2.05f;
+               /* a top-loading console rises from below (ease-out), the cartridge turns
+                * to line up over its slot, pushes in until it seats (a small knock),
+                * then the power LED comes on */
+               u = clampf((pt - 0.20f) / 0.45f, 0, 1); con = 1.0f - (1.0f - u) * (1.0f - u) * (1.0f - u);
+               align = SMOOTH(clampf((pt - 0.35f) / 0.45f, 0, 1));
+               u = clampf((pt - 0.85f) / 0.30f, 0, 1); ins = u * u * (2.2f - 1.2f * u);   /* accelerates, then seats */
+               if (pt > 1.15f) shake = 0.5f * expf(-(pt - 1.15f) * 14.0f) * sinf((pt - 1.15f) * 60.0f);
+               led = clampf((pt - 1.28f) / 0.10f, 0, 1);
+               fl_t = 1.65f; end = 2.10f;
             }
             else if (anim == ANIM_INSERT_COIN)
             {
@@ -3208,7 +3532,7 @@ int main(int argc, char **argv)
                   if (pt < 1.05f) disc_spin = 0.0f;
                   w = pt < 1.05f ? 0.0f : pt < 1.45f ? 7.0f * (pt - 1.05f) / 0.40f :
                       pt < 1.95f ? 7.0f : lerpf(7.0f, 1.8f, clampf((pt - 1.95f) / 0.35f, 0, 1));
-                  disc_spin += w * dt;
+                  disc_spin += w * pdt;
                   spin = disc_spin;
                }
             }
@@ -3223,6 +3547,10 @@ int main(int argc, char **argv)
             if (pl && pl->kind == KIND_ARCADE) lit = 1.0f + 0.04f * sinf((float)t * 3.0f);
          }
          g_vp = m4_mul(g_proj, m4_mul(m4_translate(shake * 0.03f, shake * 0.02f, 0), g_view));
+         launch_ui = play_t >= 0 ? 1.0f - clampf(play_pt / 0.35f, 0.0f, 1.0f) : 1.0f;
+         /* the launch has faded to black: nothing under the black is drawn (it was three
+          * full-screen layers, art + the 3D media + the black quad, for the last 0.15 s) */
+         blackout = play_t >= 0 && fade >= 0.999f;
 
          for (i = 0; i < n; i++)
          {
@@ -3260,8 +3588,10 @@ int main(int argc, char **argv)
          spring_step(&plat_x, 0, 120, 16, dt);
 
          /* ---- render ---- */
+         t_upd = now_s();
          glViewport(0, 0, g_dw, g_dh);
-         glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
+         if (blackout) glClearColor(0, 0, 0, 1);
+         else glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
          glClearDepthf(1.0f);
          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
          glEnable(GL_BLEND);
@@ -3269,7 +3599,7 @@ int main(int argc, char **argv)
 
          glUseProgram(g_prog_2d);
          glUniform1i(u2_tex, 0);
-         covered = (panel_active() && panel_amount() > 0.995f) || welcome_amount() > 0.995f;   /* a full-screen section is open */
+         covered = (panel_active() && panel_amount() > 0.995f) || welcome_amount() > 0.995f || blackout;   /* a full-screen section is open */
          if (!covered)
          {  /* full-screen art (current layer, next one crossfading over it), then the
              * legibility overlay (left side, top and bottom bands) in one pass */
@@ -3284,8 +3614,7 @@ int main(int argc, char **argv)
          {  /* dashboard UI: dimmed under the panel, gone in the attract scene, fading out
              * as the launch starts (the 3D media is drawn over it) */
             const float pa = panel_amount();
-            const float la = play_t >= 0 ? 1.0f - clampf((float)(t - play_t) / 0.35f, 0.0f, 1.0f) : 1.0f;
-            const float ua = (1 - fade) * (1 - 0.6f * pa) * (1 - att.amount) * la;
+            const float ua = (1 - fade) * (1 - 0.6f * pa) * (1 - att.amount) * launch_ui;
             dash_draw(pl, sel_plat, n, sel, dpos.x, sel_t, t, ua, info_a.x, info_y.x);
          }
 
@@ -3300,7 +3629,7 @@ int main(int argc, char **argv)
          glEnable(GL_DEPTH_TEST);
          glDepthFunc(GL_LEQUAL);
          /* 3D only while launching: the selected game's case / cartridge / marquee */
-         for (i = 0; i >= 0 && n && play_t >= 0; i--)
+         for (i = 0; i >= 0 && n && play_t >= 0 && !blackout; i--)
          {
             int s;
             for (s = -1; s <= 1; s += 2)
@@ -3336,7 +3665,7 @@ int main(int argc, char **argv)
                      tx_ = tilt;
                   }
                }
-               if (o == 0 && g_fx_refl)
+               if (o == 0 && g_fx_refl && g->al.x * (1.0f - fade) * (1.0f - zoom) > 0.004f && align <= 0.0f)
                {
                   /* true reflection: the whole case mirrored about the floor, same motion */
                   float floor_y = -0.5f * gp->h * g->sc.x - 0.01f;
@@ -3351,18 +3680,32 @@ int main(int argc, char **argv)
                }
                base = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x),
                       m4_mul(m4_rot_y(g->ry.x + sway), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
+               if (o == 0 && play_t >= 0 && anim == ANIM_INSERT_CART)
+               {  /* the console, and the cartridge in the console's frame: from where the
+                   * carousel left it to above the slot (align), then down into it (ins) */
+                  const float tc = 0.55f, ph = gp->h;
+                  const float cw = cart_photo_ok(g) ? cart_photo_w(gp) : gp->w, cd = (cart_photo_ok(g) ? 0.15f : 0.13f) * ph;
+                  const float sc = 1.0f / ph, yh = ph * sc * 0.5f + 0.30f, yi = ph * sc * (0.5f - 0.55f);
+                  const float yl = lerpf(yh, yi, ins), cy = -0.92f - (1.0f - con) * 1.1f, cz = -0.25f;
+                  const float px = lerpf(g->x.x, 0.0f, align), py = lerpf(bob + ty, cy + yl * cosf(tc), align);
+                  const float pz = lerpf(g->z.x, cz + yl * sinf(tc), align), ss = lerpf(g->sc.x, sc, align);
+                  mat4 cm = m4_mul(m4_translate(0, cy, cz), m4_rot_x(tc));
+                  base = m4_mul(m4_translate(px, py, pz), m4_mul(m4_rot_y((g->ry.x + sway) * (1.0f - align)),
+                         m4_mul(m4_rot_x(tc * align), m4_scale(ss, ss, ss))));
+                  if (con > 0.0f) draw_console(gp, cm, cw * sc + 0.10f, cd * sc + 0.07f, led, 0.65f * align * (1.0f - 0.4f * ins));
+               }
                draw_media(g, gp, base, g->al.x, op, o == 0 && gp->kind == KIND_DISC ? lift : 0.0f,
                           o == 0 ? fly : 0.0f, o == 0 ? spin : 0.0f, o == 0 ? lit : 1.0f);
                g_detail = 1;
             }
          }
-         if (play_t >= 0 && anim == ANIM_OPEN_CASE_DISC && fly > 0.0f)
+         if (play_t >= 0 && anim == ANIM_OPEN_CASE_DISC && fly > 0.0f && !blackout)
          {
             glDisable(GL_DEPTH_TEST);
             draw_flying_disc(fly, spin, 1.0f);
             glEnable(GL_DEPTH_TEST);
          }
-         if (play_t >= 0 && anim == ANIM_INSERT_COIN && pl)
+         if (play_t >= 0 && anim == ANIM_INSERT_COIN && pl && !blackout)
          {
             static const float one[3] = { 1, 1, 1 }, slotc[3] = { 0.02f, 0.02f, 0.025f }, plate[3] = { 0.30f, 0.30f, 0.34f };
             float sy = -0.5f * pl->h * 1.10f - 0.42f;
@@ -3405,23 +3748,12 @@ int main(int argc, char **argv)
                static float h_mix = 1.0f;
                int want = welcome_active() ? (welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
                           panel_active() ? panel_hint_set() : (attract_active() ? HINTS_ATTRACT : HINTS_CAROUSEL);
-               const float ha = (1 - fade) * (1 - att.amount);
+               const float ha = (1 - fade) * (1 - att.amount) * launch_ui;
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
                g_hint_cx = W * 0.5f;
                if (h_prev >= 0 && h_mix < 1.0f) hints_draw(h_prev, 672, ha * (1.0f - h_mix));
                hints_draw(h_cur, 672, ha * h_mix);
-            }
-            if (play_t >= 0 && anim == ANIM_INSERT_CART && slot > 0.0f)
-            {
-               const float sc[4] = { 0.02f, 0.02f, 0.03f, 0.92f * slot * (1 - fade) };
-               const float rim[4] = { 0.35f, 0.34f, 0.42f, 0.8f * slot * (1 - fade) };
-               const float ledc[4] = { 1.0f, 0.18f, 0.12f, led * (1 - fade) };
-               const float ledg[4] = { 1.0f, 0.25f, 0.15f, 0.55f * led * (1 - fade) };
-               draw_2d(0, W * 0.5f - 232, 598, 464, 34, rim, 1);
-               draw_2d(0, W * 0.5f - 220, 604, 440, 22, sc, 1);
-               draw_2d(0, W * 0.5f + 262, 606, 18, 18, ledc, 1);
-               draw_2d(0, W * 0.5f + 271 - 60, 615 - 60, 120, 120, ledg, 3);
             }
             if (play_t >= 0 && anim == ANIM_INSERT_COIN)
             {
@@ -3440,15 +3772,17 @@ int main(int argc, char **argv)
                welcome_draw(t);
                hints_draw(hs, 672, welcome_amount());
             }
-            if (flash > 0.001f)
-            {
-               const float white[4] = { 1, 1, 1, flash * 0.85f };
-               draw_2d(0, 0, 0, W, H, white, 0);
+            if ((flash > 0.001f || fade > 0.001f) && !blackout)
+            {  /* the white flash under the fade to black, in one full-screen pass:
+                * premultiplied, dst * (1 - w) * (1 - f) + w * (1 - f) */
+               const float w = flash * 0.85f, k = w * (1 - fade);
+               const float over[4] = { k, k, k, 1 - (1 - w) * (1 - fade) };
+               glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+               draw_2d(0, 0, 0, W, H, over, 0);
+               glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             }
             if (fade > 0.001f)
             {
-               const float black[4] = { 0, 0, 0, fade };
-               draw_2d(0, 0, 0, W, H, black, 0);
                if (play_t >= 0)
                {
                   const float st[4] = { 0.93f, 0.92f, 0.97f, fade };
@@ -3460,8 +3794,15 @@ int main(int argc, char **argv)
       }
 
       if (g_ntshot) test_shots(t - t0);
+      if (g_launch_shots && play_t >= 0)
+      {
+         static int lf;
+         if (lf % 3 == 0) launch_shot(lf / 3);
+         lf++;
+      }
       {
          double pre = now_s();
+         t_pre = pre;
          SDL_GL_SwapWindow(win);
          b_draw += pre - t; b_swap += now_s() - pre;
          if (frames == 30)
@@ -3471,6 +3812,13 @@ int main(int argc, char **argv)
          }
       }
       frames++;
+      if (g_cost_on && play_t >= 0)
+      {  /* launch trace: one line per frame (pt, frame time, CPU issuing, swap, cost) */
+         double fpx = g_cost_px_opaque + g_cost_px_blend, fh = g_cost_px_heavy;
+         logf_("launch frame: pt %.3f dt %.1f ms, update %.1f ms, draw %.1f ms, swap %.1f ms, %.2f Mpx (heavy %.2f)",
+               play_pt, dt * 1000.0, (t_upd - t) * 1000.0, (t_pre - t_upd) * 1000.0, (now_s() - t_pre) * 1000.0,
+               (fpx - lp_px) / 1e6, (fh - lp_heavy) / 1e6);
+      }
       log_tick();
       {  /* bench: <home>/bench present -> two rounds (vsync on, then off: frame rates
           * not quantised to 60/30/20), each turning one more thing off per step; per
@@ -3570,6 +3918,7 @@ int main(int argc, char **argv)
    }
    SDL_LockMutex(bg_mx); bg_quit = 1; SDL_CondSignal(bg_cv); SDL_UnlockMutex(bg_mx);
    SDL_LockMutex(cv_mx); cv_quit = 1; SDL_CondSignal(cv_cv); SDL_UnlockMutex(cv_mx);
+   SDL_LockMutex(dc_mx); dc_quit = 1; SDL_CondSignal(dc_cv); SDL_UnlockMutex(dc_mx);
    logf_("exit %d", exit_code);
    SDL_GL_DeleteContext(ctx);
    SDL_DestroyWindow(win);
