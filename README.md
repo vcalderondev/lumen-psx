@@ -15,6 +15,30 @@ A lightweight 3D game frontend for the PlayStation Classic.
 Target: SDL2 2.0.4, SDL2_image 2.0.1, SDL2_ttf 2.0.14, OpenGL ES 3.2 (PowerVR GE8300),
 Weston 1.11 / Wayland, glibc 2.24, Cortex-A35 (armhf), 1 GB RAM.
 
+## What Lumen PSX upgrades on the console
+
+Nothing is written to the console's internal memory: the new graphics stack is unpacked
+to RAM at every boot and mounted over `/usr` (overlayfs), and RetroArch and the cores run
+from the USB stick. Built from upstream sources by
+[psc-platform](https://github.com/vcalderondev/psc-platform).
+
+| Component | Stock console (Sony) | With Project Eris | Lumen PSX | How |
+|---|---|---|---|---|
+| Wayland (`libwayland-client`, `-server`, `-cursor`) | 1.12 | 1.12 | **1.26.0** | overlay on `/usr` (RAM) |
+| wayland-protocols | — | — | **1.45** (1.46 for Weston 16) | build only |
+| Compositor | Weston 1.11.0 | Weston 1.11.0 | **Weston 6.0.1** (default), **Weston 16.0.2** (fallback) | overlay on `/usr` (RAM) |
+| libdrm | 2.4.6x | 2.4.6x | **2.4.124** (with Weston 16 only) | overlay on `/usr` (RAM) |
+| libseat | — | — | **0.9.1** (with Weston 16 only) | overlay on `/usr` (RAM) |
+| libdisplay-info | — | — | **0.2.0** (static, in Weston 16) | overlay on `/usr` (RAM) |
+| RetroArch | — (Sony's own `pcsx`) | 1.8.8 | **1.22.2** | USB (`lumen/retroarch`) |
+| PCSX-ReARMed | — | PSC fork (2019) | **upstream** `libretro/pcsx_rearmed` (2026-10) | USB (`lumen/cores`) |
+| Joypad profiles | — | RetroArch 1.8.8 set | **v1.22.0** | USB |
+
+Kept from the console, unchanged: Linux 4.4.22, glibc 2.24, the PowerVR GE8300 driver
+(DDK 1.9) with its Mesa 17 EGL / GLES / `libgbm` (closed, it cannot be replaced; a gbm
+compat shim covers what Weston 16 needs), `libwayland-egl` (the old layout that EGL
+expects), SDL 2.0.4, ALSA, udev and libxkbcommon.
+
 ## Build
 
 Requires a cross toolchain for the console (GCC targeting armhf / glibc 2.24, linking
