@@ -22,10 +22,40 @@ cd /home/root
 # 1. take over the display
 killall -s TERM sdl_display 2>/dev/null
 killall -s KILL showLogo sonyapp ui_menu auto_dimmer pcsx 2>/dev/null
-if ! systemctl status weston.service | grep -qE 'active\s+\(running\)'; then
-  echo "starting weston"
-  systemctl restart weston.service
+
+# Output resolution: Sony's weston.ini forces HDMI 1280x720. With display=1080p in
+# settings.ini, Weston is restarted with a copy of that config set to 1920x1080
+# (/tmp, nothing on the eMMC changes). If it does not come up, back to the stock 720p.
+LUMEN_WESTON=""
+weston_stock() {
+  [ -n "${LUMEN_WESTON}" ] && { killall -s KILL weston 2>/dev/null; sleep 1; LUMEN_WESTON=""; }
+  if ! systemctl status weston.service | grep -qE 'active\s+\(running\)'; then
+    echo "starting weston (stock)"
+    systemctl restart weston.service
+  fi
+}
+weston_up() {  # seconds: wait for the Wayland socket
+  i=0
+  while [ $i -lt $(( $1 * 10 )) ]; do [ -S "${XDG_RUNTIME_DIR}/wayland-0" ] && return 0; sleep 0.1; i=$((i + 1)); done
+  return 1
+}
+DISPLAY_MODE=$(sed -n 's/^display=//p' "${LUMEN_HOME}/settings.ini" 2>/dev/null | tr -d '\r' | tail -1)
+if [ "${DISPLAY_MODE}" = 1080p ] && [ -f /etc/xdg/weston/weston.ini ]; then
+  echo "display 1080p: restarting weston at 1920x1080"
+  sed '/^name=HDMI-A-1/{n;s/^mode=.*/mode=1920x1080/;}' /etc/xdg/weston/weston.ini > /tmp/lumen-weston.ini
+  grep -A1 '^name=HDMI-A-1' /tmp/lumen-weston.ini
+  systemctl stop weston.service
+  killall -s KILL weston 2>/dev/null
+  rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
+  /usr/bin/weston-launch -u root -- --idle-time=4294967 --tty=1 --config=/tmp/lumen-weston.ini \
+    > "${LOG}/weston.log" 2>&1 &
+  LUMEN_WESTON=$!
+  if weston_up 6; then echo "weston 1080p up (${LUMEN_WESTON})"
+  else echo "weston 1080p failed, back to 720p"; weston_stock; DISPLAY_MODE=720p; fi
+else
+  weston_stock
 fi
+export LUMEN_DISPLAY="${DISPLAY_MODE:-720p}"
 /usr/bin/wait_sdl
 
 # console buttons: POWER suspends (handshake with the system power manager),
@@ -53,6 +83,8 @@ echo "session ended: $?"
 [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
 echo "starting stock menu"
 killall -s TERM sdl_display 2>/dev/null
+weston_stock   # the Sony menu is laid out for 720p
+/usr/bin/wait_sdl
 rm -f /data/power/prepare_suspend /data/power/apps_okay
 echo 1 > /data/power/disable
 sync
