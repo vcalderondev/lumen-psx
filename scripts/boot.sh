@@ -32,7 +32,27 @@ killall -s KILL showLogo sonyapp ui_menu auto_dimmer pcsx 2>/dev/null
 # back to the stock 720p.
 MODE_1080P="148.50 1920 2008 2052 2200 1080 1084 1089 1125 +hsync +vsync"
 LUMEN_WESTON=""
+W6_TAR="${LUMEN_HOME}/weston6/weston6.tar.gz"
+W6_ON=""; W6_SAMPLER=""
+# One-shot guard: the marker is written before each attempt and removed when the
+# session ends. Still there at boot = the last attempt ended in a power-off (black
+# screen?): Weston 6 is skipped until the marker is deleted by hand.
+W6_MARK="${LUMEN_HOME}/weston6/.trying"
+# Experiment (compositor=weston6 in settings.ini and a Weston 6 build for the PSC at
+# <home>/weston6/weston6.tar.gz): the newer compositor is unpacked to RAM and overlaid
+# on /usr (overlayfs, nothing on the eMMC changes, gone at power-off). Its DRM backend
+# can hand a fullscreen client buffer straight to the display instead of
+# recompositing it with the GPU, which costs ~15 ms a frame at 1080p on the stock one.
+weston6_off() {
+  [ -n "${W6_ON}" ] || return 0
+  [ -n "${W6_SAMPLER}" ] && kill "${W6_SAMPLER}" 2>/dev/null
+  killall -s KILL weston 2>/dev/null; sleep 1
+  if umount -l /usr; then rm -rf /tmp/lib_upper /tmp/lib_work; echo "weston6 overlay removed"
+  else echo "weston6: umount /usr failed"; fi
+  W6_ON=""; LUMEN_WESTON=""
+}
 weston_stock() {
+  weston6_off
   [ -n "${LUMEN_WESTON}" ] && { killall -s KILL weston 2>/dev/null; sleep 1; LUMEN_WESTON=""; }
   if ! systemctl status weston.service | grep -qE 'active\s+\(running\)'; then
     echo "starting weston (stock)"
@@ -44,26 +64,71 @@ weston_up() {  # seconds: wait for the Wayland socket
   while [ $i -lt $(( $1 * 10 )) ]; do [ -S "${XDG_RUNTIME_DIR}/wayland-0" ] && return 0; sleep 0.1; i=$((i + 1)); done
   return 1
 }
-DISPLAY_MODE=$(sed -n 's/^display=//p' "${LUMEN_HOME}/settings.ini" 2>/dev/null | tr -d '\r' | tail -1)
-if [ "${DISPLAY_MODE}" = 1080p ] && [ -f /etc/xdg/weston/weston.ini ]; then
-  echo "display 1080p: restarting weston at 1920x1080"
-  sed "/^name=HDMI-A-1/{n;s/^mode=.*/mode=${MODE_1080P}/;}" /etc/xdg/weston/weston.ini > /tmp/lumen-weston.ini
-  grep -A1 '^name=HDMI-A-1' /tmp/lumen-weston.ini
+weston_custom() {  # log file, extra weston args...: start Weston with /tmp/lumen-weston.ini
+  wlog=$1; shift
   systemctl stop weston.service
   killall -s KILL weston 2>/dev/null
   rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
-  /usr/bin/weston-launch -u root -- --idle-time=4294967 --tty=1 --config=/tmp/lumen-weston.ini \
-    > "${LOG}/weston.log" 2>&1 &
+  /usr/bin/weston-launch -u root -- --idle-time=4294967 --tty=1 --config=/tmp/lumen-weston.ini "$@" \
+    > "${wlog}" 2>&1 &
   LUMEN_WESTON=$!
+}
+setting() { sed -n "s/^$1=//p" "${LUMEN_HOME}/settings.ini" 2>/dev/null | tr -d '\r' | tail -1; }
+DISPLAY_MODE=$(setting display)
+COMPOSITOR=$(setting compositor)
+[ -f /etc/xdg/weston/weston.ini ] || { DISPLAY_MODE=720p; COMPOSITOR=""; }
+if [ "${DISPLAY_MODE}" = 1080p ]; then
+  sed "/^name=HDMI-A-1/{n;s/^mode=.*/mode=${MODE_1080P}/;}" /etc/xdg/weston/weston.ini > /tmp/lumen-weston.ini
+else
+  cp /etc/xdg/weston/weston.ini /tmp/lumen-weston.ini 2>/dev/null
+fi
+STARTED=""
+if [ "${COMPOSITOR}" = weston6 ] && [ -f "${W6_MARK}" ]; then
+  echo "weston6 skipped: the previous attempt did not end cleanly (delete ${W6_MARK} to retry)"
+elif [ "${COMPOSITOR}" = weston6 ] && [ -f "${W6_TAR}" ]; then
+  echo "compositor weston6 (${DISPLAY_MODE:-720p}): overlay from RAM"
+  : > "${W6_MARK}"; sync
+  # Weston 6's desktop shell renamed the key that hides the panel
+  sed -i '/^panel-location=none/a panel-position=none' /tmp/lumen-weston.ini
+  systemctl stop weston.service; killall -s KILL weston 2>/dev/null
+  mkdir -p /tmp/lib_upper/usr /tmp/lib_work/usr
+  if tar xzpf "${W6_TAR}" -C /tmp/lib_upper/usr &&
+     mount -t overlay overlay -o lowerdir=/usr,upperdir=/tmp/lib_upper/usr,workdir=/tmp/lib_work/usr /usr; then
+    W6_ON=1
+    weston_custom "${LOG}/weston6.log" --debug
+    if weston_up 8 && sleep 1 && kill -0 "${LUMEN_WESTON}" 2>/dev/null &&
+       ! grep -aqiE 'failed config|Cannot configure output|couldn.t commit new state|drmModeAddFB failed|PSC ERROR' "${LOG}/weston6.log"; then
+      echo "weston6 up (${LUMEN_WESTON}): $(/usr/bin/weston --version 2>&1 | head -1)"
+      grep -aiE 'mode |PSC|scanout|renderer' "${LOG}/weston6.log" | head -12
+      STARTED=weston6
+      grep -aqE 'mode 1920x1080.*current|1920x1080@' "${LOG}/weston6.log" || DISPLAY_MODE=720p
+      # evidence: which plane each view lands on, sampled twice while the frontend runs
+      ( sleep 14; [ -x /usr/bin/weston-debug ] || exit 0
+        /usr/bin/weston-debug drm-backend > "${LOG}/weston6-planes.log" 2>&1 & d=$!; sleep 2; kill $d 2>/dev/null
+        sleep 20; [ -x /usr/bin/weston-debug ] || exit 0
+        /usr/bin/weston-debug drm-backend >> "${LOG}/weston6-planes.log" 2>&1 & d=$!; sleep 1; kill $d 2>/dev/null ) &
+      W6_SAMPLER=$!
+      # the frame may be at 720p if this build ignored the modeline: Lumen logs the real size
+    else
+      echo "weston6 failed to start: $(tail -5 "${LOG}/weston6.log" 2>/dev/null)"
+      weston6_off
+    fi
+  else
+    echo "weston6 overlay failed"; rm -rf /tmp/lib_upper /tmp/lib_work
+  fi
+fi
+if [ -z "${STARTED}" ] && [ "${DISPLAY_MODE}" = 1080p ]; then
+  echo "display 1080p: restarting stock weston at 1920x1080"
+  weston_custom "${LOG}/weston.log"
   if weston_up 6 && sleep 1 && grep -aq 'mode 1920x1080.*current' "${LOG}/weston.log"; then
     echo "weston 1080p up (${LUMEN_WESTON}): $(grep -a 'mode 1920x1080' "${LOG}/weston.log" | head -1)"
+    STARTED=stock1080
   else
     echo "weston 1080p failed: $(grep -aE '^ +mode |failed to set mode|atomic commit failed' "${LOG}/weston.log" | head -3), back to 720p"
-    weston_stock; DISPLAY_MODE=720p
+    DISPLAY_MODE=720p
   fi
-else
-  weston_stock
 fi
+[ -n "${STARTED}" ] || { weston_stock; DISPLAY_MODE=720p; }
 export LUMEN_DISPLAY="${DISPLAY_MODE:-720p}"
 /usr/bin/wait_sdl
 
@@ -87,6 +152,7 @@ fi
 # 2. Lumen session
 sh "${LUMEN_HOME}/run.sh"
 echo "session ended: $?"
+rm -f "${W6_MARK}"; sync
 
 # 3. stock Sony menu (internal games); power button handled by Sony's power manager
 [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
