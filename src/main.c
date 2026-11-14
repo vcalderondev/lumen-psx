@@ -742,6 +742,17 @@ static const char *FS_2D =
    "  frag = t * color;\n"
    "}\n";
 
+/* plain textured quad (mode 0: backgrounds, text, glyphs): its own tiny program, so the
+ * most-drawn pixels do not run through FS_2D's chain of mode branches */
+static const char *FS_TEX =
+   "#version 300 es\n"
+   "precision mediump float;\n"
+   "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color; out vec4 frag;\n"
+   "void main(){ frag = texture(tex, v_uv) * color; }\n";
+static GLuint g_prog_tex;
+static GLint  ut_mvp, ut_color;
+static int    g_fx_bgflat;   /* bench: draw the background as a flat colour (fill without the fetch) */
+
 static GLuint compile(GLenum type, const char *src)
 {
    GLint ok; char info[1024];
@@ -797,6 +808,11 @@ static void gl_setup(void)
    u2_aux0 = glGetUniformLocation(g_prog_2d, "aux0");
    u2_aux1 = glGetUniformLocation(g_prog_2d, "aux1");
    u2_aux2 = glGetUniformLocation(g_prog_2d, "aux2");
+   g_prog_tex = link_prog(VS_2D, FS_TEX);
+   ut_mvp = glGetUniformLocation(g_prog_tex, "mvp");
+   ut_color = glGetUniformLocation(g_prog_tex, "color");
+   glUseProgram(g_prog_tex);
+   glUniform1i(glGetUniformLocation(g_prog_tex, "tex"), 0);
 
    glGenVertexArrays(1, &g_vao_quad);
    glBindVertexArray(g_vao_quad);
@@ -1268,6 +1284,16 @@ void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4]
       y = floorf(y * g_ui_scale + 0.5f) / g_ui_scale;
    }
    mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(x + w * 0.5f, y + h * 0.5f, 0), m4_scale(w, -h, 1)));
+   if (mode == 0)
+   {  /* callers work with g_prog_2d bound: switch for this draw only */
+      glUseProgram(g_prog_tex);
+      glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, m.m);
+      glUniform4fv(ut_color, 1, rgba);
+      glBindTexture(GL_TEXTURE_2D, tex ? tex : g_white);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      glUseProgram(g_prog_2d);
+      return;
+   }
    glUniformMatrix4fv(u2_mvp, 1, GL_FALSE, m.m);
    glUniform4fv(u2_color, 1, rgba);
    glUniform1i(u2_mode, mode);
@@ -1930,7 +1956,7 @@ static void bg_draw(bgtex_t *b, float alpha, double t)
       /* cover-fitted and still: a 16:9 image at the output size maps 1:1 (sharp) */
       float sx = (float)W / b->w, sy = (float)H / b->h, sc = sx > sy ? sx : sy, w, h;
       w = b->w * sc; h = b->h * sc;
-      draw_2d(b->tex, (W - w) * 0.5f, (H - h) * 0.5f, w, h, c, 0);
+      draw_2d(g_fx_bgflat ? 0 : b->tex, (W - w) * 0.5f, (H - h) * 0.5f, w, h, c, 0);
    }
    else if (b->gen)
    {
@@ -2294,7 +2320,9 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          ta = ua * (d < 0.0f ? clampf(1.0f + d * 1.8f, 0.0f, 1.0f) : 1.0f);
          if (ta <= 0.003f || x > W || x + sz < 0) continue;
          g = &g_games[pl->first + idx];
-         draw_shadow(x, TILE_Y, sz, sz, 14, idx == sel ? 22 : 14, idx == sel ? 10 : 6, (idx == sel ? 0.60f : 0.42f) * ta);
+         /* only the focused tile casts a shadow: the others sit on dimmed art where it
+          * barely shows, and seven blurred quads cost ~5 ms a frame on the console */
+         if (idx == sel) draw_shadow(x, TILE_Y, sz, sz, 14, 22, 10, 0.60f * ta);
          if (g->tex)
          {
             const float c[4] = { 1, 1, 1, ta };
@@ -3167,7 +3195,7 @@ int main(int argc, char **argv)
           * not quantised to 60/30/20), each turning one more thing off per step; per
           * step: fps, CPU ms spent issuing the frame, ms blocked in the swap */
          static int bench = -1, step, round_; static double bt, bframes;
-         static const char *names[] = { "all", "no-shadows", "no-side-tiles", "no-ui", "clear-only" };
+         static const char *names[] = { "all", "no-shadows", "no-side-tiles", "no-ui", "bg-flat", "clear-only" };
          if (bench < 0)
          {
             char bp[300]; snprintf(bp, sizeof(bp), "%s/bench", g_home);
@@ -3183,12 +3211,12 @@ int main(int argc, char **argv)
             if (step >= (int)(sizeof(names) / sizeof(names[0])) && round_ == 0)
             { round_ = 1; step = 0; SDL_GL_SetSwapInterval(0); }
             if (step >= (int)(sizeof(names) / sizeof(names[0])))
-            { bench = 2; g_fx_shadows = g_fx_sides = g_fx_text = g_fx_bg = 1; SDL_GL_SetSwapInterval(1); logf_("bench: done"); }
+            { bench = 2; g_fx_shadows = g_fx_sides = g_fx_text = g_fx_bg = 1; g_fx_bgflat = 0; SDL_GL_SetSwapInterval(1); logf_("bench: done"); }
             else
             {
                /* each step turns one more thing off: shadows, side tiles, the dashboard UI
                 * (text, tabs, tiles), then the background (clear + help bar only) */
-               g_fx_shadows = step < 1; g_fx_sides = step < 2; g_fx_text = step < 3; g_fx_bg = step < 4;
+               g_fx_shadows = step < 1; g_fx_sides = step < 2; g_fx_text = step < 3; g_fx_bgflat = step == 4; g_fx_bg = step < 5;
                bt = t + 2.5; bframes = 0; b_draw = b_swap = 0;
             }
          }
