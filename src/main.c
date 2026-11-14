@@ -64,7 +64,7 @@ static long rss_kb(void)
 /* data                                                                      */
 typedef struct {
    char title[128], publisher[96], year[16], players[8];
-   char content[512], cover[512], bg[512];
+   char content[512], cover[512], bg[512], disc[512];
    int platform;
    /* runtime */
    GLuint tex, back_tex, spine_tex;
@@ -159,6 +159,16 @@ static void scan_psx(void)
       snprintf(g->cover, sizeof(g->cover), "%s/%s/%s.png", dir, de->d_name, discs);
       g->has_cover = file_exists(g->cover);
       {
+         static const char *const dn[] = { "disc.png", "disc.jpg", NULL };
+         int b;
+         for (b = 0; dn[b]; b++)
+         {
+            snprintf(g->disc, sizeof(g->disc), "%s/%s/%s", dir, de->d_name, dn[b]);
+            if (file_exists(g->disc)) break;
+            g->disc[0] = 0;
+         }
+      }
+      {
          static const char *const bgn[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
          int b;
          for (b = 0; bgn[b]; b++)
@@ -196,7 +206,7 @@ static void build_platform_index(void)
 /* ------------------------------------------------------------------------ */
 /* GL resources                                                              */
 static GLuint g_prog_box, g_prog_2d, g_vbo_quad, g_vao_quad;
-static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam;
+static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam, u_phase;
 static GLint  u2_mvp, u2_tex, u2_color, u2_mode;
 static GLuint g_white;
 static TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
@@ -215,7 +225,7 @@ static const char *FS_BOX =
    "precision mediump float;\n"
    "in vec2 v_uv; in vec3 v_n; in vec3 v_w;\n"
    "uniform sampler2D tex; uniform vec3 tint; uniform float alpha; uniform int mode;\n"
-   "uniform vec3 light; uniform vec3 cam;\n"
+   "uniform vec3 light; uniform vec3 cam; uniform float phase;\n"
    "out vec4 frag;\n"
    "void main(){\n"
    "  vec3 n = normalize(v_n);\n"
@@ -238,6 +248,23 @@ static const char *FS_BOX =
    "    float ridges = smoothstep(0.009, 0.0, abs(v_uv.x - 0.020)) + smoothstep(0.009, 0.0, abs(v_uv.x - 0.072));\n"
    "    float a = 0.035 + fres * 0.45 + band * 0.35 + streak + spec + rim * 0.40 + ridges * 0.40 + hinge * 0.08;\n"
    "    frag = vec4(vec3(0.93, 0.96, 1.0), clamp(a, 0.0, 0.92) * alpha); return; }\n"
+   "  if (mode==5 || mode==6) {\n"
+   "    vec2 p = v_uv * 2.0 - 1.0; float r = length(p);\n"
+   "    if (r > 1.0 || r < 0.15) discard;\n"
+   "    float ang = atan(p.y, p.x) + phase;\n"
+   "    float ndv = abs(dot(n, v));\n"
+   "    float spokes = pow(abs(cos(ang - 0.6)), 36.0) * 0.55 + pow(abs(cos(ang + 0.9)), 90.0) * 0.25;\n"
+   "    vec3 rainbow = 0.5 + 0.5 * cos(6.2832 * (fract(ang * 0.318 + r * 1.7 + ndv * 0.8) + vec3(0.0, 0.33, 0.67)));\n"
+   "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 50.0) * 0.6;\n"
+   "    if (r < 0.34) { float ring = smoothstep(0.32, 0.335, r) * (1.0 - smoothstep(0.345, 0.36, r));\n"
+   "      frag = vec4(vec3(0.86, 0.88, 0.92) + ring * 0.4 + spec, (0.30 + ring * 0.6) * alpha); return; }\n"
+   "    vec3 c;\n"
+   "    if (mode==6) { c = texture(tex, v_uv).rgb * (0.55 + 0.45 * ndl) + rainbow * spokes * 0.25; }\n"
+   "    else { vec3 silver = vec3(0.74, 0.75, 0.79) * (0.6 + 0.4 * ndl);\n"
+   "           c = mix(silver, rainbow, 0.28 + spokes * 0.5) + vec3(spokes * 0.35); }\n"
+   "    float rim = smoothstep(0.965, 0.99, r);\n"
+   "    c = mix(c, vec3(0.55, 0.56, 0.60), rim * 0.6);\n"
+   "    frag = vec4(c + spec, alpha); return; }\n"
    "  vec3 base;\n"
    "  if (mode==1) base = tint;\n"
    "  else if (mode==3) { float t = texture(tex, vec2(1.0 - v_uv.y, v_uv.x)).a; base = mix(vec3(0.030, 0.030, 0.036), vec3(0.90), t); }\n"
@@ -313,6 +340,7 @@ static void gl_setup(void)
    u_mode = glGetUniformLocation(g_prog_box, "mode");
    u_light = glGetUniformLocation(g_prog_box, "light");
    u_cam = glGetUniformLocation(g_prog_box, "cam");
+   u_phase = glGetUniformLocation(g_prog_box, "phase");
    g_prog_2d = link_prog(VS_2D, FS_2D);
    u2_mvp = glGetUniformLocation(g_prog_2d, "mvp");
    u2_tex = glGetUniformLocation(g_prog_2d, "tex");
@@ -510,28 +538,47 @@ static void case_part(mat4 base, float x, float y, float z, float ry, float rx, 
    draw_quad_box(m, tex, tint, alpha, mode);
 }
 
-static void draw_case(const game_t *g, mat4 base, float alpha, float flip)
+static GLuint g_disc_tex;   /* art for the disc being launched (0 = generic CD) */
+
+/* open: 0 closed .. 1 lid fully open; lift/fly/spin drive the disc (launch only) */
+static void draw_case(const game_t *g, mat4 base, float alpha, float open, float lift, float fly, float spin)
 {
    static const float one[3] = { 1, 1, 1 };
    static const float tray[3] = { 0.045f, 0.045f, 0.052f };
    static const float edge[3] = { 0.16f, 0.17f, 0.19f };
+   static const float paper[3] = { 0.86f, 0.86f, 0.84f };
    const float hw = CASE_W * 0.5f, hd = CASE_D * 0.5f, PI = (float)M_PI;
-   const float ins_l = -hw + HINGE, ins_r = hw - 0.018f, ins_w = ins_r - ins_l;
-   base = m4_mul(base, m4_rot_y(flip * PI));
+   const float ins_l = -hw + HINGE, ins_r = hw - 0.018f, ins_w = ins_r - ins_l, ins_c = (ins_l + ins_r) * 0.5f;
+   mat4 lid;
 
-   /* opaque: back card, tray edges, spine, insert, hinge strip */
+   /* tray: back card, edges, spine, hinge strip, floor */
    if (g->back_tex) case_part(base, 0, 0, -hd, PI, 0, CASE_W, 1.0f, g->back_tex, one, alpha, 0);
    else             case_part(base, 0, 0, -hd, PI, 0, CASE_W, 1.0f, 0, tray, alpha, 1);
    case_part(base, hw, 0, 0, PI / 2, 0, CASE_D, 1.0f, 0, edge, alpha, 1);
    case_part(base, 0, 0.5f, 0, 0, -PI / 2, CASE_W, CASE_D, 0, edge, alpha, 1);
    case_part(base, 0, -0.5f, 0, 0, PI / 2, CASE_W, CASE_D, 0, edge, alpha, 1);
    case_part(base, -hw, 0, 0, -PI / 2, 0, CASE_D, 1.0f, g->spine_tex, one, alpha, 3);
-   case_part(base, (ins_l + ins_r) * 0.5f, 0, hd - INSET_Z, 0, 0, ins_w, 0.972f, g->tex, one, alpha, 0);
    case_part(base, -hw + HINGE * 0.5f, 0, hd - INSET_Z - 0.002f, 0, 0, HINGE, 1.0f, 0, tray, alpha, 1);
+   if (open > 0.0f)
+      case_part(base, ins_c, 0, -hd + 0.004f, 0, 0, ins_w, 0.98f, 0, tray, alpha, 1);
 
-   /* transparent: glass lid (no depth writes so the insert stays visible) */
+   /* disc sitting in the tray; lifts, then flies to the camera spinning */
+   if (open > 0.3f)
+   {
+      float r = 0.46f + fly * 0.10f;
+      mat4 m = m4_mul(base, m4_mul(m4_translate(ins_c * (1.0f - fly), 0, -hd + 0.012f + lift * 0.16f + fly * 3.0f),
+                      m4_mul(m4_rot_z(-spin), m4_scale(r * 2.0f, r * 2.0f, 1))));
+      glUniform1f(u_phase, spin);
+      draw_quad_box(m, g_disc_tex, one, alpha, g_disc_tex ? 6 : 5);
+   }
+
+   /* lid = paper insert + glass, rotating about the hinge at the left front edge */
+   lid = m4_mul(base, m4_mul(m4_translate(-hw, 0, hd), m4_mul(m4_rot_y(-open * 1.95f), m4_translate(hw, 0, -hd))));
+   case_part(lid, ins_c, 0, hd - INSET_Z, 0, 0, ins_w, 0.972f, g->tex, one, alpha, 0);
+   if (open > 0.0f)
+      case_part(lid, ins_c, 0, hd - INSET_Z - 0.001f, PI, 0, ins_w, 0.972f, 0, paper, alpha, 1);
    glDepthMask(GL_FALSE);
-   case_part(base, 0, 0, hd, 0, 0, CASE_W, 1.0f, 0, one, alpha, 4);
+   case_part(lid, 0, 0, hd, 0, 0, CASE_W, 1.0f, 0, one, alpha, 4);
    glDepthMask(GL_TRUE);
 }
 
@@ -1056,7 +1103,18 @@ int main(int argc, char **argv)
          sel_plat = np; sel = 0; pl = &g_plat[sel_plat]; n = pl->count; sel_t = t;
          info_y.x = 18.0f; info_a.x = 0.0f; plat_x.v = plat_move * 900.0f;
       }
-      if (n && play && play_t < 0) { play_t = t; logf_("play: %s", g_games[pl->first + sel].content); }
+      if (n && play && play_t < 0)
+      {
+         game_t *pg = &g_games[pl->first + sel];
+         play_t = t;
+         logf_("play: %s", pg->content);
+         if (g_disc_tex) { glDeleteTextures(1, &g_disc_tex); g_disc_tex = 0; }
+         if (pg->disc[0])
+         {
+            SDL_Surface *ds = IMG_Load(pg->disc);
+            if (ds) { g_disc_tex = surface_to_tex(ds, 1, NULL); SDL_FreeSurface(ds); }
+         }
+      }
 
       /* background: ask the worker once the selection has settled */
       if (n && t - sel_t > 0.25)
@@ -1122,14 +1180,21 @@ int main(int argc, char **argv)
 
       /* animation targets */
       {
-         float flip = 0.0f, zoom = 0.0f;
+         float zoom = 0.0f, open = 0.0f, lift = 0.0f, fly = 0.0f, spin = 0.0f, flash = 0.0f, launching = 0.0f;
          if (play_t >= 0)
          {
-            float pt = (float)(t - play_t);
-            flip = clampf(pt / 0.75f, 0, 1); flip = flip * flip * (3 - 2 * flip);
-            zoom = clampf((pt - 0.35f) / 0.8f, 0, 1); zoom = zoom * zoom * (3 - 2 * zoom);
-            fade = clampf((pt - 1.15f) / 0.45f, 0, 1);
-            if (pt > 1.75f) { exit_code = 10; running = 0; }
+            float pt = (float)(t - play_t), u;
+#define SMOOTH(x) ((x) * (x) * (3 - 2 * (x)))
+            launching = 1.0f;
+            zoom = SMOOTH(clampf(pt / 0.5f, 0, 1));
+            u = clampf((pt - 0.45f) / 0.65f, 0, 1); open = SMOOTH(u);
+            u = clampf((pt - 1.05f) / 0.35f, 0, 1); lift = SMOOTH(u);
+            u = clampf((pt - 1.40f) / 1.10f, 0, 1); fly = u * u * u;
+            spin = pt > 1.05f ? (pt - 1.05f) * (pt - 1.05f) * 9.0f : 0.0f;
+            flash = clampf(1.0f - fabsf(pt - 2.35f) / 0.22f, 0, 1);
+            fade = clampf((pt - 2.35f) / 0.30f, 0, 1);
+            if (pt > 2.80f) { exit_code = 10; running = 0; }
+#undef SMOOTH
          }
          else fade = fade > 0 ? fade - dt * 1.6f : 0;
 
@@ -1141,11 +1206,12 @@ int main(int argc, char **argv)
             if (o > n / 2) o -= n;
             if (o < -n / 2) o += n;
             a = abs(o);
-            tx = o == 0 ? 0.0f : (o > 0 ? 1 : -1) * (1.08f + (a - 1) * 0.50f);
-            tz = o == 0 ? 0.55f + zoom * 1.4f : -0.35f - a * 0.22f;
+            tx = o == 0 ? 0.0f : (o > 0 ? 1 : -1) * (1.08f + (a - 1) * 0.50f + launching * 2.2f);
+            tz = o == 0 ? 0.55f + zoom * 0.55f : -0.35f - a * 0.22f - launching * 1.2f;
             tr = o == 0 ? 0.0f : -(o > 0 ? 1 : -1) * 1.0f;
             ts = o == 0 ? 1.10f : 0.92f;
             ta = a > VISIBLE ? 0.0f : 1.0f - a * 0.14f;
+            if (launching && o != 0) ta = 0.0f;
             spring_step(&g->x, tx, 140, 15, dt);
             spring_step(&g->z, tz, 140, 15, dt);
             spring_step(&g->ry, tr, 120, 14, dt);
@@ -1221,7 +1287,7 @@ int main(int argc, char **argv)
                int idx, o = i * s;
                game_t *g;
                mat4 base;
-               float bob = 0.0f, sway = 0.0f, fl = 0.0f;
+               float bob = 0.0f, sway = 0.0f, op = 0.0f;
                if (i == 0 && s == 1) continue;
                idx = ((sel + o) % n + n) % n;
                g = &g_games[pl->first + idx];
@@ -1230,11 +1296,11 @@ int main(int argc, char **argv)
                {
                   bob = sinf((float)t * 1.9f) * 0.035f;
                   sway = -0.17f + sinf((float)t * 1.9f + 0.6f) * 0.06f;
-                  if (play_t >= 0) { fl = flip; sway *= 1.0f - flip; }
+                  if (play_t >= 0) { op = open; sway *= 1.0f - zoom; bob *= 1.0f - zoom; }
                }
                base = m4_mul(m4_translate(g->x.x, bob, g->z.x),
                       m4_mul(m4_rot_y(g->ry.x + sway), m4_scale(g->sc.x, g->sc.x, g->sc.x)));
-               draw_case(g, base, g->al.x, fl);
+               draw_case(g, base, g->al.x, op, o == 0 ? lift : 0.0f, o == 0 ? fly : 0.0f, o == 0 ? spin : 0.0f);
             }
          }
          glDisable(GL_DEPTH_TEST);
@@ -1285,6 +1351,11 @@ int main(int argc, char **argv)
                const float hc[4] = { 0.43f, 0.42f, 0.52f, 1 - fade };
                (void)hc;
                hints_draw(686, 1 - fade);
+            }
+            if (flash > 0.001f)
+            {
+               const float white[4] = { 1, 1, 1, flash * 0.85f };
+               draw_2d(0, 0, 0, W, H, white, 0);
             }
             if (fade > 0.001f)
             {

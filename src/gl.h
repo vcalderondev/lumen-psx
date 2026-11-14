@@ -61,6 +61,15 @@ static inline mat4 m4_rot_x(float a)
    return r;
 }
 
+static inline mat4 m4_rot_z(float a)
+{
+   mat4 r = m4_identity();
+   float c = cosf(a), s = sinf(a);
+   r.m[0] = c;  r.m[4] = -s;
+   r.m[1] = s;  r.m[5] = c;
+   return r;
+}
+
 static inline mat4 m4_perspective(float fovy, float aspect, float zn, float zf)
 {
    mat4 r; float f = 1.0f / tanf(fovy * 0.5f);
