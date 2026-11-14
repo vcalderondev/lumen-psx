@@ -3,6 +3,20 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.4.0] - 2026-11-14
+
+### Added
+- NES, Super Nintendo, Mega Drive / Genesis, Game Boy / Color and Game Boy Advance cores
+  (psc-platform 2.1.0: FCEUmm, Snes9x, Genesis Plus GX, Gambatte, gpSP); NES and SNES
+  verified on the console.
+- Cartridge launch animation: a 3D top-loading console rises and the game's own
+  cartridge photo (`<rom>-cart.png`) drops into its slot, the power LED lights up.
+
+### Changed
+- Pressing Play no longer stalls: the launch work is warmed up before the animation and
+  its clock never skips frames; less full-screen fill during the transition.
+- Game Boy Advance runs on gpSP (ARM dynarec) instead of mGBA.
+
 ## [0.3.0] - 2026-11-14
 
 Project Eris' emulator stack is gone: games run on Lumen's own RetroArch 1.22 and an
