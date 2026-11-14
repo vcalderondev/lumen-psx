@@ -33,23 +33,24 @@ killall -s KILL showLogo sonyapp ui_menu auto_dimmer pcsx 2>/dev/null
 MODE_1080P="148.50 1920 2008 2052 2200 1080 1084 1089 1125 +hsync +vsync"
 MODE_720P="74.25 1280 1390 1430 1650 720 725 730 750 +hsync +vsync"   # CEA-861 720p60
 LUMEN_WESTON=""
-# Compositor: Lumen runs on the PSC compositor built from source by psc-platform
-# (Wayland 1.26 + Weston 6.0.1 with PSC patches) when <home>/compositor/psc-weston.tar.gz
-# is installed; compositor=stock in settings.ini keeps Sony's Weston 1.11. It is
-# unpacked to RAM and overlaid on /usr (overlayfs: nothing on the eMMC changes, gone
-# at power-off). Measured on the console: 24 -> 45 fps for a 1080p dashboard.
-# the newest PSC compositor installed: psc-weston-16, else psc-weston-6 (or the
-# psc-weston.tar.gz name of earlier installs). Not a user choice (RetroArch 1.22 needs
-# it); compositor=stock in settings.ini is only an emergency switch, set by hand.
-PW_VER=16
-PW_TAR="${LUMEN_HOME}/compositor/psc-weston-16.tar.gz"
-[ -f "${PW_TAR}" ] || { PW_VER=6; PW_TAR="${LUMEN_HOME}/compositor/psc-weston-6.tar.gz"; }
-[ -f "${PW_TAR}" ] || PW_TAR="${LUMEN_HOME}/compositor/psc-weston.tar.gz"
-PW_ON=""; PW_SAMPLER=""
-# One-shot guard: the marker is written before each attempt and removed when the
-# session ends. Still there at boot = the last attempt ended in a power-off (black
-# screen?): the PSC compositor is skipped until the marker is deleted by hand.
+# Compositor: the PSC compositor built from source by psc-platform, newest installed
+# first: psc-weston-16 (Weston 16.0.2), then psc-weston-6 (Weston 6.0.1; psc-weston.tar.gz
+# in earlier installs). Not a user choice (RetroArch 1.22 needs it); Sony's Weston 1.11
+# is only the fallback, or forced by hand with compositor=stock in settings.ini. The
+# package is unpacked to RAM and overlaid on /usr (overlayfs: nothing on the eMMC
+# changes, gone at power-off).
+PW_VER=""; PW_ON=""; PW_SAMPLER=""
+# Guard: <home>/compositor/.trying holds the version being tried and is removed once the
+# frontend has presented frames. Still there at boot = that attempt never showed a
+# picture (crash, black screen, power-off): it becomes .failed-<version> and that
+# version is skipped from then on (the installer clears it, or delete it by hand).
 PW_MARK="${LUMEN_HOME}/compositor/.trying"
+pw_tar() {  # version -> package path
+  for f in "psc-weston-$1.tar.gz" $( [ "$1" = 6 ] && echo psc-weston.tar.gz ); do
+    [ -f "${LUMEN_HOME}/compositor/$f" ] && { echo "${LUMEN_HOME}/compositor/$f"; return 0; }
+  done
+  return 1
+}
 psc_weston_off() {
   [ -n "${PW_ON}" ] || return 0
   [ -n "${PW_SAMPLER}" ] && kill "${PW_SAMPLER}" 2>/dev/null
@@ -90,56 +91,89 @@ else
   cp /etc/xdg/weston/weston.ini /tmp/lumen-weston.ini 2>/dev/null
 fi
 STARTED=""
-if [ "${COMPOSITOR}" != stock ] && [ -f "${PW_TAR}" ] && [ -f "${PW_MARK}" ]; then
-  echo "psc compositor skipped: the previous attempt did not end cleanly (delete ${PW_MARK} to retry)"
-elif [ "${COMPOSITOR}" != stock ] && [ -f "${PW_TAR}" ]; then
-  echo "compositor psc (${DISPLAY_MODE:-720p}): overlay from RAM"
-  : > "${PW_MARK}"; sync
-  # Weston 6: the shell key that hides the panel was renamed; the HDMI connector reports
-  # "disconnected" with no EDID at boot and no mode list, so the output is forced on and
-  # every mode is a full modeline (a plain "1280x720" finds nothing to match and Weston
-  # exits). pageflip-timeout: a lost page flip makes Weston exit instead of freezing.
-  [ "${DISPLAY_MODE}" = 1080p ] ||
-    sed -i "/^name=HDMI-A-1/{n;s/^mode=.*/mode=${MODE_720P}/;}" /tmp/lumen-weston.ini
-  sed -i -e '/^panel-location=none/a panel-position=none' \
-         -e '/^name=HDMI-A-1/a force-on=true' \
-         -e '/^\[core\]/a pageflip-timeout=1500' /tmp/lumen-weston.ini
+# Weston 6 and 16 settings for the PSC: the shell key that hides the panel was renamed;
+# the HDMI connector reports "disconnected" with no EDID at boot and no mode list, so the
+# output is forced on and every mode is a full modeline (a plain "1280x720" finds nothing
+# to match and Weston exits). pageflip-timeout: a lost page flip makes Weston exit
+# instead of freezing. (Sony's 1.11 ignores these keys.)
+[ "${DISPLAY_MODE}" = 1080p ] ||
+  sed -i "/^name=HDMI-A-1/{n;s/^mode=.*/mode=${MODE_720P}/;}" /tmp/lumen-weston.ini
+sed -i -e '/^panel-location=none/a panel-position=none' \
+       -e '/^name=HDMI-A-1/a force-on=true' \
+       -e '/^\[core\]/a pageflip-timeout=1500' /tmp/lumen-weston.ini
+
+# start one PSC compositor version from its package; 0 = up with a mode set
+try_psc_weston() {  # version package
+  v=$1
+  echo "compositor psc weston ${v} (${DISPLAY_MODE:-720p}): overlay from RAM"
+  printf '%s\n' "${v}" > "${PW_MARK}"; sync
   systemctl stop weston.service; killall -s KILL weston 2>/dev/null
   mkdir -p /tmp/pw_upper/usr /tmp/pw_work/usr
-  if tar xzpf "${PW_TAR}" -C /tmp/pw_upper/usr &&
-     mount -t overlay overlay -o lowerdir=/usr,upperdir=/tmp/pw_upper/usr,workdir=/tmp/pw_work/usr /usr; then
-    PW_ON=1
+  if ! tar xzpf "$2" -C /tmp/pw_upper/usr ||
+     ! mount -t overlay overlay -o lowerdir=/usr,upperdir=/tmp/pw_upper/usr,workdir=/tmp/pw_work/usr /usr; then
+    echo "psc compositor ${v}: overlay failed"; rm -rf /tmp/pw_upper /tmp/pw_work; return 1
+  fi
+  PW_ON=1
+  # stock Weston's PAM session (weston-launch) owned /run/user/0; launched directly,
+  # nothing creates it, and Weston refuses to start without it
+  mkdir -p "${XDG_RUNTIME_DIR}" && chmod 0700 "${XDG_RUNTIME_DIR}"
+  if [ "${v}" = 16 ]; then
+    # Weston 16: libseat's builtin backend takes the active VT (no --tty). Atomic KMS
+    # first (psc-platform patch 0001), legacy KMS (no direct scanout) if it fails.
+    chvt 1 2>/dev/null
+    for kms in atomic legacy; do
+      rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
+      if [ "${kms}" = legacy ]; then export WESTON_DISABLE_ATOMIC=1; else unset WESTON_DISABLE_ATOMIC; fi
+      LIBSEAT_BACKEND=builtin /usr/bin/weston --backend=drm --shell=desktop --idle-time=0 \
+        --config=/tmp/lumen-weston.ini --debug > "${LOG}/weston-psc.log" 2>&1 &
+      LUMEN_WESTON=$!
+      if psc_weston_ready; then echo "weston 16: ${kms} KMS"; break; fi
+      echo "weston 16 (${kms} KMS) did not come up: $(tail -4 "${LOG}/weston-psc.log" 2>/dev/null)"
+      cp -f "${LOG}/weston-psc.log" "${LOG}/weston-psc-${kms}.log" 2>/dev/null
+      kill "${LUMEN_WESTON}" 2>/dev/null; killall -s KILL weston 2>/dev/null; sleep 1; LUMEN_WESTON=""
+    done
+    [ -n "${LUMEN_WESTON}" ] || { psc_weston_off; return 1; }
+  else
+    # Weston 6: as root it opens the DRM device itself (no weston-launch in this build).
+    # scanout (default on, scanout=0 to disable): a fullscreen client buffer goes to the
+    # display without a GL composition pass (psc-platform patch 0002). 40 -> 58 fps.
     rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
-    # stock Weston's PAM session (weston-launch) owned /run/user/0; launched directly,
-    # nothing creates it, and Weston refuses to start without it
-    mkdir -p "${XDG_RUNTIME_DIR}" && chmod 0700 "${XDG_RUNTIME_DIR}"
-    # as root Weston opens the DRM device itself (no weston-launch in this build).
-    # scanout (default on, scanout=0 to disable): a fullscreen client buffer goes to
-    # the display without a GL composition pass; a refused flip falls back to
-    # composition for the session (psc-platform patch 0002). Measured: 40 -> 58 fps.
     if [ "$(setting scanout)" != 0 ]; then export WESTON_LEGACY_SCANOUT=1; else unset WESTON_LEGACY_SCANOUT; fi
     /usr/bin/weston --tty=1 --idle-time=0 --config=/tmp/lumen-weston.ini --debug \
       > "${LOG}/weston-psc.log" 2>&1 &
     LUMEN_WESTON=$!
-    if weston_up 8 && sleep 1 && kill -0 "${LUMEN_WESTON}" 2>/dev/null &&
-       grep -aqE '^ +[0-9]+x[0-9]+@[0-9.]+.*, current' "${LOG}/weston-psc.log"; then
-      echo "psc compositor up (${LUMEN_WESTON}): $(/usr/bin/weston --version 2>&1 | head -1)"
-      grep -aiE 'video modes|, current|scanout|renderer:|enabled with head' "${LOG}/weston-psc.log" | head -8
-      STARTED=psc
-      grep -aqE '^ +1920x1080@[0-9.]+.*, current' "${LOG}/weston-psc.log" || DISPLAY_MODE=720p
-      # evidence: which plane each view lands on, sampled twice while the frontend runs
-      ( sleep 14; [ -x /usr/bin/weston-debug ] || exit 0
-        /usr/bin/weston-debug drm-backend > "${LOG}/weston-planes.log" 2>&1 & d=$!; sleep 2; kill $d 2>/dev/null
-        sleep 20; [ -x /usr/bin/weston-debug ] || exit 0
-        /usr/bin/weston-debug drm-backend >> "${LOG}/weston-planes.log" 2>&1 & d=$!; sleep 1; kill $d 2>/dev/null ) &
-      PW_SAMPLER=$!
-    else
-      echo "psc compositor failed to start: $(tail -5 "${LOG}/weston-psc.log" 2>/dev/null)"
-      psc_weston_off
-    fi
-  else
-    echo "psc compositor overlay failed"; rm -rf /tmp/pw_upper /tmp/pw_work
+    psc_weston_ready || { echo "psc compositor 6 failed to start: $(tail -5 "${LOG}/weston-psc.log" 2>/dev/null)"; psc_weston_off; return 1; }
   fi
+  PW_VER=${v}
+  echo "psc compositor up (${LUMEN_WESTON}): $(/usr/bin/weston --version 2>&1 | head -1)"
+  grep -aiE 'video modes|, current|scanout|atomic|renderer:|enabled with head' "${LOG}/weston-psc.log" | head -8
+  grep -aqE '^ +1920x1080@[0-9.]+.*, current' "${LOG}/weston-psc.log" || DISPLAY_MODE=720p
+  # evidence: which plane each view lands on, sampled twice while the frontend runs
+  ( sleep 14; [ -x /usr/bin/weston-debug ] || exit 0
+    /usr/bin/weston-debug drm-backend > "${LOG}/weston-planes.log" 2>&1 & d=$!; sleep 2; kill $d 2>/dev/null
+    sleep 20; [ -x /usr/bin/weston-debug ] || exit 0
+    /usr/bin/weston-debug drm-backend >> "${LOG}/weston-planes.log" 2>&1 & d=$!; sleep 1; kill $d 2>/dev/null ) &
+  PW_SAMPLER=$!
+  return 0
+}
+psc_weston_ready() {  # socket up, process alive, an output mode set
+  weston_up 8 && sleep 1 && kill -0 "${LUMEN_WESTON}" 2>/dev/null &&
+    grep -aqE '^ +[0-9]+x[0-9]+@[0-9.]+.*, current' "${LOG}/weston-psc.log"
+}
+
+if [ "${COMPOSITOR}" != stock ]; then
+  if [ -f "${PW_MARK}" ]; then   # the last attempt never showed a picture
+    v=$(head -1 "${PW_MARK}" | tr -dc 0-9)
+    [ -n "${v}" ] && mv -f "${PW_MARK}" "${LUMEN_HOME}/compositor/.failed-${v}" &&
+      echo "psc compositor ${v}: the last attempt showed no picture, skipped from now on"
+    rm -f "${PW_MARK}"; sync
+  fi
+  for v in 16 6; do
+    [ -n "${STARTED}" ] && break
+    tar=$(pw_tar "${v}") || continue
+    [ -f "${LUMEN_HOME}/compositor/.failed-${v}" ] && { echo "psc compositor ${v}: skipped (.failed-${v})"; continue; }
+    try_psc_weston "${v}" "${tar}" && STARTED=psc
+  done
 fi
 if [ -z "${STARTED}" ] && [ "${DISPLAY_MODE}" = 1080p ]; then
   echo "display 1080p: restarting stock weston at 1920x1080"
@@ -186,7 +220,7 @@ fi
 sh "${LUMEN_HOME}/run.sh"
 SESSION_RC=$?
 echo "session ended: ${SESSION_RC}"
-rm -f "${PW_MARK}"; sync
+sync
 if [ "${SESSION_RC}" = 12 ]; then   # Display settings changed: start over with the new setup
   echo "restart requested by the frontend"
   [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
