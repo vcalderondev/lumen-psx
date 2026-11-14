@@ -26,7 +26,7 @@ from the USB stick. Built from upstream sources by
 |---|---|---|---|---|
 | Wayland (`libwayland-client`, `-server`, `-cursor`) | 1.12 | 1.12 | **1.26.0** | overlay on `/usr` (RAM) |
 | wayland-protocols | — | — | **1.45** (1.46 for Weston 16) | build only |
-| Compositor | Weston 1.11.0 | Weston 1.11.0 | **Weston 16.0.2** (default), **Weston 6.0.1** (fallback) | overlay on `/usr` (RAM) |
+| Compositor | Weston 1.11.0 | Weston 1.11.0 | **Weston 16.0.2** | overlay on `/usr` (RAM) |
 | libdrm | 2.4.6x | 2.4.6x | **2.4.124** (with Weston 16 only) | overlay on `/usr` (RAM) |
 | libseat | — | — | **0.9.1** (with Weston 16 only) | overlay on `/usr` (RAM) |
 | libdisplay-info | — | — | **0.2.0** (static, in Weston 16) | overlay on `/usr` (RAM) |

@@ -157,7 +157,6 @@ hint.dont_show = Ne plus afficher
 section.display = Affichage
 display.output = Résolution de sortie
 display.comp_stock = Sony · Weston 1.11
-display.comp_w6 = Weston 6.0.1 · Wayland 1.26
 display.comp_w16 = Weston 16.0.2 · Wayland 1.26
 display.scanout = Envoi direct à l'écran
 display.scanout_stock = Seulement avec les compositeurs de Lumen

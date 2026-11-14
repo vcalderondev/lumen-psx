@@ -9,8 +9,8 @@ Project Eris' emulator stack is gone: games run on Lumen's own RetroArch 1.22 an
 upstream PCSX-ReARMed, on a PSC compositor built from source.
 
 ### Added
-- PSC compositor from psc-platform (Wayland 1.26 + Weston 16.0.2, Weston 6.0.1 as a
-  fallback), started from RAM; Sony's Weston 1.11 only if ours does not start.
+- PSC compositor from psc-platform (Wayland 1.26 + Weston 16.0.2, atomic KMS with
+  direct scanout), started from RAM; Sony's Weston 1.11 only if it does not start.
 - RetroArch 1.22.2 + PCSX-ReARMed from upstream; saves, states, core options and BIOS
   copied once from the Eris install.
 - Native KMS: when the PSC compositor cannot start, RetroArch 1.22 takes the display

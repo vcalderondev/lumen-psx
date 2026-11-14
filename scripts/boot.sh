@@ -45,10 +45,10 @@ killall -s KILL showLogo sonyapp ui_menu auto_dimmer pcsx 2>/dev/null
 MODE_1080P="148.50 1920 2008 2052 2200 1080 1084 1089 1125 +hsync +vsync"
 MODE_720P="74.25 1280 1390 1430 1650 720 725 730 750 +hsync +vsync"   # CEA-861 720p60
 LUMEN_WESTON=""
-# Compositor: the PSC compositor built from source by psc-platform, newest installed
-# first: psc-weston-16 (Weston 16.0.2), then psc-weston-6 (Weston 6.0.1; psc-weston.tar.gz
-# in earlier installs). Not a user choice (RetroArch 1.22 needs it); Sony's Weston 1.11
-# is only the fallback, or forced by hand with compositor=stock in settings.ini. The
+# Compositor: the PSC compositor built from source by psc-platform, psc-weston-16
+# (Wayland 1.26 + Weston 16.0.2). Not a user choice; Sony's Weston 1.11 is only the
+# fallback (RetroArch then runs with its KMS context, see lumen.conf), or forced by hand
+# with compositor=stock in settings.ini. The
 # package is unpacked to RAM and overlaid on /usr (overlayfs: nothing on the eMMC
 # changes, gone at power-off).
 PW_VER=""; PW_ON=""; PW_SAMPLER=""
@@ -58,10 +58,7 @@ PW_VER=""; PW_ON=""; PW_SAMPLER=""
 # version is skipped from then on (the installer clears it, or delete it by hand).
 PW_MARK="${LUMEN_HOME}/compositor/.trying"
 pw_tar() {  # version -> package path
-  for f in "psc-weston-$1.tar.gz" $( [ "$1" = 6 ] && echo psc-weston.tar.gz ); do
-    [ -f "${LUMEN_HOME}/compositor/$f" ] && { echo "${LUMEN_HOME}/compositor/$f"; return 0; }
-  done
-  return 1
+  [ -f "${LUMEN_HOME}/compositor/psc-weston-$1.tar.gz" ] && echo "${LUMEN_HOME}/compositor/psc-weston-$1.tar.gz"
 }
 # stop Weston politely first: Weston 16's libseat gives the VT back (text mode, keyboard)
 # only when it exits normally; a SIGKILL leaves it in graphics mode
@@ -110,7 +107,7 @@ else
   cp /etc/xdg/weston/weston.ini /tmp/lumen-weston.ini 2>/dev/null
 fi
 STARTED=""
-# Weston 6 and 16 settings for the PSC: the shell key that hides the panel was renamed;
+# Weston 16 settings for the PSC: the shell key that hides the panel was renamed;
 # the HDMI connector reports "disconnected" with no EDID at boot and no mode list, so the
 # output is forced on and every mode is a full modeline (a plain "1280x720" finds nothing
 # to match and Weston exits). pageflip-timeout: a lost page flip makes Weston exit
@@ -139,37 +136,25 @@ try_psc_weston() {  # version package
   # stock Weston's PAM session (weston-launch) owned /run/user/0; launched directly,
   # nothing creates it, and Weston refuses to start without it
   mkdir -p "${XDG_RUNTIME_DIR}" && chmod 0700 "${XDG_RUNTIME_DIR}"
-  if [ "${v}" = 16 ]; then
-    # Weston 16: libseat's builtin backend takes the active VT (no --tty). Atomic KMS
-    # first (psc-platform patch 0001), legacy KMS (no direct scanout) if it fails.
-    chvt 1 2>/dev/null
-    for kms in atomic legacy; do
-      rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
-      if [ "${kms}" = legacy ]; then export WESTON_DISABLE_ATOMIC=1; else unset WESTON_DISABLE_ATOMIC; fi
-      # --socket: Weston 16 picks wayland-1 by default; clients (SDL, RetroArch) look for wayland-0
-      # planes=0 in settings.ini: everything through the GL renderer, no client buffer
-      # on a KMS plane (test switch for the crash after a fullscreen client exits)
-      if [ "$(setting planes)" = 0 ]; then export WESTON_FORCE_RENDERER=1; echo "weston 16: renderer only (planes=0)"; else unset WESTON_FORCE_RENDERER; fi
-      LIBSEAT_BACKEND=builtin /usr/bin/weston --backend=drm --shell=desktop --idle-time=0 \
-        --socket=wayland-0 --config=/tmp/lumen-weston.ini --debug > "${LOG}/weston-psc.log" 2>&1 &
-      LUMEN_WESTON=$!
-      if psc_weston_ready; then echo "weston 16: ${kms} KMS"; break; fi
-      echo "weston 16 (${kms} KMS) did not come up: $(tail -4 "${LOG}/weston-psc.log" 2>/dev/null)"
-      cp -f "${LOG}/weston-psc.log" "${LOG}/weston-psc-${kms}.log" 2>/dev/null
-      pw_stop_weston; LUMEN_WESTON=""
-    done
-    [ -n "${LUMEN_WESTON}" ] || { psc_weston_off; return 1; }
-  else
-    # Weston 6: as root it opens the DRM device itself (no weston-launch in this build).
-    # scanout (default on, scanout=0 to disable): a fullscreen client buffer goes to the
-    # display without a GL composition pass (psc-platform patch 0002). 40 -> 58 fps.
+  # libseat's builtin backend takes the active VT (no --tty). Atomic KMS first
+  # (psc-platform patch 0001), legacy KMS (no direct scanout) if it fails.
+  chvt 1 2>/dev/null
+  # scanout=0 in settings.ini (Settings > Display): everything through the GL renderer,
+  # no client buffer straight on a KMS plane (default on: 1080p at ~59 fps)
+  if [ "$(setting scanout)" = 0 ]; then export WESTON_FORCE_RENDERER=1; echo "weston: renderer only (scanout=0)"; else unset WESTON_FORCE_RENDERER; fi
+  for kms in atomic legacy; do
     rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
-    if [ "$(setting scanout)" != 0 ]; then export WESTON_LEGACY_SCANOUT=1; else unset WESTON_LEGACY_SCANOUT; fi
-    /usr/bin/weston --tty=1 --idle-time=0 --config=/tmp/lumen-weston.ini --debug \
-      > "${LOG}/weston-psc.log" 2>&1 &
+    if [ "${kms}" = legacy ]; then export WESTON_DISABLE_ATOMIC=1; else unset WESTON_DISABLE_ATOMIC; fi
+    # --socket: Weston 16 picks wayland-1 by default; clients (SDL, RetroArch) look for wayland-0
+    LIBSEAT_BACKEND=builtin /usr/bin/weston --backend=drm --shell=desktop --idle-time=0 \
+      --socket=wayland-0 --config=/tmp/lumen-weston.ini --debug > "${LOG}/weston-psc.log" 2>&1 &
     LUMEN_WESTON=$!
-    psc_weston_ready || { echo "psc compositor 6 failed to start: $(tail -5 "${LOG}/weston-psc.log" 2>/dev/null)"; psc_weston_off; return 1; }
-  fi
+    if psc_weston_ready; then echo "weston ${v}: ${kms} KMS"; break; fi
+    echo "weston ${v} (${kms} KMS) did not come up: $(tail -4 "${LOG}/weston-psc.log" 2>/dev/null)"
+    cp -f "${LOG}/weston-psc.log" "${LOG}/weston-psc-${kms}.log" 2>/dev/null
+    pw_stop_weston; LUMEN_WESTON=""
+  done
+  [ -n "${LUMEN_WESTON}" ] || { psc_weston_off; return 1; }
   PW_VER=${v}
   echo "psc compositor up (${LUMEN_WESTON}): $(/usr/bin/weston --version 2>&1 | head -1)"
   grep -aiE 'video modes|, current|scanout|atomic|renderer:|enabled with head' "${LOG}/weston-psc.log" | head -8
@@ -194,12 +179,7 @@ if [ "${COMPOSITOR}" != stock ]; then
       echo "psc compositor ${v}: the last attempt showed no picture, skipped from now on"
     rm -f "${PW_MARK}"; sync
   fi
-  # Weston 16 first (newest), Weston 6 as the fallback. Weston 16 brought the console down
-  # once when Eris' RetroArch 1.8.8 exited a game (2026-11-14); with Lumen's RetroArch 1.22
-  # games start, exit and hand back to Lumen cleanly (tested on the console the same day).
-  # compositor=weston6 in settings.ini puts Weston 6 first.
-  order="16 6"; [ "${COMPOSITOR}" = weston6 ] && order="6 16"
-  for v in ${order}; do
+  for v in 16; do
     [ -n "${STARTED}" ] && break
     tar=$(pw_tar "${v}") || continue
     [ -f "${LUMEN_HOME}/compositor/.failed-${v}" ] && { echo "psc compositor ${v}: skipped (.failed-${v})"; continue; }
