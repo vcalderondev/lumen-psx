@@ -14,6 +14,18 @@ LOG="${LUMEN_HOME}/logs"
 mkdir -p "${LOG}"
 exec >> "${LOG}/boot.log" 2>&1
 echo "=== lumen boot $(date)"
+# CPU / GPU frequency policy, for the record (read only): governor, current and
+# available frequencies of cpu0, and of every devfreq device (the GPU's, if any)
+for f in scaling_governor scaling_cur_freq scaling_min_freq scaling_max_freq scaling_available_governors scaling_available_frequencies; do
+  [ -r "/sys/devices/system/cpu/cpu0/cpufreq/$f" ] && echo "cpu0 $f: $(cat "/sys/devices/system/cpu/cpu0/cpufreq/$f" 2>/dev/null)"
+done
+for d in /sys/class/devfreq/*; do
+  [ -d "$d" ] || continue
+  for f in governor cur_freq min_freq max_freq available_governors available_frequencies; do
+    [ -r "$d/$f" ] && echo "devfreq $(basename "$d") $f: $(cat "$d/$f" 2>/dev/null)"
+  done
+done
+[ -d /sys/class/devfreq ] || echo "devfreq: none (no /sys/class/devfreq)"
 
 export XDG_RUNTIME_DIR=/run/user/0
 export HOME=/home/root
