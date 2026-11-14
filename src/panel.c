@@ -54,15 +54,16 @@ static void draw_label(const label_t *l, float x, float y, const float c[4])
 /* ------------------------------------------------------------------------ */
 /* state                                                                     */
 /* root rows are the pages in this order (page_input() relies on it) */
-enum { P_ROOT, P_LANGUAGE, P_PROFILE, P_SCREENSAVER, P_GRAPHICS, P_LIBRARY, P_ABOUT, P_COUNT };
+enum { P_ROOT, P_LANGUAGE, P_PROFILE, P_SCREENSAVER, P_SOUND, P_GRAPHICS, P_LIBRARY, P_ABOUT, P_COUNT };
 static const char *const k_page_key[P_COUNT] = {
-   "panel.title", "section.language", "section.profile", "section.screensaver", "section.graphics",
-   "section.library", "section.about"
+   "panel.title", "section.language", "section.profile", "section.screensaver", "section.sound",
+   "section.graphics", "section.library", "section.about"
 };
 
 enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
-       ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400, ID_LIB_STOCK = 500, ID_INFO = 900 };
+       ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
+       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500, ID_INFO = 900 };
 
 typedef struct {
    int type, id, enabled, dim, check, enter, at_lo, at_hi;
@@ -91,6 +92,11 @@ static int s_pcolor = -1;
 /* screensaver choices */
 static const int k_minutes[] = { 0, 1, 2, 3, 5, 10, 15, 30 };
 static const int k_seconds[] = { 30, 45, 60, 90, 120, 180 };
+
+/* menu music: settings "music" (0/1) and "music_volume" (0..100, steps of 10) */
+#define VOL_STEP 10
+static int music_on(void) { return settings_get_int("music", 1, 0, 1); }
+static int music_volume(void) { return (settings_get_int("music_volume", 60, 0, 100) + VOL_STEP / 2) / VOL_STEP * VOL_STEP; }
 #define NELEM(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 static int nearest(const int *list, int n, int v)
@@ -201,6 +207,8 @@ static void page_build(void)
       minutes_text(v, sizeof(v), settings_get_int("screensaver_minutes", 5, 0, 60));
       r = row_add(R_ACTION, P_SCREENSAVER, tr("section.screensaver"), v);
       if (r) r->enter = 1;
+      r = row_add(R_ACTION, P_SOUND, tr("section.sound"), tr(music_on() ? "value.on" : "value.off"));
+      if (r) r->enter = 1;
       r = row_add(R_ACTION, P_GRAPHICS, tr("section.graphics"), NULL);
       if (r) r->enter = 1;
       r = row_add(R_ACTION, P_LIBRARY, tr("section.library"), NULL);
@@ -250,6 +258,18 @@ static void page_build(void)
       }
       row_add(R_ACTION, ID_SS_PREVIEW, tr("ss.preview"), NULL);
       snprintf(s_foot, sizeof(s_foot), "%s", tr("ss.note"));
+      break;
+   }
+   case P_SOUND:
+   {
+      int on = music_on(), vol = music_volume();
+      if ((r = row_add(R_CHOICE, ID_SND_MUSIC, tr("sound.music"), tr(on ? "value.on" : "value.off"))))
+      { r->at_lo = !on; r->at_hi = on; }
+      snprintf(num, sizeof(num), "%d", vol);
+      trf(v, sizeof(v), "sound.vol_value", "n", num, NULL);
+      if ((r = row_add(R_CHOICE, ID_SND_VOLUME, tr("sound.volume"), v)))
+      { r->at_lo = vol <= 0; r->at_hi = vol >= 100; }
+      snprintf(s_foot, sizeof(s_foot), "%s", tr("sound.note"));
       break;
    }
    case P_GRAPHICS:
@@ -492,6 +512,14 @@ static void row_change(const row_t *r, int dir)
       i = nearest(k_seconds, NELEM(k_seconds), settings_get_int("demo_seconds", 60, 20, 300)) + dir;
       if (i >= 0 && i < NELEM(k_seconds)) settings_set_int("demo_seconds", k_seconds[i]);
       break;
+   case ID_SND_MUSIC:
+      settings_set_int("music", dir > 0);
+      ui_sound_changed();
+      break;
+   case ID_SND_VOLUME:
+      i = music_volume() + dir * VOL_STEP;
+      if (i >= 0 && i <= 100) { settings_set_int("music_volume", i); ui_sound_changed(); }
+      break;
    default:
       if (r->id >= ID_GFX && r->id < ID_GFX + g_nplat)
       {
@@ -520,6 +548,7 @@ static void row_cycle(const row_t *r)
    case ID_PROFILE_COLOR: s_pcolor = 0; break;
    case ID_SS_AFTER:  settings_set_int("screensaver_minutes", k_minutes[0]); break;
    case ID_SS_LENGTH: settings_set_int("demo_seconds", k_seconds[0]); break;
+   case ID_SND_VOLUME: settings_set_int("music_volume", 0); ui_sound_changed(); break;
    default: row_change(r, -1); break;   /* Sí/No, Original/Mejorado */
    }
 }

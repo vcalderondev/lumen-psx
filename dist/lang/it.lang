@@ -44,6 +44,7 @@ panel.title = Impostazioni
 section.language = Lingua
 section.profile = Profilo
 section.screensaver = Salvaschermo
+section.sound = Audio
 section.graphics = Grafica
 section.library = Libreria
 section.about = Informazioni
@@ -81,6 +82,12 @@ ss.seconds = {n} s
 ss.preview = Prova ora
 ss.note = Le demo non salvano mai. Premi un tasto qualsiasi per tornare.
 
+# audio
+sound.music = Musica del menu
+sound.volume = Volume
+sound.vol_value = {n} %
+sound.note = Ogni gioco può avere una propria traccia (music.ogg nella sua cartella); altrimenti suona il tema del menu.
+
 # grafica
 gfx.original = Originale
 gfx.enhanced = Migliorata
@@ -108,6 +115,29 @@ osk.space = Spazio
 osk.erase = Cancella
 osk.shift = Maiusc
 osk.ok = OK
+
+# dashboard
+dash.played = {time} di gioco
+dash.last = Ultima volta: {date}
+dash.never = Mai giocato
+dash.profile_games = {n} giochi giocati
+dash.profile_games_one = 1 gioco giocato
+time.hm = {h} h {m} min
+time.m = {m} min
+time.lt1 = < 1 min
+month.1 = gen
+month.2 = feb
+month.3 = mar
+month.4 = apr
+month.5 = mag
+month.6 = giu
+month.7 = lug
+month.8 = ago
+month.9 = set
+month.10 = ott
+month.11 = nov
+month.12 = dic
+date.dmy = {d} {month} {y}
 
 # modalità arcade
 attract.press_start = PREMI START

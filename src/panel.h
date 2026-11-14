@@ -20,6 +20,7 @@ void  panel_toast_draw(double t);
 
 /* callbacks implemented in main.c */
 void  ui_language_changed(void);        /* section 5.3 */
+void  ui_sound_changed(void);           /* "music" / "music_volume" changed: apply them */
 void  ui_start_attract(void);           /* "Preview now" (step 5; a no-op before) */
 
 #endif
