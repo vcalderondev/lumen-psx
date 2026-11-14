@@ -79,6 +79,24 @@ Shipped presets:
 | psx | PCSX-ReARMed NEON enhancement (high internal resolution) | enhancement off |
 | snes, megadrive, gba, arcade, n64 | `video_smooth=true` (bilinear filter) | `video_smooth=false` |
 
+## Attract-mode demos: `[demo]`
+
+Optional. When the screensaver has been showing for `attract_demo_delay` seconds and
+game demos are on (settings `demo_enabled`), Lumen picks a random game of a system
+that allows demos (never one of the last 4 demoed) and runs it as an **ephemeral
+session**: saves and save states go to `/tmp/lumen-demo` (deleted afterwards), no
+history or play time is recorded, and the demo ends after its length or when any
+button is pressed (then the carousel opens with that game selected).
+
+```ini
+[demo]
+allowed = 1        ; games of this system may run as attract-mode demos (default 0)
+seconds = 0        ; per-system demo length override; 0 = settings "demo_seconds"
+```
+
+Shipped: `psx` and `arcade` allow demos; every other system has `allowed = 0`.
+A system also needs a `[launch] core` to be picked.
+
 Unknown keys are ignored, so declarations stay forward-compatible. Every value
 has a default; a minimal declaration only needs `[system] id/name`,
 `[library]` and `[launch] core`.

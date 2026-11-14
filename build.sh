@@ -8,7 +8,7 @@ mkdir -p out
 rm -f out/lumen
 $CC $PSC_FLAGS -O2 -std=gnu11 -Wall -Wno-unused-function -Wno-format-truncation \
    -Ithird_party/include -I/opt/psc/sysroot/usr/include/SDL2 -D_REENTRANT \
-   src/main.c src/i18n.c src/settings.c src/panel.c src/profiles.c src/launch.c -o out/lumen \
+   src/main.c src/i18n.c src/settings.c src/panel.c src/profiles.c src/launch.c src/attract.c -o out/lumen \
    -lSDL2 -lSDL2_image -lSDL2_ttf -lGLESv2 -lm -lpthread 2>&1 | grep -v "dynsym local symbol" || true
 [ -f out/lumen ] || { echo "build failed"; exit 1; }
 $STRIP out/lumen

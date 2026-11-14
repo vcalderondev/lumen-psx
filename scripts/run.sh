@@ -4,7 +4,10 @@
 #
 # The frontend exits 10 after writing the launch request /tmp/lumen-launch
 # (v2: "key=value" lines, see docs/settings-design.md 7.5; a v1 request is two
-# lines, core and content).
+# lines, core and content). It exits 11 for an attract-mode demo: the game runs as
+# an ephemeral session (saves in /tmp, removed afterwards) for demo_seconds or until
+# a button is pressed (lumen-buttons --demo-watch), then the frontend comes back
+# with --attract (the demo ended) or --focus-demo (the player pressed a button).
 #
 # Optional $LUMEN_HOME/lumen.conf (sourced) can set:
 #   RETROARCH            path to the retroarch binary (default: retroarch in PATH)
@@ -137,7 +140,38 @@ lumen_build_ra_extra() {
     done < /tmp/lumen-ra.kv
   fi
   [ -n "$L_OPT_FILE" ] && echo "core_options_path = \"${L_OPT_FILE}\"" >> "${LUMEN_RA_EXTRA}"
+  if [ "$L_MODE" = demo ]; then   # ephemeral: nothing about the demo is kept
+    for k in savestate_auto_save savestate_auto_load history_list_enable content_runtime_log \
+             content_runtime_log_aggregate sort_savefiles_enable sort_savestates_enable \
+             savefiles_in_content_dir savestates_in_content_dir; do
+      echo "$k = \"false\"" >> "${LUMEN_RA_EXTRA}"
+    done
+  fi
   export LUMEN_RA_EXTRA
+}
+
+# lumen_run_demo: run the request as an ephemeral demo session; sets ARGS for the
+# next frontend start (--focus-demo after a button press, --attract otherwise)
+lumen_run_demo() {
+  rm -rf /tmp/lumen-demo; mkdir -p /tmp/lumen-demo/saves /tmp/lumen-demo/states
+  L_SAVES=/tmp/lumen-demo/saves; L_STATES=/tmp/lumen-demo/states
+  lumen_build_ra_extra
+  slog "demo: ${L_CONTENT} (system ${L_SYSTEM:-?}, ${L_DEMO_SECONDS} s, graphics ${L_GRAPHICS:-default})"
+  run_retroarch "${L_CORE}" "${L_CONTENT}" "${LOG}/retroarch-demo.log" &
+  RA_JOB=$!
+  T=""
+  if [ -x "${LUMEN_HOME}/lumen-buttons" ]; then
+    "${LUMEN_HOME}/lumen-buttons" --demo-watch "${L_DEMO_SECONDS}" --pid "${RA_JOB}" --log "${LOG}/buttons.log"
+    w=$?
+  else   # fallback: timeout only
+    ( sleep "${L_DEMO_SECONDS}"; killall -TERM retroarch 2>/dev/null; sleep 3; kill -TERM "${RA_JOB}" 2>/dev/null ) &
+    T=$!; w=2
+  fi
+  wait "${RA_JOB}"
+  [ -n "$T" ] && kill "$T" 2>/dev/null
+  rm -rf /tmp/lumen-demo
+  slog "demo end: watcher=${w}"
+  case $w in 1) ARGS="--focus-demo" ;; *) ARGS="--attract" ;; esac
 }
 
 run_retroarch() {  # core content logfile
@@ -151,18 +185,27 @@ echo "lumen session $(date)" > "${LOG}/session.log"
 # profiles deleted in the frontend whose background removal did not finish
 rm -rf "${LUMEN_HOME}"/profiles/.trash-* 2>/dev/null
 
+ARGS=""
 while true; do
   rm -f /tmp/lumen-launch
+  # ARGS is a single word or empty (--attract / --focus-demo)
   SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland}" "${LUMEN_HOME}/lumen" \
-    --home "${LUMEN_HOME}" --log "${LOG}/lumen.log"
+    --home "${LUMEN_HOME}" --log "${LOG}/lumen.log" ${ARGS}
   rc=$?
+  ARGS=""
   slog "lumen exit=${rc}"
-  [ "${rc}" = "10" ] || break
+  case "${rc}" in 10|11) ;; *) break ;; esac
   lumen_parse_launch /tmp/lumen-launch || { slog "launch request missing or invalid"; break; }
+  # the exit code wins over the file
+  if [ "${rc}" = "11" ]; then L_MODE=demo; else L_MODE=normal; fi
   L_OPT_FILE=""
   if [ -n "${L_OPT_CORE_NAME}" ]; then
     lumen_merge_opt "${LUMEN_CORE_OPT_DIR}/${L_OPT_CORE_NAME}/${L_OPT_CORE_NAME}.opt" /tmp/lumen-opt.kv ||
       slog "core options merge failed for ${L_OPT_CORE_NAME}"
+  fi
+  if [ "${L_MODE}" = demo ]; then
+    lumen_run_demo
+    continue
   fi
   lumen_profile_dirs
   lumen_build_ra_extra
