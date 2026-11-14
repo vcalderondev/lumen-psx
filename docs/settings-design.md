@@ -153,6 +153,7 @@ Format: one `key=value` per line, `#` comments, no sections, UTF-8, whitespace a
 | `demo_enabled` | `0`/`1` | `1` | attract |
 | `demo_seconds` | 20–300 | `60` | attract, launch |
 | `attract_demo_delay` | seconds of attract before a demo, 5–120 | `20` | attract |
+| `show_stock_games` | `0` (hidden) / `1` (visible): list the console's built-in games (systems with `layout = stock`, docs/systems.md) | `0` | library |
 | `graphics.<system id>` | `original` / `enhanced` | `original` | launch |
 
 Invalid values are clamped or replaced by the default when read (never written back
@@ -297,6 +298,7 @@ in en) intentionally stay English-style in es too where shown.
 | `section.profile` | Perfil | Profile |
 | `section.screensaver` | Protector de pantalla | Screensaver |
 | `section.graphics` | Gráficos | Graphics |
+| `section.library` | Biblioteca | Library |
 | `section.about` | Acerca de | About |
 | `value.on` | Sí | On |
 | `value.off` | No | Off |
@@ -432,9 +434,9 @@ void ui_start_attract(void);         /* "Preview now", step 5; before step 5 a n
 
 ### 6.5 Pages
 
-Root page: five entries — Language, Profile, Screensaver, Graphics, About (each with its
-current value on the right: the language name, the profile name, "5 min" / "Nunca";
-nothing for Graphics and About). Cross enters the page; Triangle or Square closes the panel.
+Root page: six entries — Language, Profile, Screensaver, Graphics, Library, About (each
+with its current value on the right: the language name, the profile name, "5 min" / "Nunca";
+nothing for Graphics, Library and About). The root rows are the pages in enum order. Cross enters the page; Triangle or Square closes the panel.
 
 Inside a page: Up/Down move, Left/Right change `CHOICE` rows (applied immediately to the
 setting, saved on close), Cross triggers `ACTION` rows, Square or Triangle goes back to root.
@@ -445,6 +447,7 @@ setting, saved on close), Cross triggers `ACTION` rows, Square or Triangle goes 
 | Profile | `profile.active` CHOICE over existing profiles (swatch + name); `profile.create` ACTION (disabled + `profile.full` when 8); `profile.rename` ACTION → keyboard prefilled; `profile.color` CHOICE over 8 swatches; `profile.delete` ACTION (disabled on `main`, shows `profile.main_locked`) → confirm dialog; footer `profile.count` and `profile.cards_note` |
 | Screensaver | `ss.after` CHOICE: Never, 1, 2, 3, 5, 10, 15, 30 min; `ss.demos` CHOICE On/Off; `ss.demo_length` CHOICE: 30, 45, 60, 90, 120, 180 s (dimmed when demos are off); `ss.preview` ACTION → closes the panel and calls `ui_start_attract()`; footer `ss.note` |
 | Graphics | one CHOICE row per platform with a `[graphics]` section (step 4): label = system name, values Original / Enhanced, key `graphics.<id>`; footer `gfx.note`; if none: `gfx.none` |
+| Library | `lib.stock` CHOICE Hidden / Visible (`lib.hidden` / `lib.visible`), key `show_stock_games`; every change calls `ui_library_changed()` and `main.c` rescans the declarations and libraries at the top of the next frame (selection kept by system id + content path, else the same system, else the first); footer `lib.stock_note` |
 | About | INFO rows: version (`LUMEN_VERSION`), games (`g_ngames`), systems (`g_nplat`), profiles (`profiles_count()`, from step 3), free space of `g_root` (`statvfs` once when the page opens; GB with one decimal ≥ 1 GB, else MB) |
 
 Before step 3 exists, the Profile page shows only the active profile row with "Principal"
@@ -483,7 +486,7 @@ wrapped with `TTF_RenderUTF8_Blended_Wrapped`, which exists in SDL_ttf 2.0.14),
 
 ### 6.8 Help bar sets
 
-`hint_t` entries become per-set tables; icons as today (`<home>/icons/<name>.png`,
+`hint_t` entries become per-set tables; icons as today (`<home>/assets/icons/<name>.png`, old installs `<home>/icons/`,
 `triangle.png` and `square.png` are already installed), fallback text keys from 5.5.
 
 | set | hints |

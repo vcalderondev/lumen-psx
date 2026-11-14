@@ -31,6 +31,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 #include "lumen.h"
 #include "i18n.h"
 #include "settings.h"
@@ -46,13 +47,64 @@
 
 /* ------------------------------------------------------------------------ */
 /* logging                                                                   */
-static FILE *g_log;
+/* The log lives on the USB stick (exFAT through FUSE): a file's size is only committed
+ * on close/fsync, so a power-off would leave the log of the running frontend empty.
+ * Every line is flushed; fsync runs at most once per second (log_tick() catches up on
+ * pending lines), immediately for lines that report an error, and at exit. Lines can
+ * come from the worker threads, so the stream lock guards the bookkeeping. */
+static FILE  *g_log;
+static double g_log_synced = -10.0;   /* monotonic time of the last fsync */
+static int    g_log_pending;          /* lines written since that fsync */
+
+static double log_clock(void)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+/* call with the stream locked */
+static void log_sync_locked(int force)
+{
+   double t;
+   if (!g_log || g_log == stderr || !g_log_pending) return;
+   t = log_clock();
+   if (!force && t - g_log_synced < 1.0) return;
+   fsync(fileno(g_log));
+   g_log_synced = t; g_log_pending = 0;
+}
+
+static int log_is_error(const char *s)
+{
+   for (; *s; s++)
+      if (!strncasecmp(s, "error", 5) || !strncasecmp(s, "fail", 4)) return 1;
+   return 0;
+}
+
 void logf_(const char *fmt, ...)
 {
    va_list ap;
+   char line[1024];
    if (!g_log) g_log = stderr;
-   va_start(ap, fmt); vfprintf(g_log, fmt, ap); va_end(ap);
-   fputc('\n', g_log); fflush(g_log);
+   va_start(ap, fmt); vsnprintf(line, sizeof(line), fmt, ap); va_end(ap);
+   flockfile(g_log);
+   fputs(line, g_log); fputc('\n', g_log); fflush(g_log);
+   g_log_pending = 1;
+   log_sync_locked(log_is_error(line));
+   funlockfile(g_log);
+}
+
+/* once per frame: fsync lines left pending by the 1 s limit */
+static void log_tick(void)
+{
+   if (!g_log_pending || !g_log) return;
+   flockfile(g_log); log_sync_locked(0); funlockfile(g_log);
+}
+
+static void log_sync_atexit(void)
+{
+   if (!g_log) return;
+   flockfile(g_log); fflush(g_log); log_sync_locked(1); funlockfile(g_log);
 }
 
 double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
@@ -89,6 +141,27 @@ static void trim(char *s)
 }
 
 static int file_exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
+
+/* Runtime assets live under <home>/assets/ (assets/README.md); installs made before that
+ * layout keep them directly under <home>/. out = the first that exists, else the new path. */
+static void asset_path(char *out, size_t n, const char *rel_new, const char *rel_old)
+{
+   snprintf(out, n, "%s/assets/%s", g_home, rel_new);
+   if (file_exists(out)) return;
+   snprintf(out, n, "%s/%s", g_home, rel_old);
+   if (file_exists(out)) return;
+   snprintf(out, n, "%s/assets/%s", g_home, rel_new);
+}
+
+/* per-system art named by a declaration: "<file>" is the system's own
+ * (assets/systems/<id>/<file>), "<other id>/<file>" shares another system's */
+static void system_asset(char *out, size_t n, const char *id, const char *file)
+{
+   char rn[200], ro[200];
+   if (strchr(file, '/')) { snprintf(rn, sizeof(rn), "systems/%s", file); snprintf(ro, sizeof(ro), "systems/%s", file); }
+   else { snprintf(rn, sizeof(rn), "systems/%s/%s", id, file); snprintf(ro, sizeof(ro), "systems/%s/%s", id, file); }
+   asset_path(out, n, rn, ro);
+}
 
 /* Game.ini style: "\nKey=value" (no sections) */
 static void ini_get(const char *ini, const char *key, char *out, size_t n)
@@ -143,13 +216,17 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "system", "id", pl->id, sizeof(pl->id), "psx");
    decl_get(ini, "system", "name", pl->name, sizeof(pl->name), pl->id);
    decl_get(ini, "system", "logo", v, sizeof(v), "");
-   if (v[0]) snprintf(pl->logo, sizeof(pl->logo), "%s/systems/%s/%s", g_home, pl->id, v);
+   if (v[0]) system_asset(pl->logo, sizeof(pl->logo), pl->id, v);
    decl_get(ini, "system", "order", v, sizeof(v), "50");   pl->order = atoi(v);
    decl_get(ini, "system", "show_name", v, sizeof(v), "1"); pl->show_name = atoi(v);
    decl_get(ini, "library", "layout", pl->layout, sizeof(pl->layout), "files");
    decl_get(ini, "library", "paths", pl->paths, sizeof(pl->paths), "");
+   if (!pl->paths[0] && !strcmp(pl->layout, "stock")) snprintf(pl->paths, sizeof(pl->paths), "/gaadata");
    if (!pl->paths[0]) snprintf(pl->paths, sizeof(pl->paths), "%s/games/%s", g_root, pl->id);  /* convention */
-   decl_get(ini, "library", "extensions", pl->exts, sizeof(pl->exts), "");
+   decl_get(ini, "library", "extensions", pl->exts, sizeof(pl->exts), !strcmp(pl->layout, "stock") ? "cue,bin" : "");
+   decl_get(ini, "library", "metadata", v, sizeof(v), "");
+   if (!v[0]) snprintf(v, sizeof(v), "%s.games", pl->id);
+   snprintf(pl->meta, sizeof(pl->meta), "%s/systems/%s", g_home, v);   /* next to the declaration */
    decl_get(ini, "launch", "core", pl->core, sizeof(pl->core), "");
    decl_get(ini, "media", "kind", v, sizeof(v), "disc");
    pl->kind = !strcmp(v, "cartridge") || !strcmp(v, "card") ? KIND_CART : (!strcmp(v, "arcade") ? KIND_ARCADE : KIND_DISC);
@@ -166,7 +243,7 @@ static void platform_from_decl(platform_t *pl, const char *ini)
                  (pl->kind == KIND_CART ? ANIM_INSERT_CART : (pl->kind == KIND_ARCADE ? ANIM_INSERT_COIN : ANIM_OPEN_CASE_DISC))));
    decl_get(ini, "animation", "idle", v, sizeof(v), "float"); pl->idle_float = strcmp(v, "none") != 0;
    decl_get(ini, "animation", "sound", v, sizeof(v), "");
-   if (v[0]) snprintf(pl->sound, sizeof(pl->sound), "%s/systems/%s/%s", g_home, pl->id, v);
+   if (v[0]) system_asset(pl->sound, sizeof(pl->sound), pl->id, v);
    decl_get(ini, "graphics", "core_options_name", pl->gfx_core, sizeof(pl->gfx_core), "");
    decl_get(ini, "graphics", "enhanced", pl->gfx_enh, sizeof(pl->gfx_enh), "");
    decl_get(ini, "graphics", "original", pl->gfx_orig, sizeof(pl->gfx_orig), "");
@@ -190,6 +267,7 @@ static void load_systems(void)
 {
    char dir[300], path[600];
    DIR *d; struct dirent *de;
+   int ndecl = 0;
    snprintf(dir, sizeof(dir), "%s/systems", g_home);
    if ((d = opendir(dir)))
    {
@@ -201,12 +279,21 @@ static void load_systems(void)
          if (!(f = fopen(path, "rb"))) continue;
          fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET);
          buf = calloc(1, sz + 1);
-         if (buf && fread(buf, 1, sz, f) == (size_t)sz) { platform_from_decl(&g_plat[g_nplat], buf); g_nplat++; }
+         if (buf && fread(buf, 1, sz, f) == (size_t)sz)
+         {
+            platform_t *pl = &g_plat[g_nplat];
+            platform_from_decl(pl, buf);
+            ndecl++;
+            /* the console's built-in games are listed only when the settings say so */
+            if (!strcmp(pl->layout, "stock") && !settings_get_int("show_stock_games", 0, 0, 1))
+               logf_("[%s] built-in games hidden (show_stock_games=0)", pl->id);
+            else g_nplat++;
+         }
          free(buf); fclose(f);
       }
       closedir(d);
    }
-   if (!g_nplat)  /* built-in default: PlayStation library in the PSC layout */
+   if (!ndecl)  /* built-in default: PlayStation library in the PSC layout */
    {
       char def[400];
       snprintf(def, sizeof(def), "[system]\nid=psx\nname=PlayStation\n[library]\nlayout=psc\npaths=%s/games/psx\n"
@@ -323,6 +410,75 @@ static void scan_files(int pi, const char *dir)
    closedir(d);
 }
 
+/* Stock layout: the console's built-in games, read-only (never written).
+ * <path>/<id>/<BASENAME>.cue|bin per game; the metadata cannot be read from the
+ * console's own database (no sqlite on the console), so it comes from a shipped file
+ * next to the declaration: "id|title|publisher|year|players|basename1,basename2" lines,
+ * '#' comments. Disc 1 = the first basename. Cover: <BASENAME>.png, else the first
+ * *.png of the folder. The folder listings are logged on the first scan only. */
+static void scan_stock(int pi, const char *dir)
+{
+   static int listed;
+   platform_t *pl = &g_plat[pi];
+   char line[700];
+   FILE *f = fopen(pl->meta, "r");
+   int found = 0, missing = 0;
+   if (!f) { logf_("[%s] stock metadata missing: %s", pl->id, pl->meta); return; }
+   while (fgets(line, sizeof(line), f) && g_ngames < MAX_GAMES)
+   {
+      char *fld[6], *p = line, *c, exts[160], *tok, *save = NULL, folder[600], listing[400];
+      game_t *g;
+      int k;
+      DIR *d; struct dirent *de;
+      line[strcspn(line, "\r\n")] = 0;
+      if (!strncmp(p, "\xEF\xBB\xBF", 3)) p += 3;
+      if (!*p || *p == '#') continue;
+      for (k = 0; k < 6; k++) { fld[k] = p; if ((c = strchr(p, '|'))) { *c = 0; p = c + 1; } else p += strlen(p); }
+      for (k = 0; k < 6; k++) trim(fld[k]);
+      if ((c = strchr(fld[5], ','))) *c = 0;
+      trim(fld[5]);
+      if (!fld[0][0] || !fld[5][0] || strchr(fld[0], '/') || strchr(fld[5], '/') || strstr(fld[0], "..")) continue;
+      snprintf(folder, sizeof(folder), "%s/%s", dir, fld[0]);
+      g = &g_games[g_ngames];
+      memset(g, 0, sizeof(*g));
+      snprintf(exts, sizeof(exts), "%s", pl->exts);
+      for (tok = strtok_r(exts, ",", &save); tok && !g->content[0]; tok = strtok_r(NULL, ",", &save))
+      {
+         trim(tok);
+         snprintf(g->content, sizeof(g->content), "%s/%s.%s", folder, fld[5], tok);
+         if (!file_exists(g->content)) g->content[0] = 0;
+      }
+      snprintf(g->cover, sizeof(g->cover), "%s/%s.png", folder, fld[5]);
+      g->has_cover = file_exists(g->cover);
+      listing[0] = 0;
+      if ((!g->has_cover || !listed) && (d = opendir(folder)))
+      {
+         while ((de = readdir(d)))
+         {
+            size_t l = strlen(de->d_name);
+            if (de->d_name[0] == '.') continue;
+            if (!listed && strlen(listing) + l + 2 < sizeof(listing))
+            { if (listing[0]) strcat(listing, " "); strcat(listing, de->d_name); }
+            if (!g->has_cover && l > 4 && !strcasecmp(de->d_name + l - 4, ".png"))
+            { snprintf(g->cover, sizeof(g->cover), "%s/%s", folder, de->d_name); g->has_cover = 1; }
+         }
+         closedir(d);
+      }
+      if (!listed) logf_("[%s] %s: %s", pl->id, folder, listing[0] ? listing : "(empty or missing)");
+      if (!g->has_cover) g->cover[0] = 0;
+      if (!g->content[0]) { missing++; continue; }
+      snprintf(g->title, sizeof(g->title), "%s", fld[1][0] ? fld[1] : fld[5]);
+      snprintf(g->publisher, sizeof(g->publisher), "%s", fld[2]);
+      snprintf(g->year, sizeof(g->year), "%s", fld[3]);
+      snprintf(g->players, sizeof(g->players), "%s", fld[4]);
+      g->platform = pi;
+      g_ngames++; found++;
+   }
+   fclose(f);
+   listed = 1;
+   logf_("[%s] stock: %d games from %s (%d without a disc image)", pl->id, found, dir, missing);
+}
+
 static void scan_all(void)
 {
    int pi;
@@ -333,7 +489,9 @@ static void scan_all(void)
       for (tok = strtok_r(paths, ";", &save); tok; tok = strtok_r(NULL, ";", &save))
       {
          trim(tok);
-         if (!strcmp(g_plat[pi].layout, "psc")) scan_psc(pi, tok); else scan_files(pi, tok);
+         if (!strcmp(g_plat[pi].layout, "psc")) scan_psc(pi, tok);
+         else if (!strcmp(g_plat[pi].layout, "stock")) scan_stock(pi, tok);
+         else scan_files(pi, tok);
       }
    }
 }
@@ -969,6 +1127,7 @@ static TTF_Font *open_font(const char **paths, int size)
 static SDL_mutex   *cv_mx;
 static SDL_cond    *cv_cv;
 static int          cv_req = -1, cv_busy, cv_done = -1, cv_quit;
+static unsigned     cv_gen, cv_req_gen, cv_done_gen;   /* library generation: a rescan drops stale results */
 static char         cv_path[512];
 static SDL_Surface *cv_surf;
 static float        cv_avg[3];
@@ -979,17 +1138,18 @@ static int cover_worker(void *unused)
    SDL_LockMutex(cv_mx);
    while (!cv_quit)
    {
-      int idx; char path[512]; SDL_Surface *s, *c = NULL; float avg[3] = { 0.3f, 0.3f, 0.35f };
+      int idx; unsigned gen; char path[512]; SDL_Surface *s, *c = NULL; float avg[3] = { 0.3f, 0.3f, 0.35f };
       while (cv_req < 0 && !cv_quit) SDL_CondWait(cv_cv, cv_mx);
       if (cv_quit) break;
       idx = cv_req; cv_req = -1;
+      gen = cv_req_gen;
       snprintf(path, sizeof(path), "%s", cv_path);
       SDL_UnlockMutex(cv_mx);
       s = IMG_Load(path);
       if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
       if (c) surface_avg(c, avg);
       SDL_LockMutex(cv_mx);
-      cv_surf = c; cv_done = idx;
+      cv_surf = c; cv_done = idx; cv_done_gen = gen;
       memcpy(cv_avg, avg, sizeof(avg));
    }
    SDL_UnlockMutex(cv_mx);
@@ -1000,7 +1160,7 @@ static void cover_request(int idx, const char *path)
 {
    SDL_LockMutex(cv_mx);
    snprintf(cv_path, sizeof(cv_path), "%s", path);
-   cv_req = idx; cv_busy = 1;
+   cv_req = idx; cv_req_gen = cv_gen; cv_busy = 1;
    SDL_CondSignal(cv_cv);
    SDL_UnlockMutex(cv_mx);
 }
@@ -1199,7 +1359,7 @@ static void in_event(const SDL_Event *e)
 }
 
 /* ------------------------------------------------------------------------ */
-/* help bar: button icons ($home/icons/<name>.png, optional) + labels        */
+/* help bar: button icons ($home/assets/icons/<name>.png, optional) + labels */
 /* navigation for UI modules: press edges, directions auto-repeat like the carousel */
 static void nav_fill(ui_nav_t *nv, double t)
 {
@@ -1224,7 +1384,8 @@ static void nav_fill(ui_nav_t *nv, double t)
 
 /* ------------------------------------------------------------------------ */
 /* help bar: one table per set (panel.h HINTS_*), button icons from
- * $home/icons/<name>.png (loaded once, shared), fallback text when one is missing */
+ * $home/assets/icons/<name>.png (old layout: $home/icons/; loaded once, shared),
+ * fallback text when one is missing */
 typedef struct { const char *icons[3]; const char *fallback_key; const char *text_key; } hint_t;
 #define SET_HINTS 5
 static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
@@ -1272,7 +1433,8 @@ static const icon_t *icon_get(const char *home, const char *name)
    if (g_nicons >= (int)(sizeof(g_icons) / sizeof(g_icons[0]))) return NULL;
    ic = &g_icons[g_nicons++];
    snprintf(ic->name, sizeof(ic->name), "%s", name);
-   snprintf(path, sizeof(path), "%s/icons/%s.png", home, name);
+   snprintf(path, sizeof(path), "%s/assets/icons/%s.png", home, name);
+   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/icons/%s.png", home, name);   /* old layout */
    if ((sf = IMG_Load(path))) { ic->w = sf->w; ic->h = sf->h; ic->tex = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
    return ic;
 }
@@ -1294,7 +1456,7 @@ static void hints_reload(void)
       }
 }
 
-/* icons once ($home/icons/<name>.png), then the texts */
+/* icons once ($home/assets/icons/<name>.png), then the texts */
 static void hints_load(const char *home)
 {
    int s, i, k;
@@ -1423,11 +1585,85 @@ static void bg_draw(const bgtex_t *b, float alpha, double t)
    draw_2d(b->tex, (W - w) * 0.5f + 12.0f * sinf((float)t * 0.05f), (H - h) * 0.5f, w, h, c, 0);
 }
 
+/* ------------------------------------------------------------------------ */
+/* library: tab logos / names and the live rescan                            */
+static void platforms_load_art(void)
+{
+   int i;
+   for (i = 0; i < g_nplat; i++)
+   {
+      platform_t *p = &g_plat[i];
+      if (p->logo[0])
+      {
+         SDL_Surface *ls = IMG_Load(p->logo);
+         if (ls) { p->logo_w = ls->w; p->logo_h = ls->h; p->logo_tex = surface_to_tex(ls, 1, NULL); SDL_FreeSurface(ls); }
+         else logf_("[%s] logo not found: %s", p->id, p->logo);
+      }
+      if (!p->logo_tex) p->show_name = 1;
+      if (p->show_name) p->label = text_tex(g_font_small, p->name, &p->label_w, &p->label_h);
+   }
+}
+
+static int g_lib_rescan;   /* set by ui_library_changed(), handled at the top of the next frame */
+
+/* a setting that changes which systems are listed (show_stock_games) */
+void ui_library_changed(void) { g_lib_rescan = 1; }
+
+/* Re-read the declarations and every library without restarting: GPU resources of
+ * the old library are freed, the cover worker's in-flight result is dropped (cv_gen),
+ * and the selection follows the same game (system id + content path), else the same
+ * system, else the first one. Returns the new (platform, game-in-platform). */
+static void library_rescan(int *sel_plat, int *sel)
+{
+   char sys[32] = "", content[512] = "";
+   double t0 = now_s();
+   int i, p, k;
+   if (*sel_plat >= 0 && *sel_plat < g_nplat)
+   {
+      snprintf(sys, sizeof(sys), "%s", g_plat[*sel_plat].id);
+      if (*sel >= 0 && *sel < g_plat[*sel_plat].count)
+         snprintf(content, sizeof(content), "%s", g_games[g_plat[*sel_plat].first + *sel].content);
+   }
+   for (i = 0; i < g_ngames; i++) game_free_tex(&g_games[i]);
+   for (p = 0; p < g_nplat; p++)
+   {
+      if (g_plat[p].label) glDeleteTextures(1, &g_plat[p].label);
+      if (g_plat[p].logo_tex) glDeleteTextures(1, &g_plat[p].logo_tex);
+   }
+   SDL_LockMutex(cv_mx);
+   cv_gen++;
+   /* a queued (not started) request or a finished result is for the old indices; one
+    * being decoded comes back with the old generation and is dropped on arrival */
+   if (cv_req >= 0) { cv_req = -1; cv_busy = 0; }
+   if (cv_done >= 0) { if (cv_surf) SDL_FreeSurface(cv_surf); cv_surf = NULL; cv_done = -1; cv_busy = 0; }
+   SDL_UnlockMutex(cv_mx);
+   g_ngames = 0; g_nplat = 0;
+   load_systems();
+   scan_all();
+   build_platform_index();
+   platforms_load_art();
+   *sel_plat = 0; *sel = 0;
+   for (p = 0; p < g_nplat; p++)
+      if (!strcmp(g_plat[p].id, sys))
+      {
+         *sel_plat = p;
+         for (k = 0; k < g_plat[p].count; k++)
+            if (!strcmp(g_games[g_plat[p].first + k].content, content)) { *sel = k; break; }
+         break;
+      }
+   for (i = 0; i < g_ngames; i++)   /* the new boxes fly in like at start */
+   {
+      game_t *g = &g_games[i];
+      g->x.x = 6.0f + (i % 8) * 0.6f; g->z.x = -3.0f; g->ry.x = -1.2f; g->sc.x = 1.0f; g->al.x = 0.0f;
+   }
+   logf_("library rescan: games %d, platforms %d, %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
+}
+
 int main(int argc, char **argv)
 {
-   char font_b[300], font_r[300], padb[300];
-   const char *fonts_bold[] = { font_b, "/usr/share/fonts/ttf/LiberationSans-Bold.ttf", NULL };
-   const char *fonts_reg[]  = { font_r, "/usr/share/fonts/ttf/LiberationSans-Regular.ttf", NULL };
+   char font_b[300], font_r[300], font_b_old[300], font_r_old[300], padb[300];
+   const char *fonts_bold[] = { font_b, font_b_old, "/usr/share/fonts/ttf/LiberationSans-Bold.ttf", NULL };
+   const char *fonts_reg[]  = { font_r, font_r_old, "/usr/share/fonts/ttf/LiberationSans-Regular.ttf", NULL };
    const char *log_path = NULL;
    int start_attract = 0, focus_demo = 0, home_plat = 0, home_sel = 0, att_prev = 0;
    double last_activity = 0;
@@ -1452,10 +1688,13 @@ int main(int argc, char **argv)
    }
    snprintf(g_core_dir, sizeof(g_core_dir), "%s/cores", g_home);
    snprintf(g_state, sizeof(g_state), "%s/state.txt", g_home);
-   snprintf(font_b, sizeof(font_b), "%s/fonts/bold.ttf", g_home);
-   snprintf(font_r, sizeof(font_r), "%s/fonts/regular.ttf", g_home);
+   snprintf(font_b, sizeof(font_b), "%s/assets/fonts/bold.ttf", g_home);
+   snprintf(font_r, sizeof(font_r), "%s/assets/fonts/regular.ttf", g_home);
+   snprintf(font_b_old, sizeof(font_b_old), "%s/fonts/bold.ttf", g_home);      /* old layout */
+   snprintf(font_r_old, sizeof(font_r_old), "%s/fonts/regular.ttf", g_home);
    snprintf(padb, sizeof(padb), "%s/gamecontrollerdb.txt", g_home);
    if (log_path) g_log = fopen(log_path, "w");
+   atexit(log_sync_atexit);
    logf_("lumen %s start", LUMEN_VERSION);
 
    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0)
@@ -1521,18 +1760,7 @@ int main(int argc, char **argv)
    scan_all();
    build_platform_index();
    logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
-   for (i = 0; i < g_nplat; i++)
-   {
-      platform_t *p = &g_plat[i];
-      if (p->logo[0])
-      {
-         SDL_Surface *ls = IMG_Load(p->logo);
-         if (ls) { p->logo_w = ls->w; p->logo_h = ls->h; p->logo_tex = surface_to_tex(ls, 1, NULL); SDL_FreeSurface(ls); }
-         else logf_("[%s] logo not found: %s", p->id, p->logo);
-      }
-      if (!p->logo_tex) p->show_name = 1;
-      if (p->show_name) p->label = text_tex(g_font_small, p->name, &p->label_w, &p->label_h);
-   }
+   platforms_load_art();
 
    /* resume last selection */
    {
@@ -1592,7 +1820,15 @@ int main(int argc, char **argv)
    while (running)
    {
       SDL_Event e; double t = now_s(); float dt = (float)(t - last);
-      platform_t *pl = g_nplat ? &g_plat[sel_plat] : NULL;
+      platform_t *pl;
+      if (g_lib_rescan && play_t < 0)
+      {
+         g_lib_rescan = 0;
+         library_rescan(&sel_plat, &sel);
+         home_plat = sel_plat; home_sel = sel; sel_t = t;
+         info_y.x = 18.0f; info_a.x = 0.0f;
+      }
+      pl = g_nplat ? &g_plat[sel_plat] : NULL;
       int n = pl ? pl->count : 0, move = 0, plat_move = 0, play = 0, att_swallow, restore = -1;
       if (dt > 0.05f) dt = 0.05f;
       last = t;
@@ -1715,6 +1951,7 @@ int main(int argc, char **argv)
          SDL_Surface *cs = NULL; float avg[3];
          SDL_LockMutex(cv_mx);
          if (cv_done >= 0) { done = cv_done; cs = cv_surf; memcpy(avg, cv_avg, sizeof(avg)); cv_done = -1; cv_surf = NULL; cv_busy = 0; }
+         if (done >= 0 && cv_done_gen != cv_gen) { done = -1; if (cs) SDL_FreeSurface(cs); cs = NULL; }   /* before a rescan */
          SDL_UnlockMutex(cv_mx);
          if (done >= 0)
          {
@@ -2126,6 +2363,7 @@ int main(int argc, char **argv)
 
       SDL_GL_SwapWindow(win);
       frames++;
+      log_tick();
       {  /* bench: <home>/bench present -> measure with one effect off at a time */
          static int bench = -1, step; static double bt, bframes;
          static const char *names[] = { "all", "no-vignette", "no-reflection", "no-glass", "no-side-cases", "no-text", "bare" };

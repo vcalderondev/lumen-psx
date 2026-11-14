@@ -45,6 +45,7 @@ section.language = Sprache
 section.profile = Profil
 section.screensaver = Bildschirmschoner
 section.graphics = Grafik
+section.library = Bibliothek
 section.about = Info
 value.on = An
 value.off = Aus
@@ -85,6 +86,12 @@ gfx.original = Original
 gfx.enhanced = Verbessert
 gfx.note = „Verbessert“ erhöht die Auflösung oder glättet das Bild; manche Spiele laufen langsamer.
 gfx.none = Kein System bietet verbesserte Grafik
+
+# Bibliothek
+lib.stock = Vorinstallierte Spiele
+lib.hidden = Ausgeblendet
+lib.visible = Sichtbar
+lib.stock_note = Die 20 Spiele, die auf der Konsole vorinstalliert sind. Nur lesbar: Spielstände landen im aktiven Profil.
 
 # Info
 about.version = Version

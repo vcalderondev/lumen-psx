@@ -45,6 +45,7 @@ section.language = Lingua
 section.profile = Profilo
 section.screensaver = Salvaschermo
 section.graphics = Grafica
+section.library = Libreria
 section.about = Informazioni
 value.on = Sì
 value.off = No
@@ -85,6 +86,12 @@ gfx.original = Originale
 gfx.enhanced = Migliorata
 gfx.note = «Migliorata» aumenta la risoluzione o ammorbidisce l'immagine; alcuni giochi potrebbero rallentare.
 gfx.none = Nessun sistema offre grafica migliorata
+
+# libreria
+lib.stock = Giochi preinstallati
+lib.hidden = Nascosti
+lib.visible = Visibili
+lib.stock_note = I 20 giochi inclusi nella console. Sola lettura: i salvataggi vanno nel profilo attivo.
 
 # informazioni
 about.version = Versione

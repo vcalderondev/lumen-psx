@@ -41,13 +41,20 @@ USB layout:
 /lumen/lumen.conf             optional: RETROARCH=..., LUMEN_MAIN_SAVES/STATES,
                               LUMEN_CORE_OPT_DIR, run_retroarch() override
 /lumen/gamecontrollerdb.txt   controller mappings
-/lumen/fonts/{regular,bold}.ttf   optional, defaults to the system Liberation Sans
+/lumen/assets/                runtime art (assets/README.md): splash.png, icons/<name>.png,
+                              fonts/{regular,bold}.ttf (optional, default: the system
+                              Liberation Sans), systems/<id>/logo.png and sounds;
+                              installs that keep icons/, fonts/ and systems/<id>/ art
+                              directly under /lumen still work (fallback)
 /lumen/cores/*.so             libretro cores (PlayStation: pcsx_rearmed_libretro.so)
-/lumen/state.txt, logs/       last selection, logs
+/lumen/state.txt, logs/       last selection, logs (lumen.log and buttons.log are fsync'ed
+                              at most once per second, at once for error lines, and at
+                              exit, so they survive a power-off on the exFAT stick)
 /lumen/settings.ini           settings (key=value; created with the defaults on first exit)
 /lumen/lang/<code>.lang       UI translations (es, en, pt, fr, de, it)
 /lumen/profiles/<id>/         one folder per extra profile: profile.ini, saves/, states/
 /lumen/systems/<id>.ini       one declaration per system (docs/systems.md)
+/lumen/systems/psxstock.games metadata of the console's built-in games (layout = stock)
 /games/<id>/...               one library per system, e.g.
 /games/psx/<n>/Game.ini, <disc>.cue, <disc>.png, disc.png, background.jpg
 /games/snes/<name>.sfc, <name>.png, <name>-cart.png, <name>-background.jpg
@@ -70,7 +77,8 @@ the Spanish key set and keeps its placeholders.
 
 `settings.ini` holds one `key=value` per line; unknown keys are kept. Keys:
 `language`, `profile`, `screensaver_minutes` (0 = off), `demo_enabled`, `demo_seconds`,
-`attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`), `version`.
+`attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`),
+`show_stock_games` (`0`/`1`), `version`.
 It is written atomically (temporary file + rename) and only when something changed.
 
 ## Enhanced graphics
@@ -145,7 +153,8 @@ Backspace (back), Escape (leave).
 Pages: **Language** (applied live, no restart), **Profile** (switch, create, rename,
 colour, delete), **Screensaver** (start
 after Never/1–30 min, game demos on/off, length of each demo, preview), **Graphics**
-(per-system presets; empty until a system declares them) and **About** (version,
+(per-system presets; empty until a system declares them), **Library** (built-in games
+Hidden / Visible, rescanned live) and **About** (version,
 games, systems, profiles, free space on the USB). Changes are written to `settings.ini` when
 the panel closes.
 
