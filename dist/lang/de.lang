@@ -190,3 +190,6 @@ welcome.p4.l1 = Links und rechts wählen das Spiel; L1 und R1 blättern um
 welcome.p4.l2 = L2 und R2 wechseln die Konsole
 welcome.p4.l3 = Kreuz startet; Select öffnet die Einstellungen
 welcome.p4.l4 = Im Spiel führt Reset zurück zu Lumen; Select + Start beendet zu Sonys Menü
+power.button = POWER-Taste
+power.off = Ausschalten
+power.suspend = Standby

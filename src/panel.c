@@ -68,7 +68,7 @@ enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
        ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500,
-       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_INFO = 900 };
+       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_PWR_BUTTON = 800, ID_INFO = 900 };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
  * next boot (settings display / scanout). The compositor is not a choice: boot.sh runs
@@ -251,6 +251,11 @@ static void page_build(void)
       snprintf(v, sizeof(v), "%s  \xC2\xB7  %s", out_in_use_1080() ? "1080p" : "720p", tr(k_comp_key[comp_in_use()]));
       r = row_add(R_ACTION, P_DISPLAY, tr("section.display"), v);
       if (r) r->enter = 1;
+      {  /* POWER button: power off (default) or Sony's suspend; read by lumen-buttons */
+         int sus = !strcmp(settings_get("power_button", "off"), "suspend");
+         if ((r = row_add(R_CHOICE, ID_PWR_BUTTON, tr("power.button"), tr(sus ? "power.suspend" : "power.off"))))
+         { r->at_lo = !sus; r->at_hi = sus; }
+      }
       r = row_add(R_ACTION, P_GRAPHICS, tr("section.graphics"), NULL);
       if (r) r->enter = 1;
       r = row_add(R_ACTION, P_LIBRARY, tr("section.library"), NULL);
@@ -584,6 +589,10 @@ static void row_change(const row_t *r, int dir)
       break;
    case ID_DSP_SCANOUT:
       settings_set_int("scanout", dir > 0);
+      break;
+   case ID_PWR_BUTTON:
+      settings_set("power_button", dir > 0 ? "suspend" : "off");
+      settings_save();   /* lumen-buttons reads settings.ini on change */
       break;
    case ID_SND_VOLUME:
       i = music_volume() + dir * VOL_STEP;

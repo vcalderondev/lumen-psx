@@ -190,3 +190,6 @@ welcome.p4.l1 = Gauche et droite choisissent le jeu ; L1 et R1 changent de page
 welcome.p4.l2 = L2 et R2 changent de console
 welcome.p4.l3 = Croix lance le jeu ; Select ouvre les réglages
 welcome.p4.l4 = En jeu, Reset revient à Lumen ; Select + Start quitte vers le menu de Sony
+power.button = Bouton POWER
+power.off = Éteindre
+power.suspend = Mettre en veille
