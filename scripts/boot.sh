@@ -238,7 +238,9 @@ cp "${LUMEN_HOME}/power.sh" /tmp/lumen-power.sh 2>/dev/null
 if [ -x "${LUMEN_HOME}/lumen-buttons" ] || chmod +x "${LUMEN_HOME}/lumen-buttons" 2>/dev/null; then
   "${LUMEN_HOME}/lumen-buttons" --log "${LOG}/buttons.log" > /tmp/lumen-buttons.out 2>&1 &
   BUTTONS_PID=$!
-  for i in 1 2 3 4 5 6 7 8 9 10; do grep -q ready /tmp/lumen-buttons.out 2>/dev/null && break; sleep 0.1; done
+  # up to 5 s: the first start from a cold FAT32 stick took longer than 1 s (POWER then
+  # stayed disabled for the whole session)
+  i=0; while [ $i -lt 50 ] && ! grep -q ready /tmp/lumen-buttons.out 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
 fi
 if [ -n "${BUTTONS_PID}" ] && grep -q ready /tmp/lumen-buttons.out 2>/dev/null; then
   # POWER: Sony's suspend works but the resume does not come back yet (under work); it is

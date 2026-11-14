@@ -33,6 +33,8 @@ from the USB stick. Built from upstream sources by
 | RetroArch | — (Sony's own `pcsx`) | 1.8.8 | **1.22.2** | USB (`lumen/retroarch`) |
 | PCSX-ReARMed | — | PSC fork (2019) | **upstream** `libretro/pcsx_rearmed` (2026-10) | USB (`lumen/cores`) |
 | Joypad profiles | — | RetroArch 1.8.8 set | **v1.22.0** | USB |
+| Boot hook | — | Eris' loader | **Lumen's payload** (RAM only) | USB (`d8781dae-…/`) |
+| overlayfs, xpad | not in the kernel | flashed Eris kernel | **modules from RAM** (stock kernel) | USB (in the payload) |
 
 Kept from the console, unchanged: Linux 4.4.22, glibc 2.24, the PowerVR GE8300 driver
 (DDK 1.9) with its Mesa 17 EGL / GLES / `libgbm` (closed, it cannot be replaced; a gbm
@@ -49,6 +51,20 @@ against the console's own libraries) exposed as `psc-env` + `psc-check`:
 ```
 
 ## Install
+
+From a release (no Project Eris, any PlayStation Classic):
+1. Format a USB stick FAT32 with the name `SONY`. exFAT works only on consoles already
+   modded with Project Eris or BleemSync.
+2. Unzip `lumen-psx-vX.Y.Z.zip` from
+   [Releases](https://github.com/vcalderondev/lumen-psx/releases) at the root of the stick.
+3. Plug it in and power on.
+
+The zip carries Lumen's own boot payload (`d8781dae-…/LDIAG.BIN`, from psc-platform's
+`boot/`). Sony's USB hook runs it from the stick: it shows the splash and starts Lumen
+from RAM, and writes nothing to the console. To get the original menu back, create an
+empty `lumen/disable-boot` on the stick.
+
+From a checkout, onto an existing stick:
 
 ```sh
 tools/install.sh --cores <dir with *_libretro.so>   # -> USB:/lumen
