@@ -227,6 +227,9 @@ fi
 dmesg > "${LOG}/kernel.log" 2>/dev/null
 ( while IFS= read -r kl; do printf '%s\n' "$kl" >> "${LOG}/kernel.log"; sync; done < /proc/kmsg ) &
 KLOG_PID=$!
+# Sony's power manager (power_manage: POWER -> prepare_suspend / apps_okay -> suspend to
+# RAM) logs to /tmp/power.log: copied to the USB line by line, for the POWER button
+( tail -f /tmp/power.log 2>/dev/null | while IFS= read -r pl; do printf '%s %s\n' "$(date +%T)" "$pl" >> "${LOG}/power.log"; sync; done ) &
 
 # 2. Lumen session
 # the one-shot marker only guards the window until a frame is on screen: Lumen writes
