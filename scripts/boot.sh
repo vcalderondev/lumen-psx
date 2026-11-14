@@ -27,13 +27,30 @@ if ! systemctl status weston.service | grep -qE 'active\s+\(running\)'; then
   systemctl restart weston.service
 fi
 /usr/bin/wait_sdl
-echo 2 > /data/power/disable          # power button ignored while Lumen runs
+
+# console buttons: POWER suspends (handshake with the system power manager),
+# RESET quits a running game. Only hand POWER to the system if the daemon runs.
+rm -f /data/power/prepare_suspend /data/power/apps_okay
+BUTTONS_PID=""
+if [ -x "${LUMEN_HOME}/lumen-buttons" ] || chmod +x "${LUMEN_HOME}/lumen-buttons" 2>/dev/null; then
+  "${LUMEN_HOME}/lumen-buttons" --log "${LOG}/buttons.log" > /tmp/lumen-buttons.out 2>&1 &
+  BUTTONS_PID=$!
+  for i in 1 2 3 4 5 6 7 8 9 10; do grep -q ready /tmp/lumen-buttons.out 2>/dev/null && break; sleep 0.1; done
+fi
+if [ -n "${BUTTONS_PID}" ] && grep -q ready /tmp/lumen-buttons.out 2>/dev/null; then
+  echo 1 > /data/power/disable        # power manager suspends after our apps_okay
+  echo "buttons daemon running (${BUTTONS_PID})"
+else
+  echo 2 > /data/power/disable        # no daemon: keep POWER ignored
+  echo "buttons daemon not running"
+fi
 
 # 2. Lumen session
 sh "${LUMEN_HOME}/run.sh"
 echo "session ended: $?"
 
 # 3. stock Sony menu (internal games); power button handled by Sony's power manager
+[ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
 echo "starting stock menu"
 killall -s TERM sdl_display 2>/dev/null
 rm -f /data/power/prepare_suspend /data/power/apps_okay

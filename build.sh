@@ -12,5 +12,8 @@ $CC $PSC_FLAGS -O2 -std=gnu11 -Wall -Wno-unused-function -Wno-format-truncation 
    -lSDL2 -lSDL2_image -lSDL2_ttf -lGLESv2 -lm -lpthread 2>&1 | grep -v "dynsym local symbol" || true
 [ -f out/lumen ] || { echo "build failed"; exit 1; }
 $STRIP out/lumen
-ls -la out/lumen
-psc-check out/lumen
+rm -f out/lumen-buttons
+$CC $PSC_FLAGS -O2 -std=gnu11 -Wall src/buttons.c -o out/lumen-buttons
+$STRIP out/lumen-buttons
+ls -la out/lumen out/lumen-buttons
+psc-check out/lumen out/lumen-buttons
