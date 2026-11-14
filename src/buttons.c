@@ -354,9 +354,14 @@ static void ra_cmd(const char *cmd)
    if (sendto(s, cmd, strlen(cmd), 0, (struct sockaddr *)&a, sizeof(a)) < 0) logf_("ra_cmd %s: %s", cmd, strerror(errno));
    close(s);
 }
-/* discs of the running game: an .m3u playlist lists one per line (1 for anything else) */
+/* discs of the running game: run.sh writes the count to /tmp/lumen-discs (it builds an
+ * .m3u for a multi-disc folder) */
 static int game_discs(void)
 {
+   FILE *g = fopen("/tmp/lumen-discs", "r");
+   int c = 0;
+   if (g) { if (fscanf(g, "%d", &c) != 1) c = 0; fclose(g); if (c > 0) return c; }
+   {
    char line[700], content[600] = "";
    int n = 0, ln = 0;
    FILE *f = fopen("/tmp/lumen-launch", "r");
@@ -375,6 +380,7 @@ static int game_discs(void)
    while (fgets(line, sizeof(line), f)) if (line[0] && line[0] != '#' && line[0] != '\r' && line[0] != '\n') n++;
    fclose(f);
    return n > 1 ? n : 1;
+   }
 }
 /* OPEN in a game: pause it and ask (lumen --dialog), then act on the answer */
 static void open_in_game(void)
@@ -454,6 +460,8 @@ int main(int argc, char **argv)
             f = open(okay, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (f >= 0) close(f);
             acked = 1;
+            logf_("power: apps_okay sent (resume_count %ld)", resume0);
+            log_sync(1);
          }
       }
       else if (acked) acked = 0;
