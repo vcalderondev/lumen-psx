@@ -41,6 +41,9 @@ cp psc/retroarch.cfg "$L/retroarch/retroarch.cfg"
 sed -n 's/^retroarch=//p' "$PF/versions.txt" | head -1 > "$L/retroarch/VERSION"
 [ -s "$L/retroarch/VERSION" ] || echo "RetroArch 1.22" > "$L/retroarch/VERSION"
 cp "$PF"/*_libretro.so "$L/cores/"
+# crash reporter: RetroArch crashes leave logs/crash.log (symbols: retroarch.debug in the
+# psc-platform release)
+[ -f "$PF/psc-crash.so" ] && { mkdir -p "$L/debug"; cp "$PF/psc-crash.so" "$L/debug/"; }
 cp psc/execute "$ST/boot/project_eris/bin/execute"
 { echo "Lumen PSX $VER"; echo; cat "$PF/versions.txt"; } > "$L/VERSION"
 cp LICENSE "$ST/LICENSE"

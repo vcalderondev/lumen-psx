@@ -22,6 +22,8 @@ upstream PCSX-ReARMed, on a PSC compositor built from source.
 - L1/R1 change the page of games, L2/R2 change the platform.
 - PS5-style dashboard: translucent pill tabs, Outfit font, Settings as a full section,
   dark scrim over the art, MSAA 2x; design guidelines in docs/.
+- Crash reporter for RetroArch (`lumen/debug/psc-crash.so`): a crash leaves
+  `logs/crash.log`.
 - Release workflow: builds Lumen, takes the pinned psc-platform release
   (`platform.lock`) and publishes the USB package with this changelog.
 
