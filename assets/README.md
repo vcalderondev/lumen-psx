@@ -5,11 +5,11 @@ Everything visual that Lumen ships lives here and is installed to
 
 | Path | What |
 |---|---|
-| `splash.png` | 1280x720 boot screen, shown by the Eris loader before Lumen starts (`tools/install-lumen-boot.sh` copies it to the loader theme): plain black until the Lumen PSX mark is designed |
+| `splash.png` | 1280x720 boot screen, shown by the boot payload (psc-platform `boot/`, `lumen-splash`) before Lumen starts: the LPSX logo with its letters dark (unfilled), exactly where Lumen's own splash then fills them (`tools/make-brand.py`) |
 | `splash-1080.png` | the same boot screen at 1920x1080, for 1080p output |
 | `icons/<name>.png` | previous pixel-art controller icons (kept as an alternative style), pixel art authored on a 36 px grid and exported x4 (`tools/make-icons.py`); names: cross, circle, triangle, square, dpad, l1, r1, l2, r2, select, start |
 | `glyphs/<name>.png` | dashboard glyphs (PS5-style): flat white on transparent at 2x (64 px), tinted in the shader (`tools/make-glyphs.py`); buttons: cross, circle, triangle, square, dpad, l1, r1, l2, r2, select, start; status: pad, network, clock; top: info, gallery, settings; media badges: disc, cartridge, coin |
-| `brand/` | Lumen PSX brand (from lumen-web `public/brand/`, palette and rules in `brand/README.md`, a copy of the site's): `logo-front.svg`, `logo.svg`, `mark.svg` are the sources; `tools/make-brand.py` renders the PNGs the console uses, in their own colours: `logo-front.png` (dashboard top bar, 720p, 3 px per voxel), `logo-front-1080.png` (the same at 1080p), `logo.png` (isometric, 632 px wide, for boot screens), `mark.png` (the L, 254 px tall). Only the PNGs are installed |
+| `brand/` | Lumen PSX brand (from lumen-web `public/brand/`, palette and rules in `brand/README.md`, a copy of the site's): `logo-front.svg`, `logo.svg`, `mark.svg` are the sources; `tools/make-brand.py` renders the PNGs the console uses, in their own colours: `logo-front.png` (dashboard top bar, 720p, 3 px per voxel), `logo-front-1080.png` (the same at 1080p), `logo-front-splash[-1080].png` (startup splash, 10 px per voxel at 720p), `logo.png` (isometric, 632 px wide, for boot screens), `mark.png` (the L, 254 px tall). Only the PNGs are installed |
 | `fonts/{regular,medium,semibold,bold}.ttf` | UI font: Outfit (SIL Open Font License, `fonts/OFL.txt`, github.com/Outfitio/Outfit-Fonts); without them the system Liberation Sans is used |
 | `systems/<id>/<logo>` | optional tab logo of each declared system (`[system] logo`, usually `logo.png`); a value with a `/` (`psx/logo.png`) shares another system's art |
 | `systems/<id>/<sound>` | optional launch sound (`[animation] sound`) |

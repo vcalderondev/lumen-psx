@@ -7,6 +7,10 @@ are plain <rect>/<polygon> geometry, so they are rasterized here directly with P
 
   logo-front.png       frontal LPSX for the dashboard top bar at 720p: 3 px per voxel
   logo-front-1080.png  the same at 1080p (1.5x: 4.5 px per voxel)
+  logo-front-splash.png       the startup splash's logo at 720p: 10 px per voxel
+  logo-front-splash-1080.png  the same at 1080p (15 px per voxel)
+  ../splash.png, ../splash-1080.png  the boot payload's splash: black with the splash logo
+                       dark (unfilled), exactly where Lumen's own splash draws it first
   logo.png             isometric LPSX (primary logo), 640 px wide: boot / splash screens
   mark.png             the L of four cubes, 256 px tall: small sizes
 
@@ -53,8 +57,31 @@ def save(im, path):
     print(f'{path}: {im.width}x{im.height}')
 
 
+DARK = 0.22    # brightness of an unfilled letter (src/main.c: SPLASH_DARK)
+
+
+def splash(logo, fs, path):
+    """the first splash frame: Lumen centres the logo on the 1280x720 layout, floors to
+    whole layout px, then snaps to device px (src/main.c logo_origin, draw_2d)"""
+    import math
+    W, H = int(1280 * fs), int(720 * fs)
+    x = math.floor(math.floor(640 - logo.width / fs / 2) * fs + 0.5)
+    y = math.floor(math.floor(360 - logo.height / fs / 2) * fs + 0.5)
+    r, g, b, a = logo.split()
+    dark = Image.merge('RGBA', [c.point(lambda v: round(v * DARK)) for c in (r, g, b)] + [a])
+    out = Image.new('RGB', (W, H), (0, 0, 0))
+    out.paste(dark, (x, y), dark)
+    out.save(f'{D}/{path}', optimize=True)
+    print(f'{path}: {W}x{H}, logo at {x},{y}')
+
+
 save(render('logo-front', 3.0 / VOXEL), 'logo-front.png')
 save(render('logo-front', 4.5 / VOXEL), 'logo-front-1080.png')
+big, big1080 = render('logo-front', 10.0 / VOXEL), render('logo-front', 15.0 / VOXEL)
+save(big, 'logo-front-splash.png')
+save(big1080, 'logo-front-splash-1080.png')
+splash(big, 1.0, '../splash.png')
+splash(big1080, 1.5, '../splash-1080.png')
 svg = open(f'{D}/logo.svg').read()
 save(render('logo', 640 / float(re.search(r'viewBox="[^ ]+ [^ ]+ ([^ ]+)', svg).group(1))), 'logo.png')
 svg = open(f'{D}/mark.svg').read()
