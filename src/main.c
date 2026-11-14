@@ -11,6 +11,7 @@
  *     frontend exits with code 10 and writes the launch request to
  *     /tmp/lumen-launch (core path + content path) for scripts/run.sh
  *   - Select+Start (or Escape) exits with code 0 (back to the Sony menu)
+ *   - Triangle opens the settings panel (src/panel.c)
  *
  * Usage: lumen [--root /media] [--home /media/lumen] [--log file]
  */
@@ -29,6 +30,7 @@
 #include "lumen.h"
 #include "i18n.h"
 #include "settings.h"
+#include "panel.h"
 #include "version.h"
 
 #define TEX_WINDOW 6       /* covers kept on the GPU around the selection */
@@ -352,7 +354,7 @@ static void build_platform_index(void)
 /* GL resources                                                              */
 static GLuint g_prog_box, g_prog_2d, g_vbo_quad, g_vao_quad;
 static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam, u_phase, u_refl;
-static GLint  u2_mvp, u2_tex, u2_color, u2_mode;
+static GLint  u2_mvp, u2_tex, u2_color, u2_mode, u2_rect;
 static GLuint g_white;
 TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
 
@@ -446,8 +448,17 @@ static const char *VS_2D =
 static const char *FS_2D =
    "#version 300 es\n"
    "precision mediump float;\n"
-   "in vec2 v_uv; uniform sampler2D tex; uniform vec4 color; uniform int mode; out vec4 frag;\n"
+   "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color; uniform int mode; uniform highp vec4 rect; out vec4 frag;\n"
    "void main(){\n"
+   "  if (mode==5) { highp vec2 hs = rect.xy * 0.5; highp float r = min(rect.z, min(hs.x, hs.y));\n"
+   "                 highp vec2 q = abs((v_uv - 0.5) * rect.xy) - (hs - vec2(r));\n"
+   "                 highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
+   "                 float edge = clamp(0.5 - d, 0.0, 1.0);\n"
+   "                 float bw = clamp(d + 2.0, 0.0, 1.0) * rect.w;\n"
+   "                 vec3 fill = color.rgb + vec3(mix(0.06, -0.04, v_uv.y));\n"
+   "                 float a = bw + color.a * (1.0 - bw);\n"
+   "                 vec3 c = (vec3(bw) + fill * color.a * (1.0 - bw)) / max(a, 0.001);\n"
+   "                 frag = vec4(c, a * edge); return; }\n"
    "  vec4 t = texture(tex, v_uv);\n"
    "  if (mode==1) { vec2 d = abs(v_uv - 0.5) * 2.0; float r = length(max(d - vec2(0.82, 0.0), 0.0)) ;\n"
    "                 float a = 1.0 - smoothstep(0.96, 1.0, max(d.y, r)); frag = vec4(color.rgb, color.a * a); return; }\n"
@@ -510,6 +521,7 @@ static void gl_setup(void)
    u2_tex = glGetUniformLocation(g_prog_2d, "tex");
    u2_color = glGetUniformLocation(g_prog_2d, "color");
    u2_mode = glGetUniformLocation(g_prog_2d, "mode");
+   u2_rect = glGetUniformLocation(g_prog_2d, "rect");
 
    glGenVertexArrays(1, &g_vao_quad);
    glBindVertexArray(g_vao_quad);
@@ -577,6 +589,19 @@ GLuint text_tex(TTF_Font *f, const char *s, int *w, int *h)
    SDL_Surface *surf; GLuint t;
    if (!f || !s || !*s) { *w = *h = 0; return 0; }
    surf = TTF_RenderUTF8_Blended(f, s, white);
+   if (!surf) { *w = *h = 0; return 0; }
+   *w = surf->w; *h = surf->h;
+   t = surface_to_tex(surf, 0, NULL);
+   SDL_FreeSurface(surf);
+   return t;
+}
+
+GLuint text_tex_wrapped(TTF_Font *f, const char *s, int wrap_px, int *w, int *h)
+{
+   SDL_Color white = { 255, 255, 255, 255 };
+   SDL_Surface *surf; GLuint t;
+   if (!f || !s || !*s) { *w = *h = 0; return 0; }
+   surf = TTF_RenderUTF8_Blended_Wrapped(f, s, white, (Uint32)wrap_px);
    if (!surf) { *w = *h = 0; return 0; }
    *w = surf->w; *h = surf->h;
    t = surface_to_tex(surf, 0, NULL);
@@ -882,6 +907,13 @@ void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4]
    glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
+/* glass rounded rectangle (mode 5): the shader needs the size in pixels for its distance field */
+void draw_round_rect(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha)
+{
+   glUniform4f(u2_rect, w, h, radius, border_alpha);
+   draw_2d(0, x, y, w, h, rgba, 5);
+}
+
 /* ------------------------------------------------------------------------ */
 void label_set(label_t *l, TTF_Font *f, const char *s)
 {
@@ -1001,17 +1033,18 @@ static void bg_request(const char *path)
 
 /* ------------------------------------------------------------------------ */
 /* input: game controllers + raw joysticks mapped to logical actions         */
-enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_BACK, IN_START, IN_SELECT, IN_COUNT };
+enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_BACK, IN_START, IN_SELECT, IN_OPTIONS, IN_COUNT };
 static int           in_down[IN_COUNT];     /* current state                  */
 static int           in_pressed[IN_COUNT];  /* edge this frame                */
 static SDL_JoystickID in_ctrl_ids[8];       /* joysticks opened as controllers */
 static int           in_nctrl;
+static double        in_last_activity;      /* last input of any kind (attract, step 5) */
 int                  g_want_settings;   /* set when Select is tapped alone; consumed by the settings panel */
 
 static void in_set(int b, int down)
 {
    if (b < 0) return;
-   if (down && !in_down[b]) in_pressed[b] = 1;
+   if (down && !in_down[b]) { in_pressed[b] = 1; in_last_activity = now_s(); }
    in_down[b] = down;
 }
 
@@ -1048,6 +1081,8 @@ static int in_raw_button(int b)
 {
    switch (b)
    {
+   case 0: return IN_OPTIONS;
+   case 3: return IN_BACK;
    case 2: return IN_PLAY;
    case 1: return IN_BACK;
    case 6: return IN_L1;
@@ -1061,12 +1096,16 @@ static int in_raw_button(int b)
 static void in_axis(int axis, int value)
 {
    int neg = value < -16000, pos = value > 16000;
+   if (neg || pos) in_last_activity = now_s();
    if (axis == 0) { in_set(IN_LEFT, neg); in_set(IN_RIGHT, pos); }
    if (axis == 1) { in_set(IN_UP, neg); in_set(IN_DOWN, pos); }
 }
 
 static void in_event(const SDL_Event *e)
 {
+   if (e->type == SDL_KEYDOWN || e->type == SDL_CONTROLLERBUTTONDOWN || e->type == SDL_JOYBUTTONDOWN ||
+       (e->type == SDL_JOYHATMOTION && e->jhat.value != SDL_HAT_CENTERED))
+      in_last_activity = now_s();
    switch (e->type)
    {
    case SDL_JOYDEVICEADDED:
@@ -1087,7 +1126,8 @@ static void in_event(const SDL_Event *e)
       case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: b = IN_L1; break;
       case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: b = IN_R1; break;
       case SDL_CONTROLLER_BUTTON_A: b = IN_PLAY; break;
-      case SDL_CONTROLLER_BUTTON_B: b = IN_BACK; break;
+      case SDL_CONTROLLER_BUTTON_B: case SDL_CONTROLLER_BUTTON_X: b = IN_BACK; break;
+      case SDL_CONTROLLER_BUTTON_Y: b = IN_OPTIONS; break;
       case SDL_CONTROLLER_BUTTON_START: b = IN_START; break;
       case SDL_CONTROLLER_BUTTON_BACK: b = IN_SELECT; break;
       }
@@ -1124,9 +1164,13 @@ static void in_event(const SDL_Event *e)
       {
       case SDLK_LEFT: b = IN_LEFT; break;
       case SDLK_RIGHT: b = IN_RIGHT; break;
-      case SDLK_UP: case SDLK_PAGEUP: b = IN_L1; break;
-      case SDLK_DOWN: case SDLK_PAGEDOWN: b = IN_R1; break;
+      case SDLK_UP: b = IN_UP; break;
+      case SDLK_DOWN: b = IN_DOWN; break;
+      case SDLK_PAGEUP: b = IN_L1; break;
+      case SDLK_PAGEDOWN: b = IN_R1; break;
       case SDLK_RETURN: b = IN_PLAY; break;
+      case SDLK_TAB: case SDLK_F1: b = IN_OPTIONS; break;
+      case SDLK_BACKSPACE: b = IN_BACK; break;
       case SDLK_ESCAPE: b = IN_SELECT; in_set(IN_START, d); break;
       }
       in_set(b, d);
@@ -1137,49 +1181,107 @@ static void in_event(const SDL_Event *e)
 
 /* ------------------------------------------------------------------------ */
 /* help bar: button icons ($home/icons/<name>.png, optional) + labels        */
+/* navigation for UI modules: press edges, directions auto-repeat like the carousel */
+static void nav_fill(ui_nav_t *nv, double t)
+{
+   static const int dirs[4] = { IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT };
+   static double next[4];
+   int *out[4], k;
+   memset(nv, 0, sizeof(*nv));
+   out[0] = &nv->up; out[1] = &nv->down; out[2] = &nv->left; out[3] = &nv->right;
+   for (k = 0; k < 4; k++)
+   {
+      if (in_pressed[dirs[k]]) { *out[k] = 1; next[k] = t + 0.32; }
+      else if (in_down[dirs[k]] && t >= next[k]) { *out[k] = 1; next[k] = t + 0.085; }
+   }
+   nv->confirm = in_pressed[IN_PLAY];
+   nv->back = in_pressed[IN_BACK];
+   nv->options = in_pressed[IN_OPTIONS];
+   nv->start = in_pressed[IN_START];
+   nv->l1 = in_pressed[IN_L1];
+   nv->r1 = in_pressed[IN_R1];
+}
+
+/* ------------------------------------------------------------------------ */
+/* help bar: one table per set (panel.h HINTS_*), button icons from
+ * $home/icons/<name>.png (loaded once, shared), fallback text when one is missing */
 typedef struct { const char *icons[3]; const char *fallback_key; const char *text_key; } hint_t;
-static const hint_t g_hints[] = {
-   { { "cross", NULL, NULL },     "btn.cross_circle", "hint.play" },
-   { { "l1", "r1", NULL },        "btn.l1_r1",        "hint.platform" },
-   { { "select", NULL, NULL },    "btn.select_start", "hint.settings" },
+#define SET_HINTS 4
+static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
+   [HINTS_CAROUSEL] = {
+      { { "cross" },    "btn.cross",        "hint.play" },
+      { { "l1", "r1" }, "btn.l1_r1",        "hint.platform" },
+      { { "select" },   "btn.select",       "hint.settings" } },
+   [HINTS_PANEL_ROOT] = {
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "circle" },   "btn.circle",       "hint.close" } },
+   [HINTS_PANEL_PAGE] = {
+      { { "dpad" },     "btn.dpad",         "hint.change" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "circle" },   "btn.circle",       "hint.back" } },
+   [HINTS_OSK] = {
+      { { "cross" },    "btn.cross",        "hint.type" },
+      { { "square" },   "btn.square",       "hint.erase" },
+      { { "start" },    "btn.start",        "hint.done" },
+      { { "triangle" }, "btn.triangle",     "hint.cancel" } },
+   [HINTS_CONFIRM] = {
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "circle" },   "btn.circle",       "hint.cancel" } },
+   [HINTS_ATTRACT] = { { { NULL }, NULL, NULL } },   /* the attract scene draws its own PRESS START */
 };
-#define NHINTS ((int)(sizeof(g_hints) / sizeof(g_hints[0])))
-typedef struct { GLuint icon[3]; int iw[3], ih[3], have_icons; GLuint fb, txt; int fbw, fbh, tw, th; } hint_gl_t;
-static hint_gl_t g_hint_gl[NHINTS];
+typedef struct { char name[16]; GLuint tex; int w, h; } icon_t;
+static icon_t g_icons[16];
+static int    g_nicons;
+typedef struct { const icon_t *icon[3]; int have_icons; GLuint fb, txt; int fbw, fbh, tw, th; } hint_gl_t;
+static hint_gl_t g_hint_gl[HINTS_COUNT][SET_HINTS];
+static float     g_hint_cx = W * 0.5f;   /* horizontal centre of the help bar */
+
+static const icon_t *icon_get(const char *home, const char *name)
+{
+   int i; char path[400]; SDL_Surface *sf; icon_t *ic;
+   for (i = 0; i < g_nicons; i++) if (!strcmp(g_icons[i].name, name)) return &g_icons[i];
+   if (g_nicons >= (int)(sizeof(g_icons) / sizeof(g_icons[0]))) return NULL;
+   ic = &g_icons[g_nicons++];
+   snprintf(ic->name, sizeof(ic->name), "%s", name);
+   snprintf(path, sizeof(path), "%s/icons/%s.png", home, name);
+   if ((sf = IMG_Load(path))) { ic->w = sf->w; ic->h = sf->h; ic->tex = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
+   return ic;
+}
 
 /* (re)build the hint texts in the active language; icons stay */
 static void hints_reload(void)
 {
-   int i;
-   for (i = 0; i < NHINTS; i++)
-   {
-      hint_gl_t *h = &g_hint_gl[i];
-      if (h->fb) glDeleteTextures(1, &h->fb);
-      if (h->txt) glDeleteTextures(1, &h->txt);
-      h->fb = h->txt = 0; h->fbw = h->fbh = h->tw = h->th = 0;
-      if (!h->have_icons)
-         h->fb = text_tex(g_font_small, tr(g_hints[i].fallback_key), &h->fbw, &h->fbh);
-      h->txt = text_tex(g_font_small, tr(g_hints[i].text_key), &h->tw, &h->th);
-   }
+   int s, i;
+   for (s = 0; s < HINTS_COUNT; s++)
+      for (i = 0; i < SET_HINTS && g_hints[s][i].text_key; i++)
+      {
+         hint_gl_t *h = &g_hint_gl[s][i];
+         if (h->fb) glDeleteTextures(1, &h->fb);
+         if (h->txt) glDeleteTextures(1, &h->txt);
+         h->fb = h->txt = 0; h->fbw = h->fbh = h->tw = h->th = 0;
+         if (!h->have_icons)
+            h->fb = text_tex(g_font_small, tr(g_hints[s][i].fallback_key), &h->fbw, &h->fbh);
+         h->txt = text_tex(g_font_small, tr(g_hints[s][i].text_key), &h->tw, &h->th);
+      }
 }
 
 /* icons once ($home/icons/<name>.png), then the texts */
 static void hints_load(const char *home)
 {
-   int i, k;
-   for (i = 0; i < NHINTS; i++)
-   {
-      hint_gl_t *h = &g_hint_gl[i];
-      h->have_icons = 1;
-      for (k = 0; k < 3 && g_hints[i].icons[k]; k++)
+   int s, i, k;
+   for (s = 0; s < HINTS_COUNT; s++)
+      for (i = 0; i < SET_HINTS && g_hints[s][i].text_key; i++)
       {
-         char path[400]; SDL_Surface *sf;
-         snprintf(path, sizeof(path), "%s/icons/%s.png", home, g_hints[i].icons[k]);
-         sf = IMG_Load(path);
-         if (sf) { h->iw[k] = sf->w; h->ih[k] = sf->h; h->icon[k] = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
-         if (!h->icon[k]) h->have_icons = 0;
+         hint_gl_t *h = &g_hint_gl[s][i];
+         h->have_icons = 1;
+         for (k = 0; k < 3 && g_hints[s][i].icons[k]; k++)
+         {
+            h->icon[k] = icon_get(home, g_hints[s][i].icons[k]);
+            if (!h->icon[k] || !h->icon[k]->tex) h->have_icons = 0;
+         }
       }
-   }
    hints_reload();
 }
 
@@ -1193,32 +1295,40 @@ void ui_language_changed(void)
       if (g_games[i].back_tex) { glDeleteTextures(1, &g_games[i].back_tex); g_games[i].back_tex = 0; }
 }
 
-/* draw the hints centred on y; returns nothing, icons scaled to icon_h */
-static void hints_draw(float y, float alpha)
+/* "Preview now" in the screensaver page: the attract scene arrives with step 5 */
+void ui_start_attract(void)
+{
+   logf_("attract: preview requested (not available yet)");
+}
+
+/* draw one hint set centred on (g_hint_cx, y) */
+static void hints_draw(int set, float y, float alpha)
 {
    /* icons are pixel art authored at 36 px (exported x4): draw them at exactly 36 px,
     * on whole pixels, so every art pixel lands on one screen pixel */
    const float icon_h = 36.0f, gap_icon = 6.0f, gap_txt = 10.0f, gap_hint = 42.0f;
    const float ic[4] = { 1, 1, 1, alpha }, tc[4] = { 0.62f, 0.61f, 0.72f, alpha };
    float total = 0, x;
-   int i, k;
-   for (i = 0; i < NHINTS; i++)
+   int i, k, n = 0;
+   if (set < 0 || set >= HINTS_COUNT || alpha <= 0.003f) return;
+   while (n < SET_HINTS && g_hints[set][n].text_key) n++;
+   for (i = 0; i < n; i++)
    {
-      hint_gl_t *h = &g_hint_gl[i];
+      hint_gl_t *h = &g_hint_gl[set][i];
       if (h->fb) total += h->fbw;
-      else for (k = 0; k < 3 && h->icon[k]; k++) total += icon_h * h->iw[k] / (float)h->ih[k] + gap_icon;
-      total += gap_txt + h->tw + (i < NHINTS - 1 ? gap_hint : 0);
+      else for (k = 0; k < 3 && h->icon[k]; k++) total += icon_h * h->icon[k]->w / (float)h->icon[k]->h + gap_icon;
+      total += gap_txt + h->tw + (i < n - 1 ? gap_hint : 0);
    }
-   x = floorf((W - total) * 0.5f);
+   x = floorf(g_hint_cx - total * 0.5f);
    y = floorf(y);
-   for (i = 0; i < NHINTS; i++)
+   for (i = 0; i < n; i++)
    {
-      hint_gl_t *h = &g_hint_gl[i];
+      hint_gl_t *h = &g_hint_gl[set][i];
       if (h->fb) { draw_2d(h->fb, x, y - h->fbh * 0.5f, h->fbw, h->fbh, tc, 0); x += h->fbw; }
       else for (k = 0; k < 3 && h->icon[k]; k++)
       {
-         float w = floorf(icon_h * h->iw[k] / (float)h->ih[k] + 0.5f);
-         draw_2d(h->icon[k], x, y - icon_h * 0.5f, w, icon_h, ic, 0);
+         float w = floorf(icon_h * h->icon[k]->w / (float)h->icon[k]->h + 0.5f);
+         draw_2d(h->icon[k]->tex, x, y - icon_h * 0.5f, w, icon_h, ic, 0);
          x += w + gap_icon;
       }
       x += gap_txt;
@@ -1384,6 +1494,7 @@ int main(int argc, char **argv)
    memset(&info_y, 0, sizeof(info_y)); memset(&info_a, 0, sizeof(info_a)); memset(&plat_x, 0, sizeof(plat_x));
    label_set(&l_brand, g_font_small, "lumen");
    hints_load(g_home);
+   panel_init();
 
    /* first frame positions: start off to the right so they fly in */
    for (i = 0; i < g_ngames; i++)
@@ -1420,7 +1531,7 @@ int main(int argc, char **argv)
          }
          sel_was_down = in_down[IN_SELECT];
       }
-      if (in_down[IN_SELECT] && in_down[IN_START]) running = 0;
+      if (!panel_active() && in_down[IN_SELECT] && in_down[IN_START]) running = 0;
       else
       {
          if (in_pressed[IN_PLAY] || (in_pressed[IN_START] && !in_down[IN_SELECT])) play = 1;
@@ -1431,6 +1542,21 @@ int main(int argc, char **argv)
       }
       held_dir = in_down[IN_LEFT] ? -1 : (in_down[IN_RIGHT] ? 1 : 0);
       (void)start_down; (void)select_down; (void)pad;
+      {  /* settings panel: owns the input while open or closing (6.3) */
+         ui_nav_t nav;
+         int was_open = panel_active();
+         nav_fill(&nav, t);
+         if (!was_open) memset(&nav, 0, sizeof(nav));
+         if (!was_open && in_pressed[IN_OPTIONS] && play_t < 0) panel_open();
+         if (g_want_settings)   /* Select tapped: opens the panel; while open it acts like Triangle */
+         {
+            g_want_settings = 0;
+            if (!was_open && play_t < 0) panel_open();
+            else if (was_open) nav.options = 1;
+         }
+         panel_update(&nav, t, dt);
+         if (was_open || panel_active()) { move = plat_move = play = 0; held_dir = 0; }
+      }
       if (play_t >= 0) { move = plat_move = play = 0; }
       if (!move && held_dir && t >= held_next) { move = held_dir; held_next = t + 0.085; }
 
@@ -1738,11 +1864,12 @@ int main(int argc, char **argv)
          glUseProgram(g_prog_2d);
          if (g_fx_text)
          {
-            const float txt[4] = { 0.93f, 0.92f, 0.97f, 1 - fade };
-            const float dim[4] = { 0.55f, 0.54f, 0.64f, 1 - fade };
-            const float pill_on[4] = { 0.93f, 0.93f, 0.99f, 1 - fade };
-            const float pill_off[4] = { 0.25f, 0.25f, 0.32f, 0.6f * (1 - fade) };
-            const float txt_dark[4] = { 0.15f, 0.13f, 0.36f, 1 - fade };
+            const float pa = panel_amount(), ua = (1 - fade) * (1 - 0.6f * pa);   /* dimmed under the panel */
+            const float txt[4] = { 0.93f, 0.92f, 0.97f, ua };
+            const float dim[4] = { 0.55f, 0.54f, 0.64f, ua };
+            const float pill_on[4] = { 0.93f, 0.93f, 0.99f, ua };
+            const float pill_off[4] = { 0.25f, 0.25f, 0.32f, 0.6f * ua };
+            const float txt_dark[4] = { 0.15f, 0.13f, 0.36f, ua };
             float px, total = 0;
             char s[256];
             game_t *cg = n ? &g_games[pl->first + sel] : NULL;
@@ -1782,7 +1909,7 @@ int main(int argc, char **argv)
 
             if (cg)
             {
-               float a = info_a.x * (1 - fade);
+               float a = info_a.x * ua;
                float c1[4] = { 0.93f, 0.92f, 0.97f, a }, c2[4] = { 0.55f, 0.54f, 0.64f, a };
                label_set(&l_title, g_font_title, cg->title);
                snprintf(s, sizeof(s), "%s%s%s", cg->year, cg->year[0] && cg->publisher[0] ? "  \xC2\xB7  " : "", cg->publisher);
@@ -1795,10 +1922,21 @@ int main(int argc, char **argv)
                label_set(&l_title, g_font_title, tr("empty.library"));
                draw_2d(l_title.tex, (W - l_title.w) * 0.5f, 330, l_title.w, l_title.h, txt, 0);
             }
+            if (pa > 0.003f)
             {
-               const float hc[4] = { 0.43f, 0.42f, 0.52f, 1 - fade };
-               (void)hc;
-               hints_draw(686, 1 - fade);
+               const float back[4] = { 0, 0, 0, 0.45f * pa };
+               draw_2d(0, 0, 0, W, H, back, 0);
+            }
+            {  /* help bar: the set follows the panel, crossfading over 0.15 s; while the
+                * panel is open it is centred in the free space left of it */
+               static int h_cur = HINTS_CAROUSEL, h_prev = -1;
+               static float h_mix = 1.0f;
+               int want = panel_active() ? panel_hint_set() : HINTS_CAROUSEL;
+               if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
+               h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
+               g_hint_cx = lerpf(W * 0.5f, (W - 24.0f - 520.0f) * 0.5f, pa);
+               if (h_prev >= 0 && h_mix < 1.0f) hints_draw(h_prev, 686, (1 - fade) * (1.0f - h_mix));
+               hints_draw(h_cur, 686, (1 - fade) * h_mix);
             }
             if (play_t >= 0 && anim == ANIM_INSERT_CART && slot > 0.0f)
             {
@@ -1818,6 +1956,9 @@ int main(int argc, char **argv)
                label_set(lb, g_font_sub, tr(insert ? "coin.insert" : "coin.credit"));
                draw_2d(lb->tex, (W - lb->w) * 0.5f, 640, lb->w, lb->h, yc, 0);
             }
+            panel_draw(t);
+            panel_toast_draw(t);
+            glUseProgram(g_prog_2d);
             if (flash > 0.001f)
             {
                const float white[4] = { 1, 1, 1, flash * 0.85f };

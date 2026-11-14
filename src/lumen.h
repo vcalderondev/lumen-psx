@@ -50,10 +50,16 @@ typedef struct { GLuint tex; int w, h; char key[200]; } label_t;
 void   logf_(const char *fmt, ...);
 double now_s(void);
 void   draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode);
+/* glass rounded rectangle (FS_2D mode 5): fill rgba with a vertical sheen, 1 px inner border */
+void   draw_round_rect(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha);
 GLuint text_tex(TTF_Font *f, const char *s, int *w, int *h);
+GLuint text_tex_wrapped(TTF_Font *f, const char *s, int wrap_px, int *w, int *h);   /* honours '\n' */
 void   label_set(label_t *l, TTF_Font *f, const char *s);   /* re-renders only when s changes */
 void   label_free(label_t *l);
 void   gl_use_2d(void);        /* glUseProgram(g_prog_2d) + sampler 0 */
+
+/* one frame of navigation for UI modules: press edges, with auto-repeat on the directions */
+typedef struct { int up, down, left, right, confirm, back, options, start, l1, r1; } ui_nav_t;
 
 /* UI callbacks implemented in main.c */
 void   ui_language_changed(void);   /* rebuild text baked into textures after i18n_set_language() */

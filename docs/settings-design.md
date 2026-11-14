@@ -493,6 +493,16 @@ wrapped with `TTF_RenderUTF8_Blended_Wrapped`, which exists in SDL_ttf 2.0.14),
 | `HINTS_CONFIRM` | dpad `hint.move` · cross `hint.select` · square `hint.cancel` |
 | `HINTS_ATTRACT` | (none; the attract scene draws its own "PRESS START") |
 
+**Controls revision (implemented in step 2).** The controls commit that landed before
+step 2 made Cross/Start play, Circle `IN_BACK` (no longer play) and Select tapped alone
+open the settings. Step 2 keeps that and adds the spec's mapping on top: Triangle (and
+Tab/F1) = `IN_OPTIONS`, Square also = `IN_BACK`, `confirm` = Cross only. A Select tap while
+the panel is open acts as `options`. The help bar sets therefore use Circle for back:
+`HINTS_CAROUSEL` = cross `hint.play` · l1+r1 `hint.platform` · select `hint.settings`;
+`HINTS_PANEL_ROOT` closes with circle; `HINTS_PANEL_PAGE` and `HINTS_CONFIRM` go back /
+cancel with circle; `HINTS_OSK` is unchanged. New fallback keys: `btn.cross`, `btn.circle`,
+`btn.select`. While the panel is open the help bar is centred in the free space left of it.
+
 `hints_load(home, font)` becomes `hints_load(home)` + `hints_reload()` (rebuilds texts only;
 icons are loaded once). `hints_draw(int set, float y, float alpha)`.
 

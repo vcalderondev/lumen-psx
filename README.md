@@ -76,15 +76,31 @@ It is written atomically (temporary file + rename) and only when something chang
 | Input | Action |
 |---|---|
 | D-pad left/right (hold to scroll) | browse |
-| L1 / R1 | previous / next platform |
-| Circle, Cross, Start | play |
+| L1 / R1 (or D-pad up/down) | previous / next platform |
+| Cross, Start | play |
+| Triangle, or Select tapped alone | open the settings panel |
 | Select, then Start | leave Lumen (opens the stock Sony menu) |
+
+Inside the settings panel: D-pad moves and changes values (left/right), Cross
+selects, Circle or Square goes back (closes the panel on the first page), Triangle
+closes. The on-screen keyboard (profile names): Cross types, Square erases, Start
+accepts, Triangle cancels. On a USB keyboard: arrows, Enter, Tab or F1 (settings),
+Backspace (back), Escape (leave).
+
+## Settings panel
+
+Pages: **Language** (applied live, no restart), **Profile**, **Screensaver** (start
+after Never/1–30 min, game demos on/off, length of each demo, preview), **Graphics**
+(per-system presets; empty until a system declares them) and **About** (version,
+games, systems, free space on the USB). Changes are written to `settings.ini` when
+the panel closes.
 
 ## Layout
 
 ```
 src/main.c, src/gl.h          frontend (src/lumen.h: shared data model and render services)
 src/i18n.c, src/settings.c    translation layer, settings store
+src/panel.c                   settings panel, on-screen keyboard, confirm dialog
 dist/lang/*.lang              UI translations
 scripts/boot.sh               boot entry
 scripts/run.sh                session loop

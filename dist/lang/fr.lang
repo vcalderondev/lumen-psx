@@ -34,6 +34,9 @@ btn.triangle = △
 btn.square = □
 btn.dpad = Croix
 btn.start = Start
+btn.cross = ✕
+btn.circle = ○
+btn.select = Select
 
 # panneau de réglages
 panel.title = Réglages
