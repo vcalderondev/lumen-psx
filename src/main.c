@@ -68,7 +68,8 @@ typedef struct {
    int platform;
    /* runtime */
    GLuint tex, back_tex, spine_tex;
-   int tex_state;              /* 0 none, 1 loaded, -1 failed/placeholder */
+   int tex_state;              /* 0 none, 2 decoding, 1 loaded, -1 placeholder */
+   int has_cover;
    float col[3];               /* average cover colour */
    spring x, z, ry, sc, al;
 } game_t;
@@ -156,6 +157,7 @@ static void scan_psx(void)
          if (!file_exists(g->content)) continue;
       }
       snprintf(g->cover, sizeof(g->cover), "%s/%s/%s.png", dir, de->d_name, discs);
+      g->has_cover = file_exists(g->cover);
       {
          static const char *const bgn[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
          int b;
@@ -261,6 +263,9 @@ static const char *FS_2D =
    "                 float a = 1.0 - smoothstep(0.96, 1.0, max(d.y, r)); frag = vec4(color.rgb, color.a * a); return; }\n"
    "  if (mode==2) { float d = length((v_uv - 0.5) * vec2(1.6, 1.0)); frag = vec4(0.0,0.0,0.0, color.a * smoothstep(0.35, 0.95, d)); return; }\n"
    "  if (mode==3) { float d = length((v_uv - 0.5) * 2.0); frag = vec4(color.rgb, color.a * pow(clamp(1.0 - d, 0.0, 1.0), 2.2)); return; }\n"
+   "  if (mode==4) { float dv = length((v_uv - 0.5) * vec2(1.6, 1.0)); float av = 0.55 * smoothstep(0.35, 0.95, dv);\n"
+   "                 vec2 q = (v_uv - vec2(0.5, 0.4167)) / vec2(0.328, 0.4167); float as = color.a * pow(clamp(1.0 - length(q), 0.0, 1.0), 2.2);\n"
+   "                 float a = as + av * (1.0 - as); frag = vec4(color.rgb * as / max(a, 0.001), a); return; }\n"
    "  frag = t * color;\n"
    "}\n";
 
@@ -331,6 +336,18 @@ static void gl_setup(void)
    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+}
+
+static void surface_avg(SDL_Surface *c, float *avg)
+{
+   double r = 0, g = 0, b = 0; long n = 0; int x, y;
+   for (y = 0; y < c->h; y += 4)
+      for (x = 0; x < c->w; x += 4)
+      {
+         const unsigned char *p = (const unsigned char *)c->pixels + y * c->pitch + x * 4;
+         r += p[0]; g += p[1]; b += p[2]; n++;
+      }
+   if (n) { avg[0] = r / n / 255.0; avg[1] = g / n / 255.0; avg[2] = b / n / 255.0; }
 }
 
 /* Upload an SDL surface as RGBA (ABGR8888 == R,G,B,A bytes on little endian). */
@@ -431,28 +448,27 @@ static GLuint spine_tex(const game_t *g)
    return t;
 }
 
-static void game_load_tex(game_t *g)
+static void game_placeholder(game_t *g)
 {
-   SDL_Surface *s;
-   if (g->tex_state) return;
-   s = IMG_Load(g->cover);
+   unsigned h = hash_str(g->title);
+   g->col[0] = 0.25f + (h & 255) / 512.0f;
+   g->col[1] = 0.20f + ((h >> 8) & 255) / 640.0f;
+   g->col[2] = 0.30f + ((h >> 16) & 255) / 512.0f;
+   g->tex = card_tex(g, 0);
+   g->tex_state = -1;
+   g->spine_tex = spine_tex(g);
+}
+
+static void game_finish_cover(game_t *g, SDL_Surface *s, const float avg[3])
+{
    if (s)
    {
-      g->tex = surface_to_tex(s, 1, g->col);
-      SDL_FreeSurface(s);
-      g->tex_state = g->tex ? 1 : -1;
+      g->tex = surface_to_tex(s, 1, NULL);
+      memcpy(g->col, avg, sizeof(g->col));
+      g->tex_state = 1;
+      g->spine_tex = spine_tex(g);
    }
-   if (!g->tex)
-   {
-      unsigned h = hash_str(g->title);
-      g->col[0] = 0.25f + (h & 255) / 512.0f;
-      g->col[1] = 0.20f + ((h >> 8) & 255) / 640.0f;
-      g->col[2] = 0.30f + ((h >> 16) & 255) / 512.0f;
-      g->tex = card_tex(g, 0);
-      g->tex_state = -1;
-   }
-   g->back_tex = card_tex(g, 1);
-   g->spine_tex = spine_tex(g);
+   if (!g->tex) game_placeholder(g);
 }
 
 static void game_free_tex(game_t *g)
@@ -504,7 +520,8 @@ static void draw_case(const game_t *g, mat4 base, float alpha, float flip)
    base = m4_mul(base, m4_rot_y(flip * PI));
 
    /* opaque: back card, tray edges, spine, insert, hinge strip */
-   case_part(base, 0, 0, -hd, PI, 0, CASE_W, 1.0f, g->back_tex, one, alpha, 0);
+   if (g->back_tex) case_part(base, 0, 0, -hd, PI, 0, CASE_W, 1.0f, g->back_tex, one, alpha, 0);
+   else             case_part(base, 0, 0, -hd, PI, 0, CASE_W, 1.0f, 0, tray, alpha, 1);
    case_part(base, hw, 0, 0, PI / 2, 0, CASE_D, 1.0f, 0, edge, alpha, 1);
    case_part(base, 0, 0.5f, 0, 0, -PI / 2, CASE_W, CASE_D, 0, edge, alpha, 1);
    case_part(base, 0, -0.5f, 0, 0, PI / 2, CASE_W, CASE_D, 0, edge, alpha, 1);
@@ -559,6 +576,47 @@ static TTF_Font *open_font(const char **paths, int size)
    }
    logf_("no font found for size %d", size);
    return NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* covers: decoded on a worker thread, uploaded on the main thread           */
+static SDL_mutex   *cv_mx;
+static SDL_cond    *cv_cv;
+static int          cv_req = -1, cv_busy, cv_done = -1, cv_quit;
+static char         cv_path[512];
+static SDL_Surface *cv_surf;
+static float        cv_avg[3];
+
+static int cover_worker(void *unused)
+{
+   (void)unused;
+   SDL_LockMutex(cv_mx);
+   while (!cv_quit)
+   {
+      int idx; char path[512]; SDL_Surface *s, *c = NULL; float avg[3] = { 0.3f, 0.3f, 0.35f };
+      while (cv_req < 0 && !cv_quit) SDL_CondWait(cv_cv, cv_mx);
+      if (cv_quit) break;
+      idx = cv_req; cv_req = -1;
+      snprintf(path, sizeof(path), "%s", cv_path);
+      SDL_UnlockMutex(cv_mx);
+      s = IMG_Load(path);
+      if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
+      if (c) surface_avg(c, avg);
+      SDL_LockMutex(cv_mx);
+      cv_surf = c; cv_done = idx;
+      memcpy(cv_avg, avg, sizeof(avg));
+   }
+   SDL_UnlockMutex(cv_mx);
+   return 0;
+}
+
+static void cover_request(int idx, const char *path)
+{
+   SDL_LockMutex(cv_mx);
+   snprintf(cv_path, sizeof(cv_path), "%s", path);
+   cv_req = idx; cv_busy = 1;
+   SDL_CondSignal(cv_cv);
+   SDL_UnlockMutex(cv_mx);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -816,10 +874,26 @@ int main(int argc, char **argv)
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+   SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+   SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
    win = SDL_CreateWindow("lumen", 0, 0, W, H, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
-   if (!win) { logf_("CreateWindow: %s", SDL_GetError()); return 1; }
-   ctx = SDL_GL_CreateContext(win);
-   if (!ctx) { logf_("GL context: %s", SDL_GetError()); return 1; }
+   ctx = win ? SDL_GL_CreateContext(win) : NULL;
+   if (!ctx)
+   {
+      logf_("MSAA 4x unavailable (%s), retrying without", SDL_GetError());
+      if (win) SDL_DestroyWindow(win);
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+      win = SDL_CreateWindow("lumen", 0, 0, W, H, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
+      if (!win) { logf_("CreateWindow: %s", SDL_GetError()); return 1; }
+      ctx = SDL_GL_CreateContext(win);
+      if (!ctx) { logf_("GL context: %s", SDL_GetError()); return 1; }
+   }
+   {
+      GLint samples = 0;
+      glGetIntegerv(GL_SAMPLES, &samples);
+      logf_("MSAA samples: %d", samples);
+   }
    SDL_GL_SetSwapInterval(1);
    SDL_ShowCursor(SDL_DISABLE);
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
@@ -827,6 +901,9 @@ int main(int argc, char **argv)
    bg_mx = SDL_CreateMutex();
    bg_cv = SDL_CreateCond();
    SDL_CreateThread(bg_worker, "bg", NULL);
+   cv_mx = SDL_CreateMutex();
+   cv_cv = SDL_CreateCond();
+   SDL_CreateThread(cover_worker, "covers", NULL);
 
    g_font_title = open_font(fonts_bold, 34);
    g_font_sub   = open_font(fonts_reg, 20);
@@ -931,27 +1008,51 @@ int main(int argc, char **argv)
       bg_poll_upload();
       bg_mix = bg_mix + dt * 1.4f > 1.0f ? 1.0f : bg_mix + dt * 1.4f;
 
-      /* texture streaming: load at most one cover per frame near the selection */
-      if (n)
+      /* cover streaming: decoded on the worker, nearest to the selection first */
       {
-         int k, loaded = 0;
-         for (k = 0; k <= TEX_WINDOW && !loaded; k++)
+         int done = -1, k;
+         SDL_Surface *cs = NULL; float avg[3];
+         SDL_LockMutex(cv_mx);
+         if (cv_done >= 0) { done = cv_done; cs = cv_surf; memcpy(avg, cv_avg, sizeof(avg)); cv_done = -1; cv_surf = NULL; cv_busy = 0; }
+         SDL_UnlockMutex(cv_mx);
+         if (done >= 0)
          {
-            int a = (sel + k) % n, b = (sel - k + n) % n;
-            game_t *ga = &g_games[pl->first + a], *gb = &g_games[pl->first + b];
-            if (!ga->tex_state) { game_load_tex(ga); loaded = 1; }
-            else if (!gb->tex_state) { game_load_tex(gb); loaded = 1; }
+            game_finish_cover(&g_games[done], cs, avg);
+            if (cs) SDL_FreeSurface(cs);
          }
-         for (k = 0; k < g_ngames; k++)
+         if (n)
          {
-            game_t *g = &g_games[k];
-            int d = 9999;
-            if (g->platform == g_games[pl->first].platform)
+            int placed = 0;
+            for (k = 0; k <= TEX_WINDOW && !placed; k++)
             {
-               int o = abs((k - pl->first) - sel);
-               d = o < n - o ? o : n - o;
+               int cand[2], c;
+               cand[0] = (sel + k) % n; cand[1] = (sel - k + n) % n;
+               for (c = 0; c < 2 && !placed; c++)
+               {
+                  int gi = pl->first + cand[c];
+                  game_t *g = &g_games[gi];
+                  if (g->tex_state) continue;
+                  if (g->has_cover) { if (!cv_busy) { g->tex_state = 2; cover_request(gi, g->cover); } placed = 1; }
+                  else { game_placeholder(g); placed = 1; }
+               }
             }
-            if (g->tex_state && d > TEX_WINDOW + 3) game_free_tex(g);
+            for (k = 0; k < g_ngames; k++)
+            {
+               game_t *g = &g_games[k];
+               int d = 9999;
+               if (g->platform == g_games[pl->first].platform)
+               {
+                  int o = abs((k - pl->first) - sel);
+                  d = o < n - o ? o : n - o;
+               }
+               if ((g->tex_state == 1 || g->tex_state == -1) && d > TEX_WINDOW + 3) game_free_tex(g);
+            }
+            /* back card only for the settled (or launching) selection */
+            {
+               game_t *cg = &g_games[pl->first + sel];
+               if ((cg->tex_state == 1 || cg->tex_state == -1) && !cg->back_tex && (t - sel_t > 0.2 || play_t >= 0))
+                  cg->back_tex = card_tex(cg, 1);
+            }
          }
       }
 
@@ -1017,8 +1118,8 @@ int main(int argc, char **argv)
          {
             const float vig[4] = { 0, 0, 0, 0.55f };
             float spot[4] = { 0.55f + bg[0].x, 0.55f + bg[1].x, 0.62f + bg[2].x, 0.10f * (1.0f - fade) };
-            draw_2d(0, 0, 0, W, H, vig, 2);
-            draw_2d(0, W * 0.5f - 420, 300 - 300, 840, 600, spot, 3);
+            (void)vig;
+            draw_2d(0, 0, 0, W, H, spot, 4);
          }
 
          glUseProgram(g_prog_box);
@@ -1156,6 +1257,7 @@ int main(int argc, char **argv)
       logf_("launch request: %s", g->content);
    }
    SDL_LockMutex(bg_mx); bg_quit = 1; SDL_CondSignal(bg_cv); SDL_UnlockMutex(bg_mx);
+   SDL_LockMutex(cv_mx); cv_quit = 1; SDL_CondSignal(cv_cv); SDL_UnlockMutex(cv_mx);
    logf_("exit %d", exit_code);
    SDL_GL_DeleteContext(ctx);
    SDL_DestroyWindow(win);
