@@ -1,0 +1,17 @@
+# Keeps the PSC toolchain image in this repository's Actions cache on the default branch
+# (tag caches are only visible to their own tag), so tagged releases build Lumen in
+# minutes. Re-run when platform.lock moves to a psc-platform release with a new toolchain.
+name: toolchain-cache
+on:
+  push:
+    branches: [main]
+    paths: ['platform.lock', '.github/workflows/**']
+  workflow_dispatch:
+jobs:
+  warm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: vcalderondev/psc-platform/.github/actions/toolchain@v1.0.1
+        with:
+          sysroot-token: ${{ secrets.PSC_SYSROOT_TOKEN }}
