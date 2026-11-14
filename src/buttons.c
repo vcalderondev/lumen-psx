@@ -4,13 +4,9 @@
  * The console's front buttons are a gpio-keys input device:
  *   POWER = KEY_SLEEP (142, wake source), RESET = KEY_PLAYPAUSE (164), OPEN = KEY_EJECTCD (161)
  *
- * POWER is Sony's: its power manager (power_manage) suspends the console to RAM (red
- * LED; the PSC has no software power-off: a halted console stays orange until it is
- * unplugged) after a handshake: it creates <power>/prepare_suspend and waits for
- * <power>/apps_okay. Before answering, this daemon runs power.sh suspend (sync, pause
- * every process on the USB stick: a task waiting on the exFAT/FUSE stick cannot be
- * frozen, the suspend would hang); when <power>/resume_count changes (the console woke
- * up) it runs power.sh resume.
+ * POWER is ignored during a Lumen session (boot.sh sets <power>/disable = 2): Sony's
+ * suspend to RAM could not resume a session running from the exFAT stick under a GL
+ * compositor, and the PSC has no software power-off. Presses are only logged.
  * RESET quits a running RetroArch, which returns the session to Lumen.
  * OPEN is logged (reserved for disc swapping).
  *
@@ -126,7 +122,6 @@ static pid_t find_proc(const char *name)
    return pid;
 }
 
-static int exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
 
 /* ------------------------------------------------------------------------ */
 /* demo watcher                                                              */
@@ -317,34 +312,11 @@ static int demo_watch(int seconds, pid_t pid)
    }
 }
 
-static int run_power(const char *action, int wait)
-{
-   pid_t p = fork();
-   if (p == 0)
-   {
-      execl("/bin/sh", "sh", "/tmp/lumen-power.sh", action, (char *)NULL);
-      _exit(127);
-   }
-   if (p > 0 && wait) { int st; waitpid(p, &st, 0); return WIFEXITED(st) ? WEXITSTATUS(st) : -1; }
-   return p > 0 ? 0 : -1;
-}
-static long read_long(const char *path)
-{
-   char b[32] = { 0 };
-   int f = open(path, O_RDONLY);
-   if (f < 0) return -1;
-   if (read(f, b, sizeof(b) - 1) < 0) b[0] = 0;
-   close(f);
-   return atol(b);
-}
-
 int main(int argc, char **argv)
 {
    const char *log_path = NULL, *power_dir = "/data/power";
-   char dev[64], prep[200], okay[200], rcount[200];
-   int i, fd, acked = 0, paused = 0, demo_seconds = -1, demo_pid = 0;
-   long resume0 = -1;
-   time_t paused_at = 0;
+   char dev[64];
+   int i, fd, demo_seconds = -1, demo_pid = 0;
 
    for (i = 1; i < argc; i++)
    {
@@ -353,6 +325,7 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--demo-watch") && i + 1 < argc) demo_seconds = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--pid") && i + 1 < argc) demo_pid = atoi(argv[++i]);
    }
+   (void)power_dir;   /* accepted for compatibility: POWER is not handled */
    g_log = log_path ? fopen(log_path, "a") : NULL;
    if (!g_log) g_log = stderr;
    atexit(log_sync_atexit);
@@ -361,14 +334,9 @@ int main(int argc, char **argv)
       if (demo_seconds < 1 || demo_pid <= 1) { logf_("demo-watch: invalid seconds/pid"); return 3; }
       return demo_watch(demo_seconds, (pid_t)demo_pid);
    }
-   snprintf(prep, sizeof(prep), "%s/prepare_suspend", power_dir);
-   snprintf(okay, sizeof(okay), "%s/apps_okay", power_dir);
-   snprintf(rcount, sizeof(rcount), "%s/resume_count", power_dir);
-   signal(SIGCHLD, SIG_IGN);   /* power.sh resume runs detached */
-
    fd = open_buttons(dev, sizeof(dev));
    if (fd < 0) { logf_("gpio-keys not found: %s", strerror(errno)); return 1; }
-   logf_("watching %s, power handshake in %s", dev, power_dir);
+   logf_("watching %s", dev);
    /* ready marker for boot.sh */
    printf("ready\n"); fflush(stdout);
 
@@ -377,36 +345,6 @@ int main(int argc, char **argv)
       struct pollfd pfd = { fd, POLLIN, 0 };
       int r = poll(&pfd, 1, 150);
       log_tick();
-
-      /* suspend handshake: answer once per request, after pausing the USB users */
-      if (exists(prep))
-      {
-         if (!acked)
-         {
-            int f;
-            logf_("power: suspend requested: pausing the session");
-            log_sync(1);
-            resume0 = read_long(rcount);
-            signal(SIGCHLD, SIG_DFL); run_power("suspend", 1); signal(SIGCHLD, SIG_IGN);
-            paused = 1; paused_at = time(NULL);
-            f = open(okay, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (f >= 0) close(f);
-            acked = 1;
-         }
-      }
-      else if (acked) acked = 0;
-      /* woke up (resume_count moved), or the suspend never happened (60 s) */
-      if (paused)
-      {
-         long rc = read_long(rcount);
-         int woke = rc >= 0 && resume0 >= 0 && rc != resume0;
-         if (woke || time(NULL) - paused_at > 60)
-         {
-            paused = 0;
-            run_power("resume", 0);
-            logf_("power: %s (resume_count %ld -> %ld)", woke ? "resumed" : "no suspend after 60 s, resuming", resume0, rc);
-         }
-      }
 
       if (r > 0 && (pfd.revents & POLLIN))
       {

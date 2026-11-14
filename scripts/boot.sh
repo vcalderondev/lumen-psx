@@ -200,48 +200,21 @@ fi
 [ -n "${STARTED}" ] || { weston_stock; DISPLAY_MODE=720p; }
 export LUMEN_DISPLAY="${DISPLAY_MODE:-720p}"
 case "${STARTED}" in psc) export LUMEN_COMPOSITOR="weston${PW_VER}" ;; *) export LUMEN_COMPOSITOR=stock ;; esac
-# how to start the compositor again after a suspend (power.sh: the PowerVR / display
-# driver cannot suspend under a running GL compositor, so it is stopped first)
-{ echo '#!/bin/sh'
-  echo "export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
-  echo 'rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"'
-  case "${STARTED}" in
-    psc)
-      echo 'chvt 1 2>/dev/null'
-      [ -n "${WESTON_FORCE_RENDERER}" ] && echo 'export WESTON_FORCE_RENDERER=1'
-      [ -n "${WESTON_DISABLE_ATOMIC}" ] && echo 'export WESTON_DISABLE_ATOMIC=1'
-      echo "LIBSEAT_BACKEND=builtin /usr/bin/weston --backend=drm --shell=desktop --idle-time=0 --socket=wayland-0 --config=/tmp/lumen-weston.ini > ${LOG}/weston-psc.log 2>&1 &" ;;
-    stock1080)
-      echo "/usr/bin/weston-launch -u root -- --idle-time=4294967 --tty=1 --config=/tmp/lumen-weston.ini > ${LOG}/weston.log 2>&1 &" ;;
-    *) echo 'systemctl restart weston.service' ;;
-  esac
-  echo 'i=0; while [ $i -lt 100 ] && [ ! -S "${XDG_RUNTIME_DIR}/wayland-0" ]; do sleep 0.1; i=$((i + 1)); done; sleep 0.5'
-} > /tmp/lumen-weston-start.sh
-# Sony's power manager runs /usr/bin/resume_run after every resume: it starts Sony's
-# Weston and menu ("An error has occurred" over Lumen). For this session it runs Lumen's
-# resume instead (bind mount from RAM, nothing on the eMMC changes), and it waits up to
-# 15 s (default 5) for apps_okay: closing a game with its save takes a few seconds.
-printf '#!/bin/sh\n/usr/bin/cpu_mode full 2>/dev/null\nsh /tmp/lumen-power.sh resume\n' > /tmp/lumen-resume_run
-chmod 755 /tmp/lumen-resume_run
-mount --bind /tmp/lumen-resume_run /usr/bin/resume_run && echo "resume_run: Lumen's for this session"
-for d in /dev/shm/power /data/power; do [ -d "$d" ] && echo 15 > "$d/apps_timeout"; done
 /usr/bin/wait_sdl
 
-# console buttons: POWER suspends (handshake with the system power manager),
-# RESET quits a running game. Only hand POWER to the system if the daemon runs.
+# console buttons: RESET quits a running game (lumen-buttons); POWER is ignored during
+# the session (Sony's menu, after the session, handles it again).
 rm -f /data/power/prepare_suspend /data/power/apps_okay
 BUTTONS_PID=""
-# POWER (Sony's suspend): power.sh, run by lumen-buttons, pauses the processes that use
-# the USB stick; it runs from RAM and the stick's writers are recorded for it
-cp "${LUMEN_HOME}/power.sh" /tmp/lumen-power.sh 2>/dev/null
-: > /tmp/lumen-usb-writers.pids
 if [ -x "${LUMEN_HOME}/lumen-buttons" ] || chmod +x "${LUMEN_HOME}/lumen-buttons" 2>/dev/null; then
   "${LUMEN_HOME}/lumen-buttons" --log "${LOG}/buttons.log" > /tmp/lumen-buttons.out 2>&1 &
   BUTTONS_PID=$!
   for i in 1 2 3 4 5 6 7 8 9 10; do grep -q ready /tmp/lumen-buttons.out 2>/dev/null && break; sleep 0.1; done
 fi
 if [ -n "${BUTTONS_PID}" ] && grep -q ready /tmp/lumen-buttons.out 2>/dev/null; then
-  echo 1 > /data/power/disable        # power manager suspends after our apps_okay
+  # POWER is ignored during a Lumen session: Sony's suspend cannot resume a session that
+  # runs from the exFAT stick under a GL compositor (tested 2026-11-14); unplug to turn off
+  echo 2 > /data/power/disable
   echo "buttons daemon running (${BUTTONS_PID})"
 else
   echo 2 > /data/power/disable        # no daemon: keep POWER ignored
@@ -256,11 +229,6 @@ fi
 dmesg > "${LOG}/kernel.log" 2>/dev/null
 ( while IFS= read -r kl; do printf '%s\n' "$kl" >> "${LOG}/kernel.log"; sync; done < /proc/kmsg ) &
 KLOG_PID=$!
-echo "${KLOG_PID}" >> /tmp/lumen-usb-writers.pids
-# Sony's power manager (power_manage: POWER -> prepare_suspend / apps_okay -> suspend to
-# RAM) logs to /tmp/power.log: copied to the USB line by line, for the POWER button
-( tail -f /tmp/power.log 2>/dev/null | while IFS= read -r pl; do printf '%s %s\n' "$(date +%T)" "$pl" >> "${LOG}/power.log"; sync; done ) &
-echo $! >> /tmp/lumen-usb-writers.pids
 
 # 2. Lumen session
 # the one-shot marker only guards the window until a frame is on screen: Lumen writes
@@ -282,7 +250,6 @@ if [ "${SESSION_RC}" = 12 ]; then   # Display settings changed: start over with 
 fi
 
 # 3. stock Sony menu (internal games); power button handled by Sony's power manager
-umount /usr/bin/resume_run 2>/dev/null   # Sony's resume again
 [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
 echo "starting stock menu"
 killall -s TERM sdl_display 2>/dev/null
