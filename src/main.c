@@ -1927,10 +1927,10 @@ static void bg_draw(bgtex_t *b, float alpha, double t)
    if (opaque) glDisable(GL_BLEND);
    if (b->tex)
    {
-      float sx = (float)W / b->w, sy = (float)H / b->h, sc, w, h;
-      sc = (sx > sy ? sx : sy) * (1.03f + 0.02f * sinf((float)t * 0.07f));
+      /* cover-fitted and still: a 16:9 image at the output size maps 1:1 (sharp) */
+      float sx = (float)W / b->w, sy = (float)H / b->h, sc = sx > sy ? sx : sy, w, h;
       w = b->w * sc; h = b->h * sc;
-      draw_2d(b->tex, (W - w) * 0.5f + 8.0f * sinf((float)t * 0.05f), (H - h) * 0.5f, w, h, c, 0);
+      draw_2d(b->tex, (W - w) * 0.5f, (H - h) * 0.5f, w, h, c, 0);
    }
    else if (b->gen)
    {
@@ -2484,6 +2484,7 @@ int main(int argc, char **argv)
    attract_out_t att;
    SDL_Window *win; SDL_GLContext ctx;
    int win_w = W, win_h = H;
+   double b_draw = 0, b_swap = 0;   /* bench: time issuing frames / blocked in the swap */
    SDL_GameController *pad = NULL;
    double t0 = now_s(), last, fps_t, info_t = 0, play_t = -1;
    int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0;
@@ -3155,30 +3156,40 @@ int main(int argc, char **argv)
       }
 
       if (g_ntshot) test_shots(t - t0);
-      SDL_GL_SwapWindow(win);
+      {
+         double pre = now_s();
+         SDL_GL_SwapWindow(win);
+         b_draw += pre - t; b_swap += now_s() - pre;
+      }
       frames++;
       log_tick();
-      {  /* bench: <home>/bench present -> measure with one effect off at a time */
-         static int bench = -1, step; static double bt, bframes;
+      {  /* bench: <home>/bench present -> two rounds (vsync on, then off: frame rates
+          * not quantised to 60/30/20), each turning one more thing off per step; per
+          * step: fps, CPU ms spent issuing the frame, ms blocked in the swap */
+         static int bench = -1, step, round_; static double bt, bframes;
          static const char *names[] = { "all", "no-shadows", "no-side-tiles", "no-ui", "clear-only" };
          if (bench < 0)
          {
             char bp[300]; snprintf(bp, sizeof(bp), "%s/bench", g_home);
             bench = file_exists(bp) ? 1 : 0;
-            if (bench) { remove(bp); bt = t + 3.0; step = -1; logf_("bench: start (MSAA %d)", settings_get_int("msaa", 4, 0, 4)); }
+            if (bench) { remove(bp); bt = t + 3.0; step = -1; logf_("bench: start (MSAA %d, %dx%d)", settings_get_int("msaa", 2, 0, 4), g_dw, g_dh); }
          }
          if (bench == 1 && t >= bt)
          {
-            if (step >= 0) logf_("bench %-14s %.1f fps", names[step], bframes / 2.5);
+            if (step >= 0 && bframes > 0)
+               logf_("bench %s %-14s %5.1f fps, draw %.1f ms, swap %.1f ms", round_ ? "free " : "vsync", names[step],
+                     bframes / 2.5, b_draw / bframes * 1000.0, b_swap / bframes * 1000.0);
             step++;
+            if (step >= (int)(sizeof(names) / sizeof(names[0])) && round_ == 0)
+            { round_ = 1; step = 0; SDL_GL_SetSwapInterval(0); }
             if (step >= (int)(sizeof(names) / sizeof(names[0])))
-            { bench = 2; g_fx_shadows = g_fx_sides = g_fx_text = g_fx_bg = 1; logf_("bench: done"); }
+            { bench = 2; g_fx_shadows = g_fx_sides = g_fx_text = g_fx_bg = 1; SDL_GL_SetSwapInterval(1); logf_("bench: done"); }
             else
             {
                /* each step turns one more thing off: shadows, side tiles, the dashboard UI
                 * (text, tabs, tiles), then the background (clear + help bar only) */
                g_fx_shadows = step < 1; g_fx_sides = step < 2; g_fx_text = step < 3; g_fx_bg = step < 4;
-               bt = t + 2.5; bframes = 0;
+               bt = t + 2.5; bframes = 0; b_draw = b_swap = 0;
             }
          }
          if (bench == 1 && step >= 0) bframes += 1;
