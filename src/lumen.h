@@ -16,13 +16,15 @@ enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN };
 
 typedef struct {
    char title[128], publisher[96], year[16], players[8];
-   char content[512], cover[512], bg[512], disc[512];
+   char content[512], cover[512], bg[512], disc[512], music[512];
    int platform;
    /* runtime */
    GLuint tex, back_tex, spine_tex;
    int tex_state;              /* 0 none, 2 decoding, 1 loaded, -1 placeholder */
    int has_cover;
    float col[3];               /* average cover colour */
+   float acc[3];               /* accent: most saturated hue cluster of the cover */
+   int tex_w, tex_h;           /* size of the cover texture (tile cover-fit) */
    spring x, z, ry, sc, al;
 } game_t;
 

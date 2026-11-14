@@ -9,6 +9,10 @@
 # a button is pressed (lumen-buttons --demo-watch), then the frontend comes back
 # with --attract (the demo ended) or --focus-demo (the player pressed a button).
 #
+# Every finished normal (non-demo) session appends one line to the play log
+# $LUMEN_HOME/profiles/<profile>/playlog.tsv, read by the frontend (src/stats.h):
+#   <start epoch>\t<seconds>\t<system id>\t<content path>
+#
 # Optional $LUMEN_HOME/lumen.conf (sourced) can set:
 #   RETROARCH            path to the retroarch binary (default: retroarch in PATH)
 #   LUMEN_MAIN_SAVES     save folder of the "main" profile (empty: RetroArch decides)
@@ -176,6 +180,22 @@ lumen_run_demo() {
   case $w in 1) ARGS="--focus-demo" ;; *) ARGS="--attract" ;; esac
 }
 
+# lumen_playlog T0: append the session that started at T0 to the profile's play log
+lumen_playlog() {
+  case "$1" in ''|*[!0-9]*) return 0 ;; esac
+  pl_now=$(date +%s)
+  case "$pl_now" in ''|*[!0-9]*) return 0 ;; esac
+  pl_secs=$(( pl_now - $1 ))
+  # under 10 s is a failed start, not a session; over 30 days the clock jumped (NTP)
+  [ "$pl_secs" -ge 10 ] && [ "$pl_secs" -le 2592000 ] || return 0
+  pl_dir="${LUMEN_HOME}/profiles/${L_PROFILE}"
+  mkdir -p "$pl_dir" || return 0
+  pl_sys=$(printf '%s' "$L_SYSTEM" | tr -d '\t\r\n')
+  pl_con=$(printf '%s' "$L_CONTENT" | tr -d '\t\r\n')
+  printf '%s\t%s\t%s\t%s\n' "$1" "$pl_secs" "$pl_sys" "$pl_con" >> "${pl_dir}/playlog.tsv" ||
+    slog "play log write failed"
+}
+
 run_retroarch() {  # core content logfile
   "${RETROARCH}" --appendconfig "${LUMEN_RA_EXTRA}" -L "$1" "$2" > "$3" 2>&1
 }
@@ -216,8 +236,10 @@ while true; do
   lumen_profile_dirs
   lumen_build_ra_extra
   slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default}, graphics ${L_GRAPHICS:-default}${L_OPT_FILE:+, options ${L_OPT_FILE}})"
+  t0=$(date +%s)
   run_retroarch "${L_CORE}" "${L_CONTENT}" "${LOG}/retroarch.log"
   slog "retroarch exit=$?"
+  lumen_playlog "$t0"
 done
 
 kill "${SYNCER}" 2>/dev/null

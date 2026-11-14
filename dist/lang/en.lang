@@ -44,6 +44,7 @@ panel.title = Settings
 section.language = Language
 section.profile = Profile
 section.screensaver = Screensaver
+section.sound = Sound
 section.graphics = Graphics
 section.library = Library
 section.about = About
@@ -81,6 +82,12 @@ ss.seconds = {n} s
 ss.preview = Preview now
 ss.note = Demos never save. Press any button to come back.
 
+# sound
+sound.music = Menu music
+sound.volume = Volume
+sound.vol_value = {n}%
+sound.note = Each game can bring its own track (music.ogg in its folder); without one, the menu theme plays.
+
 # graphics
 gfx.original = Original
 gfx.enhanced = Enhanced
@@ -108,6 +115,29 @@ osk.space = Space
 osk.erase = Erase
 osk.shift = Shift
 osk.ok = OK
+
+# dashboard
+dash.played = {time} played
+dash.last = Last played: {date}
+dash.never = Not played yet
+dash.profile_games = {n} games played
+dash.profile_games_one = 1 game played
+time.hm = {h} h {m} min
+time.m = {m} min
+time.lt1 = < 1 min
+month.1 = Jan
+month.2 = Feb
+month.3 = Mar
+month.4 = Apr
+month.5 = May
+month.6 = Jun
+month.7 = Jul
+month.8 = Aug
+month.9 = Sep
+month.10 = Oct
+month.11 = Nov
+month.12 = Dec
+date.dmy = {month} {d}, {y}
 
 # attract mode
 attract.press_start = PRESS START

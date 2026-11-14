@@ -1,7 +1,9 @@
 # Dashboard redesign (PS5-style home)
 
-Status: approved direction (user, 2026-11-14), replaces the 3D carousel as the main
-browsing screen. Reference: a PS5-style home (full-screen game art, tab row, a row
+Status: implemented (2026-11-14) in src/main.c (`dash_draw`, FS_2D modes 6-9),
+src/music.c, src/status.c, src/stats.c; replaces the 3D carousel as the main browsing
+screen. Not done yet: top-centre icons (info / gallery), achievements (local milestones),
+FLAC music, a shipped menu theme. Reference: a PS5-style home (full-screen game art, tab row, a row
 of rounded cover tiles with the selection enlarged, large title + stats, hint bar).
 Interactive mockup shown in the session (widget `lumen_ps5_style_dashboard`).
 
@@ -87,3 +89,22 @@ the cover colours (computed when the cover is decoded, worker thread):
   Mac-side tool can rip with ffmpeg (title/menu track -> 90 s loop, OGG q4).
   Single-audio-track discs are usually the "do not play in a CD player" warning.
   Music stored as XA inside the data track needs a dedicated extractor (later).
+
+## Implementation notes
+
+- Render order per frame: background layer(s) -> overlay (mode 8) -> dashboard UI ->
+  3D media (only while launching) -> help bar, panel, attract text, flash/fade.
+- Tiles: `tile_x()/tile_size()` are continuous in the selection spring `dpos`, so the
+  row slides and the focused tile grows smoothly; a wrap-around (last -> first) snaps.
+- Background layers (`bgtex_t`): an image or `gen` = game index + 1 (generated); a new
+  layer crossfades over 0.6 s; the palette is read live from the game (cover average +
+  accent = strongest saturated hue bin of 12), so a cover decoded later recolours it.
+- Music: `music_play()` after 0.8 s on a game (`music.ogg|wav` in its folder,
+  `<stem>-music.ogg|wav` for file libraries), else `<home>/assets/music/menu.ogg`;
+  settings `music` (0/1) and `music_volume` (0..100) on the Sound page; ducked under the
+  panel; faded out on launch; the audio device is closed before RetroArch starts.
+- Play statistics: scripts/run.sh appends `<epoch>\t<seconds>\t<system>\t<content>` to
+  `<home>/profiles/<profile>/playlog.tsv` after every normal session; src/stats.c
+  aggregates it per profile (time played; "last played" only with a synced clock).
+- Avatar: `<home>/profiles/<id>/avatar.png`, else initials on the profile colour.
+- MSAA default is now 0 (`msaa` setting still honoured).
