@@ -194,11 +194,11 @@ if [ "${COMPOSITOR}" != stock ]; then
       echo "psc compositor ${v}: the last attempt showed no picture, skipped from now on"
     rm -f "${PW_MARK}"; sync
   fi
-  # Weston 6 first: proven with games and with RetroArch exiting (it also offers the
-  # xdg-shell RetroArch 1.22 needs). Weston 16 brought the whole console down when a
-  # game exited (2026-11-14, atomic KMS): it runs first only with compositor=weston16
-  # (a test switch, set by hand), otherwise only if Weston 6 does not start.
-  order="6 16"; [ "${COMPOSITOR}" = weston16 ] && order="16 6"
+  # Weston 16 first (newest), Weston 6 as the fallback. Weston 16 brought the console down
+  # once when Eris' RetroArch 1.8.8 exited a game (2026-11-14); with Lumen's RetroArch 1.22
+  # games start, exit and hand back to Lumen cleanly (tested on the console the same day).
+  # compositor=weston6 in settings.ini puts Weston 6 first.
+  order="16 6"; [ "${COMPOSITOR}" = weston6 ] && order="6 16"
   for v in ${order}; do
     [ -n "${STARTED}" ] && break
     tar=$(pw_tar "${v}") || continue
