@@ -2555,58 +2555,163 @@ static void test_shots(double ts)
       }
 }
 
-/* ---- in-game dialog (lumen --dialog disc|game, run by lumen-buttons on OPEN while
- * RetroArch is paused): a fullscreen card over the game. Exit code = the answer:
- * 0 continue, 1 change disc, 2 exit the game. Circle / Triangle = continue. */
+/* ---- in-game dialog (lumen --dialog game | discs:<count>:<current>, run by lumen-buttons
+ * on OPEN while RetroArch is paused): the game's cover as a dimmed backdrop, a card with
+ * the cover, the title and the choices, the dashboard's help bar. Exit code = the answer:
+ * 0 continue, 2 exit the game, 10 + k switch to disc k (1-based). Circle = continue. */
+static void dialog_launch_info(char *title, size_t tn, char *cover, size_t cn)
+{
+   char line[700], content[600] = "";
+   FILE *f = fopen("/tmp/lumen-launch", "r");
+   title[0] = cover[0] = 0;
+   if (!f) return;
+   while (fgets(line, sizeof(line), f))
+   {
+      line[strcspn(line, "\r\n")] = 0;
+      if (!strncmp(line, "title=", 6)) snprintf(title, tn, "%s", line + 6);
+      else if (!strncmp(line, "content=", 8)) snprintf(content, sizeof(content), "%s", line + 8);
+   }
+   fclose(f);
+   if (content[0])
+   {
+      char *dot = strrchr(content, '.'), *sl = strrchr(content, '/');
+      if (dot && (!sl || dot > sl)) *dot = 0;
+      snprintf(cover, cn, "%s.png", content);
+      if (!file_exists(cover) && sl) { *sl = 0; snprintf(cover, cn, "%s/disc.png", content); }
+      if (!file_exists(cover)) cover[0] = 0;
+   }
+}
+
 static int run_dialog(SDL_Window *win, const char *kind)
 {
-   static const char *const k_disc[] = { "dialog.change_disc", "dialog.exit", "dialog.continue" };
-   static const char *const k_game[] = { "dialog.exit", "dialog.continue" };
-   static const int a_disc[] = { 1, 2, 0 }, a_game[] = { 2, 0 };
-   int disc = !strcmp(kind, "disc"), n = disc ? 3 : 2, sel = n - 1, answer = -1, i;
-   const char *const *keys = disc ? k_disc : k_game;
-   const int *ans = disc ? a_disc : a_game;
-   label_t title = { 0 }, note = { 0 }, opt[3];
-   double t0 = now_s();
-   memset(opt, 0, sizeof(opt));
-   logf_("dialog %s", kind);
+   enum { MAXROW = 12 };
+   label_t kicker = { 0 }, title = { 0 }, sect = { 0 }, row_l[MAXROW], tag = { 0 }, h_ok = { 0 }, h_back = { 0 };
+   int ans[MAXROW], sect_before = -1, n = 0, sel = 0, answer = -1, i, discs = 1, cur = 1;
+   char gtitle[256], cover_path[700], buf[64];
+   GLuint cover = 0; int cw_ = 0, chh = 0;
+   const icon_t *ic_ok = icon_get(g_home, "cross"), *ic_back = icon_get(g_home, "circle");
+   spring pill = { 0 }, fade = { 0 };
+   double t0 = now_s(), tp = t0;
+
+   if (!strncmp(kind, "discs:", 6) && sscanf(kind + 6, "%d:%d", &discs, &cur) >= 1)
+   { if (discs < 1) discs = 1; if (discs > MAXROW - 2) discs = MAXROW - 2; if (cur < 1 || cur > discs) cur = 1; }
+   memset(row_l, 0, sizeof(row_l));
+   /* rows: Continue, [discs], Exit */
+   label_set(&row_l[n], g_font_name, tr("dialog.continue")); ans[n++] = 0;
+   if (discs > 1)
+   {
+      sect_before = n;
+      for (i = 1; i <= discs; i++)
+      {
+         snprintf(buf, sizeof(buf), "%s %d", tr("dialog.disc"), i);
+         label_set(&row_l[n], g_font_name, buf); ans[n++] = i == cur ? 0 : 10 + i;
+      }
+   }
+   label_set(&row_l[n], g_font_name, tr("dialog.exit")); ans[n++] = 2;
+
+   dialog_launch_info(gtitle, sizeof(gtitle), cover_path, sizeof(cover_path));
+   if (cover_path[0])
+   {
+      SDL_Surface *sf = IMG_Load(cover_path);
+      if (sf) { cw_ = sf->w; chh = sf->h; cover = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
+   }
+   label_set(&kicker, g_font_small, tr("dialog.title"));
+   label_set(&title, g_font_title, gtitle[0] ? gtitle : tr("dialog.title"));
+   label_set(&sect, g_font_small, tr("dialog.change_disc"));
+   label_set(&tag, g_font_small, tr("dialog.in_use"));
+   label_set(&h_ok, g_font_small, tr("dialog.choose"));
+   label_set(&h_back, g_font_small, tr("dialog.back"));
+   logf_("dialog %s (discs %d, current %d, cover %s)", kind, discs, cur, cover ? "yes" : "no");
+
    while (answer < 0)
    {
       SDL_Event e;
       ui_nav_t nv;
       double t = now_s();
+      float dt = (float)(t - tp); tp = t;
       memset(in_pressed, 0, sizeof(in_pressed));
       while (SDL_PollEvent(&e)) { if (e.type == SDL_QUIT) answer = 0; else in_event(&e); }
       nav_fill(&nv, t);
-      if (t - t0 > 0.25)   /* ignore the press that is still held from the game */
+      if (t - t0 > 0.25)   /* ignore the press still held from the game */
       {
-         if (nv.up) sel = (sel + n - 1) % n;
-         if (nv.down) sel = (sel + 1) % n;
+         if (nv.up && sel > 0) sel--;
+         if (nv.down && sel < n - 1) sel++;
          if (nv.confirm) answer = ans[sel];
          else if (nv.back || nv.options) answer = 0;
       }
-      glViewport(0, 0, g_dw, g_dh);
-      glClearColor(0.016f, 0.024f, 0.031f, 1.0f);
-      glClear(GL_COLOR_BUFFER_BIT);
-      glDisable(GL_DEPTH_TEST);
-      glEnable(GL_BLEND);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      gl_use_2d();
+      spring_step(&fade, 1.0f, 60, 14, dt);
       {
-         const float card[4] = { 1, 1, 1, 0.06f }, hi[4] = { 0.23f, 0.51f, 0.96f, 0.95f };
-         const float c1[4] = { 0.98f, 0.98f, 0.99f, 1 }, c2[4] = { 0.72f, 0.74f, 0.80f, 1 };
-         float cw = 560, ch = 150 + n * 64, cx = (W - cw) * 0.5f, cy = (H - ch) * 0.5f, y;
-         draw_round_rect(cx, cy, cw, ch, 22, card, 0.10f);
-         label_set(&title, g_font_title, tr("dialog.title"));
-         if (title.tex) draw_2d(title.tex, cx + 40, cy + 34, title.w, title.h, c1, 0);
-         label_set(&note, g_font_small, tr(disc ? "dialog.note_disc" : "dialog.note"));
-         if (note.tex) draw_2d(note.tex, cx + 40, cy + 34 + (title.h ? title.h : 40) + 6, note.w, note.h, c2, 0);
-         y = cy + 130;
-         for (i = 0; i < n; i++, y += 64)
+         /* geometry: header 132, rows 56, a section label before the discs */
+         const float RW = 56, cwid = 640, head = 140, pad = 28;
+         float chgt = head + n * RW + (sect_before >= 0 ? 34 : 0) + pad, cx = (W - cwid) * 0.5f, cy = (H - chgt) * 0.5f - 18;
+         float a = clampf(fade.x, 0, 1), rowy[MAXROW], y = cy + head;
+         const float white[4] = { 1, 1, 1, a }, dim[4] = { 0.70f, 0.73f, 0.80f, a }, acc[4] = { 0.36f, 0.60f, 1.0f, a };
+         const float card[4] = { 0.10f, 0.12f, 0.16f, 0.92f * a }, pillc[4] = { 0.23f, 0.51f, 0.96f, a };
+         const float scrim[4] = { 0.016f, 0.024f, 0.031f, 0.86f }, red[4] = { 1.0f, 0.55f, 0.55f, a };
+         for (i = 0; i < n; i++) { if (i == sect_before) y += 34; rowy[i] = y; y += RW; }
+         if (t - t0 < 0.02) pill.x = rowy[sel];
+         spring_step(&pill, rowy[sel], 260, 26, dt);
+
+         glViewport(0, 0, g_dw, g_dh);
+         glClearColor(0.016f, 0.024f, 0.031f, 1.0f);
+         glClear(GL_COLOR_BUFFER_BIT);
+         glDisable(GL_DEPTH_TEST);
+         glEnable(GL_BLEND);
+         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+         gl_use_2d();
+         if (cover)   /* backdrop: the cover filling the screen, dimmed */
          {
-            if (i == sel) draw_round_rect(cx + 28, y - 8, cw - 56, 52, 26, hi, 0.0f);
-            label_set(&opt[i], g_font_name, tr(keys[i]));
-            if (opt[i].tex) draw_2d(opt[i].tex, cx + 56, y + (36 - opt[i].h) * 0.5f, opt[i].w, opt[i].h, c1, 0);
+            float s2 = fmaxf((float)W / cw_, (float)H / chh), bw = cw_ * s2, bh = chh * s2;
+            const float bc[4] = { 1, 1, 1, 0.55f };
+            draw_2d(cover, (W - bw) * 0.5f, (H - bh) * 0.5f, bw, bh, bc, 0);
+         }
+         draw_2d(0, 0, 0, W, H, scrim, 0);
+         draw_shadow(cx, cy, cwid, chgt, 28, 40, 14, 0.55f * a);
+         draw_round_rect(cx, cy, cwid, chgt, 28, card, 0.10f * a);
+         /* header: cover thumbnail, kicker, title */
+         {
+            float tx = cx + pad;
+            if (cover)
+            {
+               float th = 92, tw = th * cw_ / (float)chh;
+               if (tw > 92) { tw = 92; th = tw * chh / (float)cw_; }
+               draw_shadow(cx + pad, cy + pad, tw, th, 10, 10, 3, 0.45f * a);
+               draw_2d(cover, cx + pad, cy + pad, tw, th, white, 0);
+               tx += tw + 22;
+            }
+            if (kicker.tex) draw_2d(kicker.tex, tx, cy + pad + 8, kicker.w, kicker.h, acc, 0);
+            if (title.tex)
+            {
+               float maxw = cx + cwid - pad - tx, tw2 = title.w > maxw ? maxw : title.w;
+               draw_2d(title.tex, tx, cy + pad + 8 + kicker.h + 4, tw2, title.h, white, 0);
+            }
+         }
+         /* separator, section label, selection pill, rows */
+         {
+            const float sep[4] = { 1, 1, 1, 0.08f * a };
+            draw_2d(0, cx + pad, cy + head - 14, cwid - 2 * pad, 1, sep, 0);
+         }
+         if (sect_before >= 0 && sect.tex) draw_2d(sect.tex, cx + pad + 18, rowy[sect_before] - 28, sect.w, sect.h, dim, 0);
+         draw_shadow(cx + pad, pill.x + 3, cwid - 2 * pad, RW - 6, (RW - 6) * 0.5f, 10, 3, 0.35f * a);
+         draw_round_rect(cx + pad, pill.x + 3, cwid - 2 * pad, RW - 6, (RW - 6) * 0.5f, pillc, 0.0f);
+         for (i = 0; i < n; i++)
+         {
+            const float *c = (ans[i] == 2 && i != sel) ? red : (i == sel ? white : dim);
+            if (row_l[i].tex) draw_2d(row_l[i].tex, cx + pad + 24, rowy[i] + (RW - row_l[i].h) * 0.5f, row_l[i].w, row_l[i].h, c, 0);
+            if (sect_before >= 0 && i == sect_before + cur - 1 && tag.tex)
+            {
+               const float tg[4] = { 1, 1, 1, (i == sel ? 0.85f : 0.55f) * a };
+               draw_2d(tag.tex, cx + cwid - pad - 24 - tag.w, rowy[i] + (RW - tag.h) * 0.5f, tag.w, tag.h, tg, 0);
+            }
+         }
+         /* help bar */
+         {
+            float ih = 26, hy = H - 58, wok = (ic_ok && ic_ok->tex ? ih + 8 : 0) + h_ok.w, wbk = (ic_back && ic_back->tex ? ih + 8 : 0) + h_back.w;
+            float hx = (W - (wok + 36 + wbk)) * 0.5f;
+            if (ic_ok && ic_ok->tex) { draw_2d(ic_ok->tex, hx, hy, ih, ih, white, 0); hx += ih + 8; }
+            if (h_ok.tex) { draw_2d(h_ok.tex, hx, hy + (ih - h_ok.h) * 0.5f, h_ok.w, h_ok.h, dim, 0); hx += h_ok.w + 36; }
+            if (ic_back && ic_back->tex) { draw_2d(ic_back->tex, hx, hy, ih, ih, white, 0); hx += ih + 8; }
+            if (h_back.tex) draw_2d(h_back.tex, hx, hy + (ih - h_back.h) * 0.5f, h_back.w, h_back.h, dim, 0);
          }
       }
       SDL_GL_SwapWindow(win);

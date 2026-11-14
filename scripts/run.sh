@@ -204,6 +204,7 @@ lumen_discs() {
     *.m3u|*.M3U) n=$(grep -c '^[^#]' "${L_CONTENT}" 2>/dev/null || echo 1) ;;
   esac
   echo "${n}" > /tmp/lumen-discs
+  echo 1 > /tmp/lumen-disc-current
   [ "${n}" -gt 1 ] && slog "discs: ${n} (${RA_CONTENT})"
 }
 
