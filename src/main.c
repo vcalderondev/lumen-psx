@@ -131,6 +131,11 @@ platform_t g_plat[MAX_PLATFORMS];
 int        g_nplat;
 
 char g_root[256]     = "/media";
+/* The UI is laid out in a 1280x720 logical space (W x H); the window may be larger
+ * (display=1080p: 1920x1080). g_ui_scale = device px per logical px: fonts and text
+ * textures are rasterised at device size, so text stays sharp at any output. */
+float g_ui_scale = 1.0f;
+static int g_dw = W, g_dh = H;      /* drawable size in device pixels */
 char g_home[256]     = "/media/lumen";
 char g_core_dir[256] = "/media/lumen/cores";
 static char g_state[256]    = "/media/lumen/state.txt";
@@ -721,7 +726,7 @@ static const char *FS_2D =
    "                 highp vec2 q = abs((v_uv - 0.5) * rect.xy) - (hs - vec2(r));\n"
    "                 highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
    "                 float edge = clamp(0.5 - d, 0.0, 1.0);\n"
-   "                 float bw = clamp(d + 2.0, 0.0, 1.0) * rect.w;\n"
+   "                 float bw = clamp(d + aux0.x, 0.0, 1.0) * rect.w;\n"
    "                 vec3 fill = color.rgb + vec3(mix(0.06, -0.04, v_uv.y));\n"
    "                 float a = bw + color.a * (1.0 - bw);\n"
    "                 vec3 c = (vec3(bw) + fill * color.a * (1.0 - bw)) / max(a, 0.001);\n"
@@ -871,6 +876,43 @@ static GLuint surface_to_tex(SDL_Surface *s, int mip, float *avg)
    return t;
 }
 
+/* smallest device size >= n whose logical size (n / scale) is a whole number, so a
+ * text texture drawn at its logical size maps 1:1 onto device pixels */
+static int dev_pad(int n)
+{
+   int k;
+   if (g_ui_scale == 1.0f) return n;
+   for (k = n; k < n + 8; k++)
+   {
+      float l = k / g_ui_scale;
+      if (fabsf(l - floorf(l + 0.5f)) < 0.001f) return k;
+   }
+   return n;
+}
+
+/* upload rendered text: padded to dev_pad() sizes; w / h returned in logical px */
+static GLuint text_upload(SDL_Surface *surf, int *w, int *h)
+{
+   int dw = dev_pad(surf->w), dh = dev_pad(surf->h);
+   GLuint t;
+   if (dw != surf->w || dh != surf->h)
+   {
+      SDL_Surface *pad = SDL_CreateRGBSurface(0, dw, dh, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+      if (pad)
+      {
+         SDL_FillRect(pad, NULL, SDL_MapRGBA(pad->format, 255, 255, 255, 0));
+         SDL_SetSurfaceBlendMode(surf, SDL_BLENDMODE_NONE);
+         SDL_BlitSurface(surf, NULL, pad, NULL);
+         t = surface_to_tex(pad, 0, NULL);
+         SDL_FreeSurface(pad);
+         *w = (int)floorf(dw / g_ui_scale + 0.5f); *h = (int)floorf(dh / g_ui_scale + 0.5f);
+         return t;
+      }
+   }
+   *w = (int)floorf(surf->w / g_ui_scale + 0.5f); *h = (int)floorf(surf->h / g_ui_scale + 0.5f);
+   return surface_to_tex(surf, 0, NULL);
+}
+
 GLuint text_tex(TTF_Font *f, const char *s, int *w, int *h)
 {
    SDL_Color white = { 255, 255, 255, 255 };
@@ -878,42 +920,50 @@ GLuint text_tex(TTF_Font *f, const char *s, int *w, int *h)
    if (!f || !s || !*s) { *w = *h = 0; return 0; }
    surf = TTF_RenderUTF8_Blended(f, s, white);
    if (!surf) { *w = *h = 0; return 0; }
-   *w = surf->w; *h = surf->h;
-   t = surface_to_tex(surf, 0, NULL);
+   t = text_upload(surf, w, h);
    SDL_FreeSurface(surf);
    return t;
 }
 
+/* wrap_px in logical px */
 GLuint text_tex_wrapped(TTF_Font *f, const char *s, int wrap_px, int *w, int *h)
 {
    SDL_Color white = { 255, 255, 255, 255 };
    SDL_Surface *surf; GLuint t;
    if (!f || !s || !*s) { *w = *h = 0; return 0; }
-   surf = TTF_RenderUTF8_Blended_Wrapped(f, s, white, (Uint32)wrap_px);
+   surf = TTF_RenderUTF8_Blended_Wrapped(f, s, white, (Uint32)(wrap_px * g_ui_scale));
    if (!surf) { *w = *h = 0; return 0; }
-   *w = surf->w; *h = surf->h;
-   t = surface_to_tex(surf, 0, NULL);
+   t = text_upload(surf, w, h);
    SDL_FreeSurface(surf);
    return t;
+}
+
+/* scissor rectangle in logical coordinates (top-left origin) */
+void gl_scissor(float x, float y, float w, float h)
+{
+   int x0 = (int)floorf(x * g_ui_scale), y0 = (int)floorf((H - y - h) * g_ui_scale);
+   int sw = (int)ceilf(w * g_ui_scale), sh = (int)ceilf(h * g_ui_scale);
+   glScissor(x0 < 0 ? 0 : x0, y0 < 0 ? 0 : y0, sw > 0 ? sw : 0, sh > 0 ? sh : 0);
 }
 
 static unsigned hash_str(const char *s) { unsigned h = 2166136261u; while (*s) h = (h ^ (unsigned char)*s++) * 16777619u; return h; }
 
 /* Back of the case / placeholder front: coloured card with wrapped text. */
+#define SP(v) ((int)((v) * g_ui_scale + 0.5f))   /* logical px -> device px (fonts are scaled) */
 static GLuint card_tex(const game_t *g, int back)
 {
-   SDL_Surface *card = SDL_CreateRGBSurface(0, 256, 256, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+   SDL_Surface *card = SDL_CreateRGBSurface(0, SP(256), SP(256), 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
    SDL_Color white = { 255, 255, 255, 255 };
-   SDL_Rect r; GLuint t; char line[160]; int y = 18;
+   SDL_Rect r; GLuint t; char line[160]; int y = SP(18);
    Uint8 cr = (Uint8)(g->col[0] * 255), cg = (Uint8)(g->col[1] * 255), cb = (Uint8)(g->col[2] * 255);
    if (!card) return 0;
    if (back) { cr = cr / 3 + 12; cg = cg / 3 + 12; cb = cb / 3 + 18; }
    SDL_FillRect(card, NULL, SDL_MapRGBA(card->format, cr, cg, cb, 255));
-#define LINE(font, txt) do { SDL_Surface *ts = TTF_RenderUTF8_Blended_Wrapped(font, txt, white, 224); \
-      if (ts) { r.x = 16; r.y = y; r.w = ts->w; r.h = ts->h; SDL_BlitSurface(ts, NULL, card, &r); y += ts->h + 6; SDL_FreeSurface(ts); } } while (0)
+#define LINE(font, txt) do { SDL_Surface *ts = TTF_RenderUTF8_Blended_Wrapped(font, txt, white, SP(224)); \
+      if (ts) { r.x = SP(16); r.y = y; r.w = ts->w; r.h = ts->h; SDL_BlitSurface(ts, NULL, card, &r); y += ts->h + SP(6); SDL_FreeSurface(ts); } } while (0)
    if (g_font_cover)
    {
-      if (!back) y = 150;
+      if (!back) y = SP(150);
       LINE(g_font_cover, g->title);
       if (back)
       {
@@ -925,7 +975,7 @@ static GLuint card_tex(const game_t *g, int back)
             LINE(g_font_small, line);
          }
          trf(line, sizeof(line), "card.memory_card", "name", profiles_display_name(profiles_active()), NULL);
-         y = 220; LINE(g_font_small, line);
+         y = SP(220); LINE(g_font_small, line);
       }
    }
 #undef LINE
@@ -941,15 +991,15 @@ static GLuint spine_tex(const game_t *g)
    SDL_Surface *strip, *ts;
    SDL_Rect r; GLuint t;
    if (!g_font_small) return 0;
-   strip = SDL_CreateRGBSurface(0, 512, 48, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+   strip = SDL_CreateRGBSurface(0, SP(512), SP(48), 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
    if (!strip) return 0;
    SDL_FillRect(strip, NULL, SDL_MapRGBA(strip->format, 0, 0, 0, 0));
    ts = TTF_RenderUTF8_Blended(g_font_small, g->title, white);
    if (ts)
    {
       SDL_SetSurfaceBlendMode(ts, SDL_BLENDMODE_NONE);
-      r.w = ts->w > 470 ? 470 : ts->w; r.h = ts->h > 46 ? 46 : ts->h;
-      r.x = 24; r.y = (48 - r.h) / 2;
+      r.w = ts->w > SP(470) ? SP(470) : ts->w; r.h = ts->h > SP(46) ? SP(46) : ts->h;
+      r.x = SP(24); r.y = (SP(48) - r.h) / 2;
       SDL_BlitSurface(ts, NULL, strip, &r);
       SDL_FreeSurface(ts);
    }
@@ -1191,6 +1241,13 @@ static void draw_reflection(const game_t *g, const platform_t *pl, mat4 base, fl
 
 void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
 {
+   if (mode == 0 && tex && fabsf(w * g_ui_scale - floorf(w * g_ui_scale + 0.5f)) < 0.01f &&
+       fabsf(h * g_ui_scale - floorf(h * g_ui_scale + 0.5f)) < 0.01f)
+   {  /* textures drawn 1:1 (text, glyphs) start on a device pixel: no half-pixel
+       * resampling; scaled or animated images (backgrounds) keep sub-pixel motion */
+      x = floorf(x * g_ui_scale + 0.5f) / g_ui_scale;
+      y = floorf(y * g_ui_scale + 0.5f) / g_ui_scale;
+   }
    mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(x + w * 0.5f, y + h * 0.5f, 0), m4_scale(w, -h, 1)));
    glUniformMatrix4fv(u2_mvp, 1, GL_FALSE, m.m);
    glUniform4fv(u2_color, 1, rgba);
@@ -1202,15 +1259,18 @@ void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4]
 /* glass rounded rectangle (mode 5): the shader needs the size in pixels for its distance field */
 void draw_round_rect(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha)
 {
-   glUniform4f(u2_rect, w, h, radius, border_alpha);
+   const float k = g_ui_scale;   /* shape maths in device px: 1-px antialiased edges */
+   glUniform4f(u2_rect, w * k, h * k, radius * k, border_alpha);
+   glUniform4f(u2_aux0, 2.0f * k, 0.0f, 0.0f, 0.0f);   /* border band: 2 logical px */
    draw_2d(0, x, y, w, h, rgba, 5);
 }
 
 /* flat rounded rectangle (mode 9): filled, or stroked inside with width `stroke` */
 static void draw_shape(float x, float y, float w, float h, float radius, float stroke, const float rgba[4])
 {
-   glUniform4f(u2_rect, w, h, radius, 0.0f);
-   glUniform4f(u2_aux0, stroke, 0.0f, 0.0f, 0.0f);
+   const float k = g_ui_scale;
+   glUniform4f(u2_rect, w * k, h * k, radius * k, 0.0f);
+   glUniform4f(u2_aux0, stroke * k, 0.0f, 0.0f, 0.0f);
    draw_2d(0, x, y, w, h, rgba, 9);
 }
 
@@ -1219,8 +1279,9 @@ static void draw_shape(float x, float y, float w, float h, float radius, float s
 static void draw_shadow_ex(float x, float y, float w, float h, float radius, float blur, float dy, float a, int cut)
 {
    const float c[4] = { 0, 0, 0, a };
-   glUniform4f(u2_rect, w + 2 * blur, h + 2 * blur, radius, 0.0f);
-   glUniform4f(u2_aux0, blur, cut ? 1.0f : 0.0f, dy, 0.0f);
+   const float k = g_ui_scale;
+   glUniform4f(u2_rect, (w + 2 * blur) * k, (h + 2 * blur) * k, radius * k, 0.0f);
+   glUniform4f(u2_aux0, blur * k, cut ? 1.0f : 0.0f, dy * k, 0.0f);
    draw_2d(0, x - blur, y - blur + dy, w + 2 * blur, h + 2 * blur, c, 10);
 }
 static void draw_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float a)
@@ -1249,7 +1310,7 @@ static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, flo
       if (ar > want) { us = want / ar; u0 = (1.0f - us) * 0.5f; }
       else { vs = ar / want; v0 = (1.0f - vs) * 0.5f; }
    }
-   glUniform4f(u2_rect, w, h, radius, 0.0f);
+   glUniform4f(u2_rect, w * g_ui_scale, h * g_ui_scale, radius * g_ui_scale, 0.0f);
    glUniform4f(u2_aux0, u0, v0, us, vs);
    glUniform4f(u2_aux1, sheen, light, 0.0f, 0.0f);
    draw_2d(tex, x, y, w, h, rgba, 6);
@@ -1281,7 +1342,7 @@ static TTF_Font *open_font(const char **paths, int size)
    int i;
    for (i = 0; paths[i]; i++)
    {
-      TTF_Font *f = TTF_OpenFont(paths[i], size);
+      TTF_Font *f = TTF_OpenFont(paths[i], (int)(size * g_ui_scale + 0.5f));
       if (f) return f;
    }
    logf_("no font found for size %d", size);
@@ -2091,9 +2152,8 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       if (g_nplat > 1) glyph_draw("l1", DASH_X, TAB_Y + (ph - 24) * 0.5f, 24, gl);
       if (total > right - left)
       {
-         int sy = (int)(H - TAB_Y - ph - 24);
          glEnable(GL_SCISSOR_TEST);
-         glScissor((int)left - 16, sy < 0 ? 0 : sy, (int)(right - left) + 32, (int)ph + 40);
+         gl_scissor(left - 16, TAB_Y - 16, right - left + 32, ph + 40);
       }
       x = x0;
       for (i = 0; i < g_nplat; i++)
@@ -2306,6 +2366,10 @@ int main(int argc, char **argv)
    }
    SDL_GL_SetSwapInterval(1);
    SDL_ShowCursor(SDL_DISABLE);
+   SDL_GL_GetDrawableSize(win, &g_dw, &g_dh);
+   if (g_dw <= 0 || g_dh <= 0) { g_dw = W; g_dh = H; }
+   g_ui_scale = g_dh / (float)H;
+   logf_("output %dx%d, ui scale %.3f", g_dw, g_dh, g_ui_scale);
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
    gl_setup();
    make_fx_textures();
@@ -2699,7 +2763,7 @@ int main(int argc, char **argv)
          spring_step(&plat_x, 0, 120, 16, dt);
 
          /* ---- render ---- */
-         glViewport(0, 0, W, H);
+         glViewport(0, 0, g_dw, g_dh);
          glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
          glClearDepthf(1.0f);
          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

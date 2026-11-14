@@ -52,6 +52,7 @@ extern platform_t g_plat[MAX_PLATFORMS];
 extern int        g_nplat;
 extern char       g_root[256], g_home[256], g_core_dir[256];
 extern TTF_Font  *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
+extern float      g_ui_scale;   /* device px per logical px (1280x720 layout) */
 
 typedef struct { GLuint tex; int w, h; char key[200]; } label_t;
 
@@ -65,6 +66,7 @@ GLuint text_tex_wrapped(TTF_Font *f, const char *s, int wrap_px, int *w, int *h)
 void   label_set(label_t *l, TTF_Font *f, const char *s);   /* re-renders only when s changes */
 void   label_free(label_t *l);
 void   gl_use_2d(void);        /* glUseProgram(g_prog_2d) + sampler 0 */
+void   gl_scissor(float x, float y, float w, float h);   /* logical rect, top-left origin */
 
 /* one frame of navigation for UI modules: press edges, with auto-repeat on the directions.
  * back = Circle or Square; erase = Square alone (the keyboard tells them apart) */

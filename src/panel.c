@@ -991,9 +991,8 @@ void panel_draw(double t)
    /* rows, clipped to their area */
    top = py + ROWS_Y;
    {
-      int sx = (int)floorf(px), sy = (int)floorf(H - bottom), sh = (int)(bottom - top);
       glEnable(GL_SCISSOR_TEST);
-      glScissor(sx < 0 ? 0 : sx, sy, (int)PW, sh > 0 ? sh : 0);
+      gl_scissor(px, top, PW, bottom - top);
    }
    if (s_sel >= 0)
    {

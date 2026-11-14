@@ -141,6 +141,10 @@ lumen_build_ra_extra() {
   : > "${LUMEN_RA_EXTRA}"
   [ -n "$L_SAVES" ] && echo "savefile_directory = \"${L_SAVES}\"" >> "${LUMEN_RA_EXTRA}"
   [ -n "$L_STATES" ] && echo "savestate_directory = \"${L_STATES}\"" >> "${LUMEN_RA_EXTRA}"
+  if [ "${LUMEN_DISPLAY}" = 1080p ]; then   # boot.sh started Weston at 1920x1080
+    echo 'video_fullscreen_x = "1920"' >> "${LUMEN_RA_EXTRA}"
+    echo 'video_fullscreen_y = "1080"' >> "${LUMEN_RA_EXTRA}"
+  fi
   if [ -f /tmp/lumen-ra.kv ]; then
     while IFS= read -r kvl || [ -n "$kvl" ]; do
       [ -n "$kvl" ] && echo "${kvl%%=*} = \"${kvl#*=}\"" >> "${LUMEN_RA_EXTRA}"
