@@ -112,7 +112,15 @@ static void log_sync_atexit(void)
    flockfile(g_log); fflush(g_log); log_sync_locked(1); funlockfile(g_log);
 }
 
-double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
+/* LUMEN_RECORD (test hook, see test_parse): a fixed time step, so frame dumps make a smooth
+ * video however slow the renderer is (the software GPU of the simulator) */
+static double g_rec_fps, g_rec_base;
+static long   g_rec_frame;
+double now_s(void)
+{
+   if (g_rec_fps > 0) return g_rec_base + g_rec_frame / g_rec_fps;
+   return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+}
 
 static long rss_kb(void)
 {
@@ -3023,7 +3031,11 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
  * variables, inert when unset.
  *   LUMEN_INPUT="2:right;2.5:right;4:select;6:back;9:quit"  logical buttons at seconds
  *     (left right up down l1 r1 play back square options start select quit)
- *   LUMEN_SHOT="/out/a.ppm@3;/out/b.ppm@7"                   framebuffer dumps (PPM) */
+ *   LUMEN_SHOT="/out/a.ppm@3;/out/b.ppm@7"                   framebuffer dumps (PPM)
+ *   LUMEN_RECORD="/out/f%05d.ppm@START:SECONDS:FPS"           every frame from START for SECONDS,
+ *     on a fixed clock of FPS frames per second (time no longer follows the wall clock) */
+static char g_rec_path[200];
+static double g_rec_from, g_rec_len;
 typedef struct { double at; int btn; char path[200]; int done; } test_ev_t;
 static test_ev_t g_tin[64], g_tshot[16];
 static int       g_ntin, g_ntshot;
@@ -3052,6 +3064,18 @@ static void test_parse(void)
          *c = 0;
          g_tin[g_ntin].at = atof(tok); g_tin[g_ntin].btn = test_btn(c + 1);
          if (g_tin[g_ntin].btn != -1) g_ntin++;
+      }
+   }
+   if ((e = getenv("LUMEN_RECORD")))
+   {
+      const char *at = strrchr(e, '@');
+      double fps = 0;
+      if (at && at - e < (long)sizeof(g_rec_path) && sscanf(at + 1, "%lf:%lf:%lf", &g_rec_from, &g_rec_len, &fps) == 3 && fps > 0)
+      {
+         memcpy(g_rec_path, e, at - e); g_rec_path[at - e] = 0;
+         g_rec_base = SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+         g_rec_fps = fps;
+         logf_("test: recording %s from %.1f s for %.1f s at %.0f fps (fixed clock)", g_rec_path, g_rec_from, g_rec_len, fps);
       }
    }
    save = NULL;
@@ -3086,6 +3110,44 @@ static int test_input(double ts)
          else { in_set(g_tin[i].btn, 1); if (nheld < 16) held[nheld++] = g_tin[i].btn; }
       }
    return run;
+}
+
+static void dump_ppm(const char *path)
+{
+   unsigned char *px = malloc((size_t)g_dw * g_dh * 4), *row;
+   FILE *f;
+   int y;
+   if (!px) return;
+   glReadPixels(0, 0, g_dw, g_dh, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   if ((f = fopen(path, "wb")))
+   {
+      fprintf(f, "P6\n%d %d\n255\n", g_dw, g_dh);
+      row = malloc((size_t)g_dw * 3);
+      for (y = g_dh - 1; row && y >= 0; y--)
+      {
+         int x;
+         for (x = 0; x < g_dw; x++) memcpy(row + x * 3, px + ((size_t)y * g_dw + x) * 4, 3);
+         fwrite(row, 3, g_dw, f);
+      }
+      free(row);
+      fclose(f);
+   }
+   free(px);
+}
+
+/* LUMEN_RECORD: one PPM per frame inside the window; advances the fixed clock */
+static void test_record(double ts)
+{
+   static long n;
+   if (g_rec_fps <= 0) return;
+   if (ts >= g_rec_from && ts < g_rec_from + g_rec_len)
+   {
+      char path[260];
+      snprintf(path, sizeof(path), g_rec_path, (int)n++);
+      dump_ppm(path);
+      if (n == 1 || n % 60 == 0) logf_("test: recorded %ld frames", n);
+   }
+   g_rec_frame++;
 }
 
 /* dump the back buffer (before the swap) as a binary PPM */
@@ -4097,6 +4159,7 @@ int main(int argc, char **argv)
          }
       }
       if (g_ntshot) test_shots(t - t0);
+      test_record(t - t0);
       if (g_launch_shots && play_t >= 0)
       {
          static int lf;
