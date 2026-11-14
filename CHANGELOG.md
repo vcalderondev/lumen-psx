@@ -3,6 +3,13 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- The Lumen PSX logo (frontal LPSX, one colour per letter) at the top centre of the dashboard,
+  entering letter by letter each time the dashboard appears; 720p and 1080p renders in
+  `assets/brand/` (`tools/make-brand.py`), installed by the zip and `tools/install.sh`.
+
 ## [0.5.0] - 2026-11-14
 
 No Project Eris at all: the release zip is ready to use on any PlayStation Classic.

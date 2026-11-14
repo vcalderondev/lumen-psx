@@ -32,6 +32,7 @@ else
   for d in icons glyphs fonts; do
     for f in assets/$d/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/assets/$d/$(basename "$f")"; done
   done
+  for f in assets/brand/*.png; do copy_file "$f" "$VOL/lumen/assets/brand/$(basename "$f")"; done
   mkdir -p "$VOL/lumen/profiles"
   if [ "$1" = "--cores" ] && [ -d "$2" ]; then
     for f in "$2"/*.so; do copy_file "$f" "$VOL/lumen/cores/$(basename "$f")"; done
