@@ -2545,32 +2545,41 @@ static float glyph_w(const char *name, float h)
    return ic && ic->tex && ic->h > 0 ? h * ic->w / (float)ic->h : 0.0f;
 }
 
-/* Lumen PSX logo (assets/brand/logo-front[-1080].png, tools/make-brand.py): the frontal
- * LPSX, top centre of the dashboard. Each letter is its own small texture (cut from the
- * PNG at the gaps between letters) so they can enter one by one: whenever the dashboard
- * appears, L, P, S, X drop into place with a fade, 90 ms apart. Missing PNG: nothing is
- * drawn (the top bar stays as it was). */
-#define LOGO_H_VOX   28.5f   /* content width of logo-front.svg in voxels: 4 x 6 + 3 x 1.5 */
-static struct { int tried; GLuint tex[4]; float x[4], w[4], h; } g_logo;
+/* Lumen PSX logo (assets/brand/, tools/make-brand.py): the frontal LPSX, one texture
+ * per letter (cut from the PNG at the gaps between letters) so the letters can move and
+ * fill one by one. Two sizes:
+ *  - logo-front[-1080].png, top centre of the dashboard: whenever the dashboard appears,
+ *    L, P, S, X drop into place with a fade, 90 ms apart;
+ *  - logo-front-splash[-1080].png, the startup splash: the letters start dark (the boot
+ *    payload's splash.png shows exactly that frame) and fill with colour voxel row by
+ *    voxel row, L to X, as startup goes on; then the splash fades into the dashboard.
+ * Missing PNG: nothing is drawn (plain black splash, the top bar as it was). */
+#define LOGO_W_VOX   28.5f   /* content width of logo-front.svg in voxels: 4 x 6 + 3 x 1.5 */
+#define LOGO_H_VOX   8.0f    /* letter height in voxels (the extrusion hangs below) */
+#define SPLASH_DARK  0.22f   /* brightness of an unfilled letter (make-brand.py: DARK) */
+typedef struct { int tried; GLuint tex[4]; float x[4], w[4], h, vox; } logo_t;
+static logo_t g_logo, g_logo_big;
 static double g_logo_t0 = -1.0;   /* time the entry animation started; -1: replay on next show */
 
-static void logo_load(void)
+static void logo_load(logo_t *lg, const char *name)
 {
    /* gap centres between letters, in voxels from the content's left edge */
-   static const float cut[5] = { 0.0f, 6.75f, 14.25f, 21.75f, LOGO_H_VOX };
-   char path[400];
+   static const float cut[5] = { 0.0f, 6.75f, 14.25f, 21.75f, LOGO_W_VOX };
+   char path[400], rel[160];
    float fs = 1.0f, vox;
    SDL_Surface *sf = NULL;
    int i;
-   g_logo.tried = 1;
+   lg->tried = 1;
    if (g_ui_scale > 1.2f)
    {
-      asset_path(path, sizeof(path), "brand/logo-front-1080.png", "brand/logo-front-1080.png");
+      snprintf(rel, sizeof(rel), "brand/%s-1080.png", name);
+      asset_path(path, sizeof(path), rel, rel);
       if ((sf = IMG_Load(path))) fs = 1.5f;
    }
    if (!sf)
    {
-      asset_path(path, sizeof(path), "brand/logo-front.png", "brand/logo-front.png");
+      snprintf(rel, sizeof(rel), "brand/%s.png", name);
+      asset_path(path, sizeof(path), rel, rel);
       if (!(sf = IMG_Load(path))) { logf_("brand logo not found: %s", path); return; }
    }
    if (sf->format->format != SDL_PIXELFORMAT_ABGR8888)
@@ -2580,8 +2589,9 @@ static void logo_load(void)
       if (!(sf = c)) return;
    }
    SDL_SetSurfaceBlendMode(sf, SDL_BLENDMODE_NONE);
-   vox = (sf->w - 2) / LOGO_H_VOX;   /* px per voxel (1 px clear border around the content) */
-   g_logo.h = sf->h / fs;
+   vox = (sf->w - 2) / LOGO_W_VOX;   /* px per voxel (1 px clear border around the content) */
+   lg->h = sf->h / fs;
+   lg->vox = vox / fs;
    for (i = 0; i < 4; i++)
    {
       int x0 = i ? (int)floorf(1 + cut[i] * vox) : 0, x1 = i < 3 ? (int)floorf(1 + cut[i + 1] * vox) : sf->w;
@@ -2589,28 +2599,34 @@ static void logo_load(void)
       SDL_Surface *part = SDL_CreateRGBSurface(0, r.w, r.h, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
       if (!part) continue;
       SDL_BlitSurface(sf, &r, part, NULL);
-      g_logo.tex[i] = surface_to_tex(part, 0, NULL);
-      g_logo.x[i] = x0 / fs; g_logo.w[i] = r.w / fs;
+      lg->tex[i] = surface_to_tex(part, 0, NULL);
+      lg->x[i] = x0 / fs; lg->w[i] = r.w / fs;
       SDL_FreeSurface(part);
    }
    logf_("brand logo: %s (%dx%d)", path, sf->w, sf->h);
    SDL_FreeSurface(sf);
 }
 
-/* the logo centred on (cx, cy); t: frame time; a: UI alpha */
+/* top-left of a logo centred on (cx, cy) */
+static void logo_origin(const logo_t *lg, float cx, float cy, float *x0, float *y0)
+{
+   *x0 = floorf(cx - (lg->x[3] + lg->w[3]) * 0.5f);
+   *y0 = floorf(cy - lg->h * 0.5f);
+}
+
+/* dashboard: the logo centred on (cx, cy); t: frame time; a: UI alpha */
 static void logo_draw(float cx, float cy, double t, float a)
 {
-   float x0, y0, total;
+   float x0, y0;
    int i;
-   if (!g_logo.tried) logo_load();
+   if (!g_logo.tried) logo_load(&g_logo, "logo-front");
    if (!g_logo.tex[0]) return;
    if (g_logo_t0 < 0)
    {  /* start once the dashboard has mostly faded in, or the entry happens unseen */
       if (a < 0.6f) return;
       g_logo_t0 = t;
    }
-   total = g_logo.x[3] + g_logo.w[3];
-   x0 = floorf(cx - total * 0.5f); y0 = floorf(cy - g_logo.h * 0.5f);
+   logo_origin(&g_logo, cx, cy, &x0, &y0);
    for (i = 0; i < 4; i++)
    {
       /* 0.15 s after the dashboard shows, letter i falls 14 px in 0.55 s (a small
@@ -2620,6 +2636,64 @@ static void logo_draw(float cx, float cy, double t, float a)
       float c[4] = { 1, 1, 1, a * clampf(p / 0.55f, 0.0f, 1.0f) };
       if (c[3] <= 0.003f || !g_logo.tex[i]) continue;
       draw_2d(g_logo.tex[i], x0 + g_logo.x[i], y0 - 14.0f * (1.0f - e), g_logo.w[i], g_logo.h, c, 0);
+   }
+}
+
+/* splash: the big logo at the centre, filled up to `fill` (0..1 over the four letters,
+ * whole voxel rows from the bottom), at alpha a. Caller: blending on, g_prog_2d bound. */
+static void splash_logo_draw(float fill, float a)
+{
+   float x0, y0;
+   int i;
+   if (!g_logo_big.tried) logo_load(&g_logo_big, "logo-front-splash");
+   if (!g_logo_big.tex[0] || a <= 0.003f) return;
+   logo_origin(&g_logo_big, W * 0.5f, H * 0.5f, &x0, &y0);
+   for (i = 0; i < 4; i++)
+   {
+      const float dark[4] = { SPLASH_DARK, SPLASH_DARK, SPLASH_DARK, a }, full[4] = { 1, 1, 1, a };
+      float f = clampf(fill * 4.0f - i, 0.0f, 1.0f), lx = x0 + g_logo_big.x[i];
+      int rows = (int)ceilf(f * LOGO_H_VOX - 0.001f);
+      if (!g_logo_big.tex[i]) continue;
+      if (rows < LOGO_H_VOX) draw_2d(g_logo_big.tex[i], lx, y0, g_logo_big.w[i], g_logo_big.h, dark, 0);
+      if (rows <= 0) continue;
+      if (rows < LOGO_H_VOX)
+      {  /* the filled part: from the top of row (8 - rows) down to the bottom of the PNG */
+         float top = y0 + 1.0f / (g_ui_scale > 1.2f ? 1.5f : 1.0f) + (LOGO_H_VOX - rows) * g_logo_big.vox;
+         glEnable(GL_SCISSOR_TEST);
+         gl_scissor(lx, top, g_logo_big.w[i], y0 + g_logo_big.h - top);
+      }
+      draw_2d(g_logo_big.tex[i], lx, y0, g_logo_big.w[i], g_logo_big.h, full, 0);
+      glDisable(GL_SCISSOR_TEST);
+   }
+}
+
+/* Startup splash: show the logo filled up to `target` (loading progress), animating the
+ * fill from where it is at ~2.5 logos per second (whole frames, vsync). Blocking work
+ * runs between calls, so each call is one step of progress; it costs ~0.4 s in all. */
+static float g_splash_fill = -1.0f;   /* < 0: no splash (in-game dialog) */
+static void splash_step(SDL_Window *win, float target)
+{
+   double last = now_s();
+   if (g_splash_fill < 0.0f) return;
+   for (;;)
+   {
+      double t = now_s();
+      float dt = clampf((float)(t - last), 0.0f, 0.1f);   /* a slow frame still advances */
+      last = t;
+      g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
+      SDL_PumpEvents();
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glViewport(0, 0, g_dw, g_dh);
+      glDisable(GL_DEPTH_TEST);
+      glDisable(GL_SCISSOR_TEST);
+      glClearColor(0, 0, 0, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      glUseProgram(g_prog_2d);
+      splash_logo_draw(g_splash_fill, 1.0f);
+      SDL_GL_SwapWindow(win);
+      if (g_splash_fill >= target || !g_logo_big.tex[0]) break;
    }
 }
 
@@ -3256,6 +3330,8 @@ int main(int argc, char **argv)
    logf_("output %dx%d, ui scale %.3f", g_dw, g_dh, g_ui_scale);
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
    gl_setup();
+   g_ortho = m4_ortho(0, W, H, 0);
+   if (!dialog) { g_splash_fill = 0.0f; splash_step(win, 0.0f); }   /* the boot splash's frame */
    make_fx_textures();
    make_tile_shadow();
    bg_mx = SDL_CreateMutex();
@@ -3275,6 +3351,7 @@ int main(int argc, char **argv)
    g_font_hero  = open_font(fonts_semi, 50);
    g_font_tab   = open_font(fonts_med, 19);
    g_font_name  = open_font(fonts_med, 21);
+   splash_step(win, 0.2f);
    if (dialog)   /* in-game dialog: no library, no music */
    {
       g_ortho = m4_ortho(0, W, H, 0);
@@ -3284,7 +3361,9 @@ int main(int argc, char **argv)
    scan_library();
    build_platform_index();
    logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
+   splash_step(win, 0.45f);
    platforms_load_art();
+   splash_step(win, 0.6f);
 
    /* resume last selection */
    {
@@ -3342,7 +3421,9 @@ int main(int argc, char **argv)
       g->x.x = 6.0f + (i % 8) * 0.6f; g->z.x = -3.0f; g->ry.x = -1.2f; g->sc.x = 1.0f; g->al.x = 0.0f;
    }
 
+   splash_step(win, 0.8f);
    launch_warmup();
+   splash_step(win, 1.0f);
    {
       char sp[300];
       snprintf(sp, sizeof(sp), "%s/debug/launch-shots", g_home);
@@ -3906,6 +3987,28 @@ int main(int argc, char **argv)
          }
       }
 
+      if (g_splash_fill >= 0.0f)
+      {  /* the startup splash (full logo on black) dissolves into the dashboard */
+         static double s0 = -1.0;
+         float sa;
+         if (s0 < 0.0) s0 = t;
+         sa = 1.0f - (float)(t - s0) / 0.35f;
+         if (sa > 0.0f)
+         {
+            const float black[4] = { 0, 0, 0, sa };
+            glDisable(GL_DEPTH_TEST); glDisable(GL_SCISSOR_TEST);
+            glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glUseProgram(g_prog_2d);
+            draw_2d(0, 0, 0, W, H, black, 0);
+            splash_logo_draw(1.0f, sa);
+         }
+         else
+         {
+            glDeleteTextures(4, g_logo_big.tex);
+            memset(g_logo_big.tex, 0, sizeof(g_logo_big.tex));
+            g_splash_fill = -1.0f;
+         }
+      }
       if (g_ntshot) test_shots(t - t0);
       if (g_launch_shots && play_t >= 0)
       {
