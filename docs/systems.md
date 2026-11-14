@@ -37,6 +37,48 @@ idle   = float                  ; float | none
 sound  = launch.wav             ; optional, <home>/systems/<id>/launch.wav
 ```
 
+## Enhanced graphics: `[graphics]`
+
+Optional. A system with this section appears on the settings panel's Graphics page,
+where the player chooses **Original** or **Enhanced** (stored as
+`graphics.<id>` in `settings.ini`, default `original`).
+
+```ini
+[graphics]
+core_options_name  = PCSX-ReARMed   ; folder/file name RetroArch uses for the per-core .opt
+enhanced           = pcsx_rearmed_neon_enhancement_enable=enabled, pcsx_rearmed_neon_enhancement_no_main=enabled
+original           = pcsx_rearmed_neon_enhancement_enable=disabled, pcsx_rearmed_neon_enhancement_no_main=disabled
+retroarch_enhanced = video_smooth=true    ; RetroArch overrides; alias: retroarch
+retroarch_original = video_smooth=false
+```
+
+- Lists are **comma-separated** `key=value` pairs (`;` starts a comment, so it cannot
+  separate pairs). Keys are `[A-Za-z0-9_]`; values may not contain `,` `=` `"`.
+  Invalid pairs are skipped (and logged) when the launch request is written.
+- A system "has graphics" when `enhanced` or `retroarch_enhanced` is non-empty.
+- `enhanced` / `original` are core options. At launch the chosen list goes into the
+  launch request as `opt.*` lines, and `run.sh` merges them into
+  `$LUMEN_CORE_OPT_DIR/<core_options_name>/<core_options_name>.opt`: declared keys are
+  replaced, missing keys appended, every other line kept untouched. The first merge keeps
+  the original file as `<file>.lumen-bak`. Choosing Original writes the `original` values
+  back, so always declare both lists with the same keys. Nothing is merged when
+  `LUMEN_CORE_OPT_DIR` (set by `lumen.conf`) or `core_options_name` is empty.
+- `retroarch_enhanced` / `retroarch_original` are RetroArch settings. They become `ra.*`
+  lines and `run.sh` appends them as `key = "value"` to the extra config handed to
+  RetroArch (`$LUMEN_RA_EXTRA`); later keys win over RetroArch's own config.
+- When a `.opt` was merged, the extra config also sets `core_options_path` to that file, so
+  RetroArch reads exactly the merged options whatever its global-options setting is.
+  Both mechanisms are written on purpose; which one RetroArch actually honours has to be
+  confirmed on the console (verbose `retroarch.log`, the line about loading core options)
+  and this note updated if one of them turns out to be ignored.
+
+Shipped presets:
+
+| system | Enhanced | Original |
+|---|---|---|
+| psx | PCSX-ReARMed NEON enhancement (high internal resolution) | enhancement off |
+| snes, megadrive, gba, arcade, n64 | `video_smooth=true` (bilinear filter) | `video_smooth=false` |
+
 Unknown keys are ignored, so declarations stay forward-compatible. Every value
 has a default; a minimal declaration only needs `[system] id/name`,
 `[library]` and `[launch] core`.

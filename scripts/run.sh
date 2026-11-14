@@ -11,6 +11,7 @@
 #   LUMEN_MAIN_SAVES     save folder of the "main" profile (empty: RetroArch decides)
 #   LUMEN_MAIN_STATES    save-state folder of the "main" profile
 #   LUMEN_CORE_OPT_DIR   folder holding RetroArch's <Core Name>/<Core Name>.opt
+#                        (graphics presets are merged there; empty: not merged)
 #   run_retroarch()      function(core, content, logfile) to launch a game; it must
 #                        apply the extra config in $LUMEN_RA_EXTRA (RetroArch cfg lines)
 LUMEN_HOME="${LUMEN_HOME:-$(cd "$(dirname "$0")" && pwd)}"
@@ -81,11 +82,61 @@ lumen_profile_dirs() {
   fi
 }
 
+# lumen_kv_get KEY KVFILE: KV_VAL = value of KEY in a "key=value" file (last wins)
+lumen_kv_get() {
+  KV_VAL=""; kv_found=1
+  while IFS= read -r kvl || [ -n "$kvl" ]; do
+    [ "${kvl%%=*}" = "$1" ] && { KV_VAL=${kvl#*=}; kv_found=0; }
+  done < "$2"
+  return $kv_found
+}
+
+# lumen_merge_opt OPTFILE KVFILE: write the graphics preset's per-core options
+# (opt.* pairs of the request) into RetroArch's <Core Name>.opt: declared keys are
+# replaced, missing ones appended, every other line is kept. The first merge keeps
+# the original file as <file>.lumen-bak. Sets L_OPT_FILE when the file was written.
+lumen_merge_opt() {
+  L_OPT_FILE=""
+  [ -n "${LUMEN_CORE_OPT_DIR}" ] && [ -n "${L_OPT_CORE_NAME}" ] && [ -s "$2" ] || return 0
+  mkdir -p "$(dirname "$1")" || return 1
+  [ -f "$1" ] && [ ! -f "$1.lumen-bak" ] && cp "$1" "$1.lumen-bak"
+  : > "$1.tmp" || return 1
+  seen="|"
+  if [ -f "$1" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        *" ="*)
+          key=${line%% =*}
+          if lumen_kv_get "$key" "$2"; then
+            echo "${key} = \"${KV_VAL}\"" >> "$1.tmp"; seen="${seen}${key}|"; continue
+          fi ;;
+      esac
+      echo "$line" >> "$1.tmp"
+    done < "$1"
+  fi
+  while IFS= read -r kvl || [ -n "$kvl" ]; do
+    key=${kvl%%=*}
+    case "$seen" in *"|${key}|"*) continue ;; esac
+    lumen_kv_get "$key" "$2"
+    echo "${key} = \"${KV_VAL}\"" >> "$1.tmp"; seen="${seen}${key}|"
+  done < "$2"
+  mv -f "$1.tmp" "$1" || return 1
+  sync
+  L_OPT_FILE=$1
+}
+
 # lumen_build_ra_extra: RetroArch cfg lines appended after its own config
+# (profile save folders, the graphics preset's ra.* overrides, the merged .opt)
 lumen_build_ra_extra() {
   : > "${LUMEN_RA_EXTRA}"
   [ -n "$L_SAVES" ] && echo "savefile_directory = \"${L_SAVES}\"" >> "${LUMEN_RA_EXTRA}"
   [ -n "$L_STATES" ] && echo "savestate_directory = \"${L_STATES}\"" >> "${LUMEN_RA_EXTRA}"
+  if [ -f /tmp/lumen-ra.kv ]; then
+    while IFS= read -r kvl || [ -n "$kvl" ]; do
+      [ -n "$kvl" ] && echo "${kvl%%=*} = \"${kvl#*=}\"" >> "${LUMEN_RA_EXTRA}"
+    done < /tmp/lumen-ra.kv
+  fi
+  [ -n "$L_OPT_FILE" ] && echo "core_options_path = \"${L_OPT_FILE}\"" >> "${LUMEN_RA_EXTRA}"
   export LUMEN_RA_EXTRA
 }
 
@@ -108,9 +159,14 @@ while true; do
   slog "lumen exit=${rc}"
   [ "${rc}" = "10" ] || break
   lumen_parse_launch /tmp/lumen-launch || { slog "launch request missing or invalid"; break; }
+  L_OPT_FILE=""
+  if [ -n "${L_OPT_CORE_NAME}" ]; then
+    lumen_merge_opt "${LUMEN_CORE_OPT_DIR}/${L_OPT_CORE_NAME}/${L_OPT_CORE_NAME}.opt" /tmp/lumen-opt.kv ||
+      slog "core options merge failed for ${L_OPT_CORE_NAME}"
+  fi
   lumen_profile_dirs
   lumen_build_ra_extra
-  slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default})"
+  slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default}, graphics ${L_GRAPHICS:-default}${L_OPT_FILE:+, options ${L_OPT_FILE}})"
   run_retroarch "${L_CORE}" "${L_CONTENT}" "${LOG}/retroarch.log"
   slog "retroarch exit=$?"
 done

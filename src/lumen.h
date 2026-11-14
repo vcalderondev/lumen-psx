@@ -32,6 +32,9 @@ typedef struct {
    char layout[8], paths[512], exts[128], art[16], media_art[16], sound[300];
    int order, show_name, kind, launch, idle_float;
    float aspect, w, h, color[3];
+   /* [graphics]: per-core options and RetroArch overrides, "k=v, k=v" lists */
+   char gfx_core[48], gfx_enh[320], gfx_orig[320], gfx_ra_enh[160], gfx_ra_orig[160];
+   int has_gfx;
    /* runtime */
    int first, count;
    GLuint label, logo_tex;

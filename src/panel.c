@@ -60,7 +60,7 @@ static const char *const k_page_key[P_COUNT] = {
 
 enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
-       ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_INFO = 900 };
+       ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400, ID_INFO = 900 };
 
 typedef struct {
    int type, id, enabled, dim, check, enter, at_lo, at_hi;
@@ -171,6 +171,16 @@ static void minutes_text(char *buf, size_t n, int m)
    trf(buf, n, "ss.minutes", "n", v, NULL);
 }
 
+/* graphics.<system id>: 1 = enhanced, 0 = original (default and any other value) */
+static void gfx_key(char *buf, size_t n, int plat) { snprintf(buf, n, "graphics.%s", g_plat[plat].id); }
+
+static int gfx_enhanced(int plat)
+{
+   char k[48];
+   gfx_key(k, sizeof(k), plat);
+   return !strcmp(settings_get(k, "original"), "enhanced");
+}
+
 static void page_build(void)
 {
    char v[96], num[32];
@@ -235,8 +245,15 @@ static void page_build(void)
       break;
    }
    case P_GRAPHICS:
-      /* per-system presets arrive with step 4 */
-      snprintf(s_foot, sizeof(s_foot), "%s", tr("gfx.none"));
+      for (i = 0; i < g_nplat; i++)
+      {
+         int enh;
+         if (!g_plat[i].has_gfx) continue;
+         enh = gfx_enhanced(i);
+         if ((r = row_add(R_CHOICE, ID_GFX + i, g_plat[i].name, tr(enh ? "gfx.enhanced" : "gfx.original"))))
+         { r->at_lo = !enh; r->at_hi = enh; }
+      }
+      snprintf(s_foot, sizeof(s_foot), "%s", tr(s_nrows ? "gfx.note" : "gfx.none"));
       break;
    case P_ABOUT:
       row_add(R_INFO, ID_INFO, tr("about.version"), LUMEN_VERSION);
@@ -437,6 +454,14 @@ static void row_change(const row_t *r, int dir)
    case ID_SS_LENGTH:
       i = nearest(k_seconds, NELEM(k_seconds), settings_get_int("demo_seconds", 60, 20, 300)) + dir;
       if (i >= 0 && i < NELEM(k_seconds)) settings_set_int("demo_seconds", k_seconds[i]);
+      break;
+   default:
+      if (r->id >= ID_GFX && r->id < ID_GFX + g_nplat)
+      {
+         char k[48];
+         gfx_key(k, sizeof(k), r->id - ID_GFX);
+         settings_set(k, dir > 0 ? "enhanced" : "original");
+      }
       break;
    }
 }

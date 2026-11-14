@@ -162,6 +162,13 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "animation", "idle", v, sizeof(v), "float"); pl->idle_float = strcmp(v, "none") != 0;
    decl_get(ini, "animation", "sound", v, sizeof(v), "");
    if (v[0]) snprintf(pl->sound, sizeof(pl->sound), "%s/systems/%s/%s", g_home, pl->id, v);
+   decl_get(ini, "graphics", "core_options_name", pl->gfx_core, sizeof(pl->gfx_core), "");
+   decl_get(ini, "graphics", "enhanced", pl->gfx_enh, sizeof(pl->gfx_enh), "");
+   decl_get(ini, "graphics", "original", pl->gfx_orig, sizeof(pl->gfx_orig), "");
+   decl_get(ini, "graphics", "retroarch", v, sizeof(v), "");   /* alias of retroarch_enhanced */
+   decl_get(ini, "graphics", "retroarch_enhanced", pl->gfx_ra_enh, sizeof(pl->gfx_ra_enh), v);
+   decl_get(ini, "graphics", "retroarch_original", pl->gfx_ra_orig, sizeof(pl->gfx_ra_orig), "");
+   pl->has_gfx = pl->gfx_enh[0] || pl->gfx_ra_enh[0];
 }
 
 static int cmp_order(const void *a, const void *b)
@@ -2047,7 +2054,18 @@ int main(int argc, char **argv)
       req.core = core; req.content = g->content; req.system = lp->id; req.title = g->title;
       req.profile = profiles_active()->id;
       req.demo = 0; req.demo_seconds = settings_get_int("demo_seconds", 60, 20, 300);
-      if (launch_write("/tmp/lumen-launch", &req) == 0) logf_("launch request: %s (profile %s)", g->content, req.profile);
+      if (lp->has_gfx)
+      {
+         char gkey[48];
+         int enh;
+         snprintf(gkey, sizeof(gkey), "graphics.%s", lp->id);
+         enh = !strcmp(settings_get(gkey, "original"), "enhanced");
+         req.graphics = enh ? "enhanced" : "original";
+         req.opt_core_name = lp->gfx_core;
+         req.opt_list = enh ? lp->gfx_enh : lp->gfx_orig;
+         req.ra_list = enh ? lp->gfx_ra_enh : lp->gfx_ra_orig;
+      }
+      if (launch_write("/tmp/lumen-launch", &req) == 0) logf_("launch request: %s (profile %s, graphics %s)", g->content, req.profile, req.graphics ? req.graphics : "-");
       else { logf_("launch request refused, not launching"); exit_code = 1; }
    }
    SDL_LockMutex(bg_mx); bg_quit = 1; SDL_CondSignal(bg_cv); SDL_UnlockMutex(bg_mx);

@@ -73,6 +73,16 @@ the Spanish key set and keeps its placeholders.
 `attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`), `version`.
 It is written atomically (temporary file + rename) and only when something changed.
 
+## Enhanced graphics
+
+Settings → Graphics lists every system whose declaration has a `[graphics]` section
+(see `docs/systems.md`) and switches it between Original and Enhanced. PlayStation
+Enhanced turns on PCSX-ReARMed's high-resolution renderer (some games may run slower);
+the other shipped systems smooth the picture with RetroArch's bilinear filter. The
+choice is applied at every launch: `run.sh` merges the core options into RetroArch's
+per-core `.opt` file (keeping a `.lumen-bak` copy of the original) and passes the
+RetroArch overrides in the extra config.
+
 ## Profiles
 
 Each profile has its own memory cards and save states. `main` (shown as
