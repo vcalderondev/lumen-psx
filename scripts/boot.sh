@@ -25,7 +25,12 @@ killall -s KILL showLogo sonyapp ui_menu auto_dimmer pcsx 2>/dev/null
 
 # Output resolution: Sony's weston.ini forces HDMI 1280x720. With display=1080p in
 # settings.ini, Weston is restarted with a copy of that config set to 1920x1080
-# (/tmp, nothing on the eMMC changes). If it does not come up, back to the stock 720p.
+# (/tmp, nothing on the eMMC changes). The console's HDMI driver reads no EDID (the
+# connector has no mode list), so a plain "1920x1080" is ignored and Weston keeps its
+# built-in 720p: the mode is given as an explicit CEA-861 modeline (1080p60, 148.5 MHz).
+# If Weston does not come up, or does not report 1920x1080 as the current mode,
+# back to the stock 720p.
+MODE_1080P="148.50 1920 2008 2052 2200 1080 1084 1089 1125 +hsync +vsync"
 LUMEN_WESTON=""
 weston_stock() {
   [ -n "${LUMEN_WESTON}" ] && { killall -s KILL weston 2>/dev/null; sleep 1; LUMEN_WESTON=""; }
@@ -42,7 +47,7 @@ weston_up() {  # seconds: wait for the Wayland socket
 DISPLAY_MODE=$(sed -n 's/^display=//p' "${LUMEN_HOME}/settings.ini" 2>/dev/null | tr -d '\r' | tail -1)
 if [ "${DISPLAY_MODE}" = 1080p ] && [ -f /etc/xdg/weston/weston.ini ]; then
   echo "display 1080p: restarting weston at 1920x1080"
-  sed '/^name=HDMI-A-1/{n;s/^mode=.*/mode=1920x1080/;}' /etc/xdg/weston/weston.ini > /tmp/lumen-weston.ini
+  sed "/^name=HDMI-A-1/{n;s/^mode=.*/mode=${MODE_1080P}/;}" /etc/xdg/weston/weston.ini > /tmp/lumen-weston.ini
   grep -A1 '^name=HDMI-A-1' /tmp/lumen-weston.ini
   systemctl stop weston.service
   killall -s KILL weston 2>/dev/null
@@ -50,8 +55,12 @@ if [ "${DISPLAY_MODE}" = 1080p ] && [ -f /etc/xdg/weston/weston.ini ]; then
   /usr/bin/weston-launch -u root -- --idle-time=4294967 --tty=1 --config=/tmp/lumen-weston.ini \
     > "${LOG}/weston.log" 2>&1 &
   LUMEN_WESTON=$!
-  if weston_up 6; then echo "weston 1080p up (${LUMEN_WESTON})"
-  else echo "weston 1080p failed, back to 720p"; weston_stock; DISPLAY_MODE=720p; fi
+  if weston_up 6 && sleep 1 && grep -aq 'mode 1920x1080.*current' "${LOG}/weston.log"; then
+    echo "weston 1080p up (${LUMEN_WESTON}): $(grep -a 'mode 1920x1080' "${LOG}/weston.log" | head -1)"
+  else
+    echo "weston 1080p failed: $(grep -aE '^ +mode |failed to set mode|atomic commit failed' "${LOG}/weston.log" | head -3), back to 720p"
+    weston_stock; DISPLAY_MODE=720p
+  fi
 else
   weston_stock
 fi
