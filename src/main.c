@@ -3241,6 +3241,11 @@ int main(int argc, char **argv)
          double pre = now_s();
          SDL_GL_SwapWindow(win);
          b_draw += pre - t; b_swap += now_s() - pre;
+         if (frames == 30)
+         {  /* boot.sh: a picture is on screen (clears the compositor's one-shot guard) */
+            FILE *pf = fopen("/tmp/lumen-presented", "w");
+            if (pf) fclose(pf);
+         }
       }
       frames++;
       log_tick();
