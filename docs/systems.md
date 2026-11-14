@@ -74,7 +74,9 @@ extensions = cue,bin            ; tried in this order for disc 1 (default cue,bi
   follow the active profile like any other game (launch request v2).
 - Shown only when `show_stock_games = 1` in `settings.ini` (Settings → Library →
   Built-in games: Hidden / Visible, default Hidden). A hidden stock system is not
-  loaded at all; changing the setting rescans the libraries live.
+  loaded at all; changing the setting rescans the libraries live. Exception: when the
+  stick has no games of its own (a fresh install), the built-in games are listed anyway,
+  so there is always something to play; the setting is not changed.
 
 Shipped: `psxstock.ini` ("PlayStation Classic", PlayStation logo shared with
 `logo = psx/logo.png`, `pcsx_rearmed`, jewel case, `open_case_disc`, order 12 = right

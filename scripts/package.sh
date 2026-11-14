@@ -1,7 +1,13 @@
 #!/bin/sh
 # Assemble a Lumen PSX release: the USB tree the console runs, as a zip.
 #
-#   scripts/package.sh <version> <platform dir> <output dir>
+#   scripts/package.sh <version> <platform dir> <output dir> [<boot dir>]
+#
+# <boot dir> holds the SIGNED boot payload as it goes on the stick:
+#   d8781dae-c45c-4fc1-b961-e03eedebbffb/{diag,LDIAG.BIN}
+# (release.yml: psc-platform's .github/actions/boot-payload signs psc-boot-payload.tar.gz;
+# locally: psc-platform/boot/build-payload.sh --sign ..., out/boot/stick). Without it the
+# zip has no boot payload, which is refused unless LUMEN_ALLOW_NO_PAYLOAD=1.
 #
 # <platform dir> holds the psc-platform release assets pinned in platform.lock:
 #   psc-weston-16.tar.gz psc-retroarch.tar.gz
@@ -13,17 +19,26 @@
 #   lumen/retroarch/            RetroArch 1.22 + Lumen's config + joypad profiles
 #   lumen/cores/                libretro cores
 #   lumen/compositor/           the PSC compositor packages (Wayland 1.26 + Weston)
-#   boot/project_eris/bin/execute   the boot hand-off (see README-INSTALL.txt)
+#   lumen/logs/                 empty, for the boot payload and Lumen
+#   d8781dae-.../{diag,LDIAG.BIN}   Lumen's own boot payload: Sony's usb_watch runs it
+#   games/<system>/             empty, one per system in lumen/systems/*.ini
+# No Project Eris: a stock console boots Lumen from a FAT32 stick labelled SONY.
 set -e
-VER=$1; PF=$2; OUTD=$3
+VER=$1; PF=$2; OUTD=$3; BOOT=$4
+ID=d8781dae-c45c-4fc1-b961-e03eedebbffb
 [ -n "$VER" ] && [ -d "$PF" ] && [ -n "$OUTD" ] || { echo "usage: $0 <version> <platform dir> <output dir>"; exit 2; }
 cd "$(dirname "$0")/.."
 for f in out/lumen out/lumen-buttons "$PF/psc-weston-16.tar.gz" "$PF/psc-retroarch.tar.gz" "$PF/pcsx_rearmed_libretro.so"; do
   [ -f "$f" ] || { echo "missing $f"; exit 1; }
 done
+if [ -n "$BOOT" ]; then
+  [ -f "$BOOT/$ID/LDIAG.BIN" ] || { echo "no $BOOT/$ID/LDIAG.BIN"; exit 1; }
+elif [ "${LUMEN_ALLOW_NO_PAYLOAD:-0}" != 1 ]; then
+  echo "no boot dir: the zip would not boot (set LUMEN_ALLOW_NO_PAYLOAD=1 for a test zip)"; exit 1
+fi
 ST="$(mktemp -d)"; L="$ST/lumen"
 mkdir -p "$L/retroarch/autoconfig" "$L/cores" "$L/compositor" "$L/systems" "$L/lang" "$L/profiles" \
-         "$L/assets" "$ST/boot/project_eris/bin"
+         "$L/assets" "$L/logs"
 cp out/lumen out/lumen-buttons scripts/run.sh scripts/boot.sh scripts/power.sh psc/lumen.conf "$L/"
 chmod 755 "$L/lumen" "$L/lumen-buttons"
 for f in dist/*; do [ -f "$f" ] && cp "$f" "$L/"; done
@@ -44,23 +59,38 @@ cp "$PF"/*_libretro.so "$L/cores/"
 # crash reporter: RetroArch crashes leave logs/crash.log (symbols: retroarch.debug in the
 # psc-platform release)
 [ -f "$PF/psc-crash.so" ] && { mkdir -p "$L/debug"; cp "$PF/psc-crash.so" "$L/debug/"; }
-cp psc/execute "$ST/boot/project_eris/bin/execute"
+# boot payload (signed) + its trigger file, at the stick root
+if [ -n "$BOOT" ]; then
+  mkdir -p "$ST/$ID"; cp "$BOOT/$ID/LDIAG.BIN" "$ST/$ID/LDIAG.BIN"; : > "$ST/$ID/diag"
+fi
+# one empty games folder per system (/media/games/<x> in the declarations)
+for g in $(sed -n 's|^paths *= */media/games/\([A-Za-z0-9_-]*\).*|\1|p' dist/systems/*.ini | sort -u); do
+  mkdir -p "$ST/games/$g"
+done
 { echo "Lumen PSX $VER"; echo; cat "$PF/versions.txt"; } > "$L/VERSION"
 cp LICENSE "$ST/LICENSE"
 cat > "$ST/README-INSTALL.txt" <<EOF
-Lumen PSX $VER for the PlayStation Classic
+Lumen PSX $VER for the PlayStation Classic: ready to use, no other mod needed
 
-1. USB stick formatted exFAT, label SONY, with Project Eris' boot payload on it (until
-   Lumen ships its own payload, Eris' signed loader is what starts it from the USB; set
-   USB_ONLY="1" in project_eris/etc/project_eris/CFG/project_eris_cfg.INI so it never
-   writes to the console's internal memory).
-2. Copy the lumen/ folder to the root of the stick.
-3. Copy boot/project_eris/bin/execute over project_eris/bin/execute (keep the original
-   as execute.eris).
-4. Games go in /games/<system>/...; see lumen/systems/*.ini.
+1. Format a USB stick as FAT32 ("MS-DOS (FAT)" on macOS), with the name SONY.
+   exFAT also works, but only on a console that already had Project Eris or BleemSync.
+2. Unzip this file at the root of the stick: you get d8781dae-.../, lumen/ and games/.
+3. Put your games in games/<system>/ (optional: with none, Lumen lists the console's own
+   20 games).
+4. Plug the stick into the console and power it on.
 
-Nothing is written to the console's internal memory: the compositor runs from RAM.
-Versions of every component: lumen/VERSION.
+Nothing is installed on the console: Lumen runs from the stick and from RAM. Without the
+stick the console is exactly as it was.
+
+The original PlayStation Classic menu with the stick plugged in: create an empty file
+named disable-boot inside lumen/ (delete it to get Lumen back).
+If something does not work: lumen/logs/ (payload.log, boot.log, session.log).
+Versions of every component: lumen/VERSION. Macs leave hidden ._* files on FAT32
+sticks; they are harmless (dot_clean -m /Volumes/SONY removes them).
+EOF
+mkdir -p "$ST/games"; cat > "$ST/games/README.txt" <<'EOF'
+Put your games in the folder of their system (psx, snes, nes, megadrive, gba, n64, arcade);
+lumen/systems/<system>.ini lists the file types each one accepts.
 EOF
 mkdir -p "$OUTD"
 ZIP="$(cd "$OUTD" && pwd)/lumen-psx-$VER.zip"

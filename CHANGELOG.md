@@ -3,6 +3,30 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.5.0] - 2026-11-14
+
+No Project Eris at all: the release zip is ready to use on any PlayStation Classic.
+
+### Added
+- Lumen's own boot payload in the zip (`d8781dae-…/{diag,LDIAG.BIN}`, psc-platform 2.2.0
+  `boot/`, signed in the release from a private input). Sony's USB hook runs it from the
+  stick, and nothing is written to the console.
+  - On a never-modded console it loads overlayfs and xpad as modules from RAM.
+  - An empty `lumen/disable-boot` gives the original menu back.
+  - Verified on the console: exFAT and FAT32 sticks, the hand-back to Sony's menu, a stick
+    set up from scratch from a release zip, and a built-in game through RetroArch 1.22.
+- The zip also has `lumen/logs/`, an empty `games/<system>/` per system, and new install
+  instructions (FAT32 stick named SONY, unzip, plug in).
+
+### Changed
+- A stick with no games of its own lists the console's built-in games, even with
+  `show_stock_games=0`, so a fresh install always has something to play.
+- `boot.sh` waits up to 5 s (was 1 s) for the buttons daemon. On a cold first start from
+  FAT32 it was late, and POWER stayed disabled for that session.
+
+### Removed
+- `boot/project_eris/bin/execute` and the Project Eris install steps.
+
 ## [0.4.0] - 2026-11-14
 
 ### Added

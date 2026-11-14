@@ -272,11 +272,17 @@ static int cmp_order(const void *a, const void *b)
    return x->order != y->order ? x->order - y->order : strcmp(x->id, y->id);
 }
 
+/* built-in-game systems (layout = stock) hidden by show_stock_games=0: kept aside so a
+ * stick with no games of its own still lists the console's games (scan_library) */
+static platform_t s_stock_hidden[MAX_PLATFORMS];
+static int        s_nstock_hidden;
+
 static void load_systems(void)
 {
    char dir[300], path[600];
    DIR *d; struct dirent *de;
    int ndecl = 0;
+   s_nstock_hidden = 0;
    snprintf(dir, sizeof(dir), "%s/systems", g_home);
    if ((d = opendir(dir)))
    {
@@ -295,7 +301,10 @@ static void load_systems(void)
             ndecl++;
             /* the console's built-in games are listed only when the settings say so */
             if (!strcmp(pl->layout, "stock") && !settings_get_int("show_stock_games", 0, 0, 1))
+            {
                logf_("[%s] built-in games hidden (show_stock_games=0)", pl->id);
+               if (s_nstock_hidden < MAX_PLATFORMS) s_stock_hidden[s_nstock_hidden++] = *pl;
+            }
             else g_nplat++;
          }
          free(buf); fclose(f);
@@ -546,6 +555,31 @@ static void scan_all(void)
          if (!strcmp(g_plat[pi].layout, "psc")) scan_psc(pi, tok);
          else if (!strcmp(g_plat[pi].layout, "stock")) scan_stock(pi, tok);
          else scan_files(pi, tok);
+      }
+   }
+}
+
+/* load the declarations and scan every library. A stick with no games of its own (a
+ * fresh install) lists the console's built-in games even when show_stock_games=0, so
+ * there is always something to play; the setting itself is left as it is. */
+static void scan_library(void)
+{
+   load_systems();
+   scan_all();
+   if (g_ngames == 0 && s_nstock_hidden > 0)
+   {
+      int i;
+      for (i = 0; i < s_nstock_hidden && g_nplat < MAX_PLATFORMS; i++) g_plat[g_nplat++] = s_stock_hidden[i];
+      logf_("no games on the stick: listing the built-in games (show_stock_games=0 kept)");
+      /* no game exists yet, so the platform order can still change before the scan */
+      qsort(g_plat, g_nplat, sizeof(platform_t), cmp_order);
+      for (i = 0; i < g_nplat; i++)
+      {
+         char paths[512], *tok, *save = NULL;
+         if (strcmp(g_plat[i].layout, "stock")) continue;
+         snprintf(paths, sizeof(paths), "%s", g_plat[i].paths);
+         for (tok = strtok_r(paths, ";", &save); tok; tok = strtok_r(NULL, ";", &save))
+         { trim(tok); scan_stock(i, tok); }
       }
    }
 }
@@ -2410,8 +2444,7 @@ static void library_rescan(int *sel_plat, int *sel)
    if (cv_done >= 0) { if (cv_surf) SDL_FreeSurface(cv_surf); cv_surf = NULL; cv_done = -1; cv_busy = 0; }
    SDL_UnlockMutex(cv_mx);
    g_ngames = 0; g_nplat = 0;
-   load_systems();
-   scan_all();
+   scan_library();
    build_platform_index();
    platforms_load_art();
    *sel_plat = 0; *sel = 0;
@@ -3167,8 +3200,7 @@ int main(int argc, char **argv)
       return run_dialog(win, dialog);
    }
 
-   load_systems();
-   scan_all();
+   scan_library();
    build_platform_index();
    logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
    platforms_load_art();

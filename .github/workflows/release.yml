@@ -1,6 +1,7 @@
 # Release: build Lumen with the PSC toolchain, take the compositor (Wayland 1.26 +
-# Weston), RetroArch 1.22 and the cores from the psc-platform release pinned in
-# platform.lock, and publish the USB package with the changelog.
+# Weston), RetroArch 1.22, the cores and the unsigned boot payload from the psc-platform
+# release pinned in platform.lock, sign the payload (console keyring from a private
+# input: never in this repository), and publish the ready-to-use USB package.
 # Push a tag vX.Y.Z equal to LUMEN_VERSION (src/version.h) with a CHANGELOG.md section.
 name: release
 on:
@@ -42,20 +43,27 @@ jobs:
           gh release download "$PSC_PLATFORM" -R vcalderondev/psc-platform -D "$RUNNER_TEMP/platform"
           (cd "$RUNNER_TEMP/platform" && sha256sum -c SHA256SUMS)
       # the toolchain action of the SAME pinned psc-platform release
-      - uses: vcalderondev/psc-platform/.github/actions/toolchain@v2.1.0
+      - uses: vcalderondev/psc-platform/.github/actions/toolchain@v2.2.0
         with:
           sysroot-token: ${{ secrets.PSC_SYSROOT_TOKEN }}
+      # Lumen's boot payload: signed here from the private input and verified with the
+      # console's own gpg/busybox (ARMv7 emulation) before it can go into the zip
+      - uses: vcalderondev/psc-platform/.github/actions/boot-payload@v2.2.0
+        with:
+          payload: ${{ runner.temp }}/platform/psc-boot-payload.tar.gz
+          out-dir: ${{ runner.temp }}/boot
+          private-token: ${{ secrets.PSC_SYSROOT_TOKEN }}
       - name: Build Lumen
         run: |
           $PSC_TOOLCHAIN/psc sh lumen/build.sh
           sudo chown -R "$(id -u)" lumen/out
       - name: Package
         run: |
-          z=$(lumen/scripts/package.sh "$TAG" "$RUNNER_TEMP/platform" "$RUNNER_TEMP/dist")
+          z=$(lumen/scripts/package.sh "$TAG" "$RUNNER_TEMP/platform" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/boot")
           (cd "$RUNNER_TEMP/dist" && sha256sum *.zip > SHA256SUMS)
           { cat "$RUNNER_TEMP/notes.md"; echo
             echo "### Platform: psc-platform $PSC_PLATFORM"; echo '```'; cat "$RUNNER_TEMP/platform/versions.txt"; echo '```'
-            echo; echo "Install: unpack at the root of the USB stick, see README-INSTALL.txt in the zip."; } > "$RUNNER_TEMP/body.md"
+            echo; echo "Install: format a USB stick FAT32 with the name SONY, unzip at its root, plug it into the console and power on (README-INSTALL.txt). No Project Eris needed."; } > "$RUNNER_TEMP/body.md"
           cat "$RUNNER_TEMP/body.md"
       - name: Publish
         env:
