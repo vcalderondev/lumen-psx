@@ -184,6 +184,29 @@ lumen_run_demo() {
   case $w in 1) ARGS="--focus-demo" ;; *) ARGS="--attract" ;; esac
 }
 
+# lumen_discs: RA_CONTENT = what RetroArch loads. A game folder with several discs
+# (disc 1 is launched: <id>.cue, the other discs <id2>.cue ... in Game.ini Discs=, or every
+# .cue in the folder) becomes an .m3u playlist in /tmp named like disc 1 (same save and
+# state names), so RetroArch can swap discs (OPEN). The disc count goes to /tmp/lumen-discs.
+lumen_discs() {
+  RA_CONTENT="${L_CONTENT}"; n=1
+  case "${L_CONTENT}" in
+    *.cue|*.CUE)
+      dir=${L_CONTENT%/*}; base=${L_CONTENT##*/}; base=${base%.*}
+      list=/tmp/lumen-m3u/${base}.m3u; mkdir -p /tmp/lumen-m3u; : > "${list}"
+      discs=$(sed -n 's/^Discs=//p' "${dir}/Game.ini" 2>/dev/null | tr -d '\r' | tr ',' ' ')
+      for d in ${discs}; do [ -f "${dir}/${d}.cue" ] && echo "${dir}/${d}.cue" >> "${list}"; done
+      # no Discs= (or its ids are not the file names): every .cue in the folder, sorted
+      [ "$(grep -c . "${list}")" -gt 1 ] || ls "${dir}"/*.cue "${dir}"/*.CUE 2>/dev/null | sort > "${list}"
+      n=$(grep -c . "${list}")
+      # the launched disc first (it is disc 1 in every layout Lumen builds)
+      if [ "${n}" -gt 1 ] && grep -qxF "${L_CONTENT}" "${list}"; then RA_CONTENT=${list}; else n=1; fi ;;
+    *.m3u|*.M3U) n=$(grep -c '^[^#]' "${L_CONTENT}" 2>/dev/null || echo 1) ;;
+  esac
+  echo "${n}" > /tmp/lumen-discs
+  [ "${n}" -gt 1 ] && slog "discs: ${n} (${RA_CONTENT})"
+}
+
 # lumen_playlog T0: append the session that started at T0 to the profile's play log
 lumen_playlog() {
   case "$1" in ''|*[!0-9]*) return 0 ;; esac
@@ -256,7 +279,8 @@ while true; do
   lumen_build_ra_extra
   slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default}, graphics ${L_GRAPHICS:-default}${L_OPT_FILE:+, options ${L_OPT_FILE}})"
   t0=$(date +%s)
-  run_retroarch "${L_CORE}" "${L_CONTENT}" "${LOG}/retroarch.log"
+  lumen_discs
+  run_retroarch "${L_CORE}" "${RA_CONTENT}" "${LOG}/retroarch.log"
   slog "retroarch exit=$?"
   lumen_playlog "$t0"
 done

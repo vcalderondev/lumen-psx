@@ -14,12 +14,11 @@ HOME_DIR=/media/lumen
 LOG="${HOME_DIR}/logs/session.log"
 WRITERS=/tmp/lumen-usb-writers.pids # boot.sh / run.sh: log copiers, syncer
 
-# steps go to RAM (/tmp/lumen-power.log): the stick may be paused; after the resume they
-# are copied to <home>/logs/suspend.log with Sony's power log and the kernel's messages
-say() {
-  echo "$(date +%T) $*" >> /tmp/lumen-power.log
-  [ -f /tmp/lumen-suspending ] || echo "$(date +%T) power: $*" >> "${LOG}" 2>/dev/null
-}
+# every step goes straight to <home>/logs/suspend.log (one open/close + sync per line,
+# so a hang still leaves the last step on the stick); never while the stick's writers
+# are paused, which is only between "ready" and the resume
+SLOG="${HOME_DIR}/logs/suspend.log"
+say() { echo "$(date +%T) $*" >> "${SLOG}" 2>/dev/null; sync; }
 pids_of() { cat "$1" 2>/dev/null; }
 
 wait_gone() {  # name tenths
@@ -32,6 +31,7 @@ suspend)
   # power manager stops its own Weston for that): close the game (RetroArch saves SRAM
   # and the automatic state on quit) and the frontend, stop the compositor; run.sh waits
   # for /tmp/lumen-suspending to go and starts the frontend again
+  say "=== suspend (POWER)"
   say "suspend: closing the session"
   : > /tmp/lumen-suspending
   if pidof retroarch >/dev/null 2>&1; then
@@ -41,10 +41,9 @@ suspend)
   say "suspend: game and frontend closed, stopping the compositor"
   killall -s TERM weston 2>/dev/null; wait_gone weston 30; killall -s KILL weston 2>/dev/null
   say "suspend: compositor stopped ($(pidof weston >/dev/null && echo STILL RUNNING || echo gone))"
-  sync
+  say "suspend: pausing the log copiers, then apps_okay"
   for p in $(pids_of "${WRITERS}"); do kill -STOP "$p" 2>/dev/null; done
   sync
-  say "suspend: ready (apps_okay next)"
   ;;
 resume)
   # run by Sony's resume_run (bind-mounted by boot.sh) and by lumen-buttons when
@@ -53,14 +52,14 @@ resume)
   mkdir /tmp/lumen-resuming 2>/dev/null || exit 0
   echo 1 > /sys/class/leds/green/brightness 2>/dev/null
   echo 0 > /sys/class/leds/red/brightness 2>/dev/null
+  say "resume (${2:-?}): woke up, LEDs green, log copiers running"
   for p in $(pids_of "${WRITERS}"); do kill -CONT "$p" 2>/dev/null; done
-  say "resume (${2:-?}): starting the compositor"
+  say "resume: starting the compositor"
   sh /tmp/lumen-weston-start.sh
   say "resume: compositor $([ -S /run/user/0/wayland-0 ] && echo up || echo NOT UP)"
   rm -f /tmp/lumen-suspending; rmdir /tmp/lumen-resuming
-  { echo "=== suspend $(date)"; cat /tmp/lumen-power.log; echo "--- power_manage"; tail -25 /tmp/power.log
-    echo "--- kernel"; dmesg | tail -120; } >> "${HOME_DIR}/logs/suspend.log" 2>/dev/null
-  rm -f /tmp/lumen-power.log; sync
+  { echo "--- power_manage"; tail -25 /tmp/power.log; echo "--- kernel"; dmesg | tail -120; } >> "${SLOG}" 2>/dev/null
+  sync
   ;;
 *)
   echo "usage: $0 suspend|resume" >&2; exit 2 ;;
