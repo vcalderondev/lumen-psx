@@ -61,3 +61,29 @@ Flat, clean vector-style glyphs (PS5-like), not pixel art: button glyphs (cross,
 circle, triangle, square, L1/R1, Select/Start), status glyphs (pad, network, clock),
 top icons (info, gallery, settings), media badges (disc, cartridge, coin). Exported
 as white-on-transparent PNG at 2x size, tinted in the shader.
+
+## Generated background (no background image)
+
+When a game has no `background.jpg|png`, the background shader builds one from
+the cover colours (computed when the cover is decoded, worker thread):
+
+- palette: dominant colour A, accent B (most saturated cluster), base = A darkened
+- composition: diagonal linear gradient base -> A, plus two soft radial light
+  blobs (B top-right, A bottom-left) drifting very slowly (period ~20 s)
+- ordered dithering / light grain to avoid banding on 8-bit output
+- same single background pass (no extra cost); crossfades like images
+
+## Per-game music
+
+- File: `games/<system>/<game>/music.ogg` (also `.flac` / `.wav`). The console's
+  SDL2_mixer 2.0.1 only decodes WAV and FLAC (no OGG/MP3), so OGG is decoded by
+  Lumen with `stb_vorbis` (public domain, single file), streamed, looped.
+- Behaviour: after the selection settles ~0.8 s the track fades in (1 s) and
+  loops; changing game crossfades; launching fades it out with the flash; games
+  without a track fall back to the menu theme (`<home>/assets/music/menu.ogg`).
+- Settings (per profile): music on/off, volume, preview delay.
+- Sources: user-provided files; or extracted from the game's own disc: 11 of the
+  86 PS1 games carry their soundtrack as CD-DA tracks (multi-track .cue), which a
+  Mac-side tool can rip with ffmpeg (title/menu track -> 90 s loop, OGG q4).
+  Single-audio-track discs are usually the "do not play in a CD player" warning.
+  Music stored as XA inside the data track needs a dedicated extractor (later).
