@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-36.64 -122.00 107.92 184.00" role="img" aria-label="Lumen PSX">
+  <title>Lumen PSX</title>
+  <polygon points="-34.64,20.00 0.00,40.00 0.00,0.00 -34.64,-20.00" fill="#00AC8E" stroke="#00AC8E" stroke-width="1.20" stroke-linejoin="round"/>
+  <polygon points="-34.64,-20.00 0.00,0.00 0.00,-40.00 -34.64,-60.00" fill="#F5B800" stroke="#F5B800" stroke-width="1.20" stroke-linejoin="round"/>
+  <polygon points="34.64,-20.00 0.00,0.00 0.00,-40.00 34.64,-60.00" fill="#B88A00" stroke="#B88A00" stroke-width="1.20" stroke-linejoin="round"/>
+  <polygon points="-34.64,-60.00 0.00,-40.00 0.00,-80.00 -34.64,-100.00" fill="#E4002B" stroke="#E4002B" stroke-width="1.20" stroke-linejoin="round"/>
+  <polygon points="34.64,-60.00 0.00,-40.00 0.00,-80.00 34.64,-100.00" fill="#9E001E" stroke="#9E001E" stroke-width="1.20" stroke-linejoin="round"/>
+  <polygon points="0.00,-120.00 34.64,-100.00 0.00,-80.00 -34.64,-100.00" fill="#FF5A70" stroke="#FF5A70" stroke-width="1.20" stroke-linejoin="round"/>
+  <polygon points="0.00,40.00 34.64,60.00 34.64,20.00 0.00,0.00" fill="#2E6DB4" stroke="#2E6DB4" stroke-width="1.20" stroke-linejoin="round"/>
+  <polygon points="69.28,40.00 34.64,60.00 34.64,20.00 69.28,0.00" fill="#1C4A80" stroke="#1C4A80" stroke-width="1.20" stroke-linejoin="round"/>
+  <polygon points="34.64,-20.00 69.28,0.00 34.64,20.00 0.00,0.00" fill="#6A9FE0" stroke="#6A9FE0" stroke-width="1.20" stroke-linejoin="round"/>
+</svg>

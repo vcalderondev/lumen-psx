@@ -21,7 +21,7 @@ and the launch animation.
 |---|---|
 | Background | selected game's art full screen (`<game>/background.jpg`, fallback: cover colour field), crossfade 0.6 s, left 58 % darkened for legibility |
 | Top-left | profile avatar (image or initials on a colour) + profile name; second line: memory card / game count |
-| Top-centre | icons: info, media/gallery, settings |
+| Top-centre | the Lumen PSX logo (frontal LPSX, `assets/brand/logo-front[-1080].png`, 88x28 px at 720p, centred on the status row). It enters letter by letter whenever the dashboard appears: L, P, S, X each drop 14 px with a slight overshoot and fade in, 90 ms apart (~0.9 s in all), then stay still. 4 small draws, no extra pass. The planned icons (info, media/gallery, settings) go beside it |
 | Top-right | status: connected controllers (one glyph per pad, active/inactive), network (only when an adapter is up), clock (only when time is known, see below) |
 | Tabs (y ~17 %) | `L1` system tabs with logos `R1` (PlayStation, SNES, NES, N64, Mega Drive, GBA, Arcade) |
 | Tile row (y ~31 %) | rounded square covers 172 px, selected 224 px with a white focus ring, subtle glass sheen and a media badge (disc / cartridge / coin); row scrolls so the selection stays anchored left |

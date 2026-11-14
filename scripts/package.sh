@@ -46,6 +46,7 @@ cp dist/systems/* "$L/systems/"
 cp dist/lang/*.lang "$L/lang/"
 cp assets/splash.png assets/splash-1080.png "$L/assets/"
 for d in icons glyphs fonts; do mkdir -p "$L/assets/$d"; cp assets/$d/* "$L/assets/$d/"; done
+mkdir -p "$L/assets/brand"; cp assets/brand/*.png "$L/assets/brand/"   # the SVGs stay in the repo
 # platform: compositor packages, RetroArch, cores
 cp "$PF/psc-weston-16.tar.gz" "$L/compositor/"
 T="$(mktemp -d)"; tar xzf "$PF/psc-retroarch.tar.gz" -C "$T"

@@ -2545,6 +2545,84 @@ static float glyph_w(const char *name, float h)
    return ic && ic->tex && ic->h > 0 ? h * ic->w / (float)ic->h : 0.0f;
 }
 
+/* Lumen PSX logo (assets/brand/logo-front[-1080].png, tools/make-brand.py): the frontal
+ * LPSX, top centre of the dashboard. Each letter is its own small texture (cut from the
+ * PNG at the gaps between letters) so they can enter one by one: whenever the dashboard
+ * appears, L, P, S, X drop into place with a fade, 90 ms apart. Missing PNG: nothing is
+ * drawn (the top bar stays as it was). */
+#define LOGO_H_VOX   28.5f   /* content width of logo-front.svg in voxels: 4 x 6 + 3 x 1.5 */
+static struct { int tried; GLuint tex[4]; float x[4], w[4], h; } g_logo;
+static double g_logo_t0 = -1.0;   /* time the entry animation started; -1: replay on next show */
+
+static void logo_load(void)
+{
+   /* gap centres between letters, in voxels from the content's left edge */
+   static const float cut[5] = { 0.0f, 6.75f, 14.25f, 21.75f, LOGO_H_VOX };
+   char path[400];
+   float fs = 1.0f, vox;
+   SDL_Surface *sf = NULL;
+   int i;
+   g_logo.tried = 1;
+   if (g_ui_scale > 1.2f)
+   {
+      asset_path(path, sizeof(path), "brand/logo-front-1080.png", "brand/logo-front-1080.png");
+      if ((sf = IMG_Load(path))) fs = 1.5f;
+   }
+   if (!sf)
+   {
+      asset_path(path, sizeof(path), "brand/logo-front.png", "brand/logo-front.png");
+      if (!(sf = IMG_Load(path))) { logf_("brand logo not found: %s", path); return; }
+   }
+   if (sf->format->format != SDL_PIXELFORMAT_ABGR8888)
+   {
+      SDL_Surface *c = SDL_ConvertSurfaceFormat(sf, SDL_PIXELFORMAT_ABGR8888, 0);
+      SDL_FreeSurface(sf);
+      if (!(sf = c)) return;
+   }
+   SDL_SetSurfaceBlendMode(sf, SDL_BLENDMODE_NONE);
+   vox = (sf->w - 2) / LOGO_H_VOX;   /* px per voxel (1 px clear border around the content) */
+   g_logo.h = sf->h / fs;
+   for (i = 0; i < 4; i++)
+   {
+      int x0 = i ? (int)floorf(1 + cut[i] * vox) : 0, x1 = i < 3 ? (int)floorf(1 + cut[i + 1] * vox) : sf->w;
+      SDL_Rect r = { x0, 0, x1 - x0, sf->h };
+      SDL_Surface *part = SDL_CreateRGBSurface(0, r.w, r.h, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+      if (!part) continue;
+      SDL_BlitSurface(sf, &r, part, NULL);
+      g_logo.tex[i] = surface_to_tex(part, 0, NULL);
+      g_logo.x[i] = x0 / fs; g_logo.w[i] = r.w / fs;
+      SDL_FreeSurface(part);
+   }
+   logf_("brand logo: %s (%dx%d)", path, sf->w, sf->h);
+   SDL_FreeSurface(sf);
+}
+
+/* the logo centred on (cx, cy); t: frame time; a: UI alpha */
+static void logo_draw(float cx, float cy, double t, float a)
+{
+   float x0, y0, total;
+   int i;
+   if (!g_logo.tried) logo_load();
+   if (!g_logo.tex[0]) return;
+   if (g_logo_t0 < 0)
+   {  /* start once the dashboard has mostly faded in, or the entry happens unseen */
+      if (a < 0.6f) return;
+      g_logo_t0 = t;
+   }
+   total = g_logo.x[3] + g_logo.w[3];
+   x0 = floorf(cx - total * 0.5f); y0 = floorf(cy - g_logo.h * 0.5f);
+   for (i = 0; i < 4; i++)
+   {
+      /* 0.15 s after the dashboard shows, letter i falls 14 px in 0.55 s (a small
+       * overshoot: it lands), fading in over the first 0.3 s */
+      float p = clampf((float)(t - g_logo_t0 - 0.15 - 0.09 * i) / 0.55f, 0.0f, 1.0f);
+      float q = p - 1.0f, e = 1.0f + 2.2f * q * q * q + 1.2f * q * q;   /* ease out back */
+      float c[4] = { 1, 1, 1, a * clampf(p / 0.55f, 0.0f, 1.0f) };
+      if (c[3] <= 0.003f || !g_logo.tex[i]) continue;
+      draw_2d(g_logo.tex[i], x0 + g_logo.x[i], y0 - 14.0f * (1.0f - e), g_logo.w[i], g_logo.h, c, 0);
+   }
+}
+
 /* ua: alpha of the whole dashboard UI; pos: selection spring (tile index space);
  * info_a / info_y: title block fade and slide after a selection change */
 static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float pos, double sel_t, double t,
@@ -2555,7 +2633,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
    const float dim[4] = { 0.84f, 0.84f, 0.88f, 0.80f * ua };
    char s[320], a1[96], a2[96], num[24];
    int i, k;
-   if (ua <= 0.003f) return;
+   if (ua <= 0.003f) { g_logo_t0 = -1.0; return; }   /* hidden: the logo enters again */
    if (g_dash_profile_dirty)
    {
       g_dash_profile_dirty = 0;
@@ -2592,6 +2670,9 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       label_set(&l_psub, g_font_small, trf(s, sizeof(s), played == 1 ? "dash.profile_games_one" : "dash.profile_games", "n", num, NULL));
       draw_text(&l_psub, ax + ad + 16, ay + 26, dim);
    }
+
+   /* Lumen PSX logo, top centre on the status row's line */
+   logo_draw(W * 0.5f, TOP_Y + 24, t, ua);
 
    /* status, right to left: clock (only when the time is known), network, controllers */
    {
