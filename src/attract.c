@@ -64,6 +64,16 @@ void attract_init(int start_active, const char *home)
    logf_("attract: %d demo candidates%s", s_candidates, start_active ? ", starting active" : "");
 }
 
+void attract_library_changed(void)
+{
+   int i;
+   for (i = 0, s_candidates = 0; i < g_ngames; i++) s_candidates += is_candidate(i);
+   s_pick = -1;          /* old g_games index */
+   s_no_demo = 0;
+   s_launched = 0;
+   logf_("attract: library changed, %d demo candidates", s_candidates);
+}
+
 void attract_start(double t)
 {
    read_config(t, 1);
