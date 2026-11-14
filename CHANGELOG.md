@@ -3,6 +3,19 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- Animated per-game scenes: low-poly layered backgrounds (gradient sky, stars, flat-shaded OBJ
+  meshes with spin / bob / drift / keyframed `animate`, particles, glows, fog) with MIDI music,
+  from the `lumen-scenes` repository (`scene/` in a game's folder, `<stem>-scene/` for file
+  libraries). Rendered at half resolution into their own buffer, with the dashboard scrim, and
+  crossfaded like any background. Setting "Animated backgrounds" on the Library page.
+- MIDI music: a small built-in synthesizer (one patch per General MIDI family, synthesized drum
+  kit, echo) renders `.mid` files whole on the music thread; loops from the first CC 111. Per-game
+  `music.mid` / `<stem>-music.mid` are played too. Priority: the game's own track > the scene's
+  MIDI > the menu theme.
+
 ## [0.6.0] - 2026-11-14
 
 The Lumen PSX brand on the console, and a boot that no longer cuts Sony's animation.

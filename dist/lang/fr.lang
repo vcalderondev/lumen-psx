@@ -99,6 +99,8 @@ lib.stock = Jeux intégrés
 lib.hidden = Masqués
 lib.visible = Visibles
 lib.stock_note = Les 20 jeux fournis avec la console. Lecture seule : leurs sauvegardes vont dans le profil actif.
+lib.scenes = Fonds animés
+lib.scenes_note = Fonds animés : scènes low poly avec leur propre musique, pour les jeux qui en ont une (ajoutées depuis le gestionnaire web de Lumen).
 
 # à propos
 about.version = Version

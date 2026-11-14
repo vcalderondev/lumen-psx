@@ -41,6 +41,7 @@
 #include "launch.h"
 #include "attract.h"
 #include "music.h"
+#include "scene.h"
 #include "welcome.h"
 #include "status.h"
 #include "stats.h"
@@ -351,7 +352,7 @@ static void scan_psc(int pi, const char *dir)
    char path[700], buf[4096], discs[512], base[700];
    static const char *const media_sfx[] = { ".png", ".jpg", NULL };
    static const char *const bg_sfx[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
-   static const char *const music_sfx[] = { "music.ogg", "music.wav", NULL };
+   static const char *const music_sfx[] = { "music.ogg", "music.wav", "music.mid", NULL };
    DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
    if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
    while ((de = readdir(d)) && g_ngames < MAX_GAMES)
@@ -389,6 +390,8 @@ static void scan_psc(int pi, const char *dir)
       snprintf(base, sizeof(base), "%s/%s/", dir, de->d_name);
       find_first(g->bg, sizeof(g->bg), base, bg_sfx);
       find_first(g->music, sizeof(g->music), base, music_sfx);
+      snprintf(g->scene, sizeof(g->scene), "%s/%s/scene/scene.json", dir, de->d_name);
+      if (file_exists(g->scene)) g->scene[strlen(g->scene) - 11] = 0; else g->scene[0] = 0;
       if (!g->title[0]) snprintf(g->title, sizeof(g->title), "%s", discs);
       g->platform = pi;
       g_ngames++;
@@ -403,7 +406,7 @@ static void scan_files(int pi, const char *dir)
    DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
    static const char *const img_sfx[] = { ".png", ".jpg", NULL };
    static const char *const bg_sfx[] = { "-background.jpg", "-background.png", "-bg.jpg", "-bg.png", NULL };
-   static const char *const music_sfx[] = { "-music.ogg", "-music.wav", NULL };
+   static const char *const music_sfx[] = { "-music.ogg", "-music.wav", "-music.mid", NULL };
    if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
    while ((de = readdir(d)) && g_ngames < MAX_GAMES)
    {
@@ -422,6 +425,8 @@ static void scan_files(int pi, const char *dir)
       snprintf(base, sizeof(base), "%s/%s", dir, stem);
       find_first(g->bg, sizeof(g->bg), base, bg_sfx);
       find_first(g->music, sizeof(g->music), base, music_sfx);
+      snprintf(g->scene, sizeof(g->scene), "%s/%s-scene/scene.json", dir, stem);
+      if (file_exists(g->scene)) g->scene[strlen(g->scene) - 11] = 0; else g->scene[0] = 0;
       /* title: file name without "(...)" / "[...]" tags */
       snprintf(g->title, sizeof(g->title), "%s", stem);
       if ((p = strpbrk(g->title, "([")) && p > g->title) *p = 0;
@@ -1421,6 +1426,7 @@ static void draw_reflection(const game_t *g, const platform_t *pl, mat4 base, fl
  * software renderer can measure too (tools/host). */
 static int    g_cost_on;
 static double g_cost_px_opaque, g_cost_px_blend, g_cost_px_heavy, g_cost_draws;
+static double g_cost_scene_px, g_cost_scene_pts;   /* animated scene: its FBO area (sky pass), points drawn */
 static void cost_add(float w, float h, int mode)
 {
    double px = fabs((double)w * h) * g_ui_scale * g_ui_scale;
@@ -2260,7 +2266,7 @@ static void hints_draw(int set, float y, float alpha)
  * game's cover (gen, palette copied when the layer is made). The next layer crossfades
  * over the current one in 0.6 s; a layer pushed meanwhile waits (only the newest), so a
  * crossfade is never cut short. */
-typedef struct { GLuint tex; int w, h; int gen; float a[3], acc[3]; GLuint gfbo, gtex; } bgtex_t;
+typedef struct { GLuint tex; int w, h; int gen; float a[3], acc[3]; GLuint gfbo, gtex; scene_t *scene; double t0; } bgtex_t;
 #define GEN_W 640    /* generated backgrounds render at 640x360 and are scaled up: */
 #define GEN_H 360    /* smooth gradients, a tenth of the pixels of a 1080p pass */
 static bgtex_t bg_cur, bg_next, bg_pending;
@@ -2268,12 +2274,13 @@ static float   bg_mix = 1.0f;          /* 0 -> showing cur, 1 -> next done */
 static char    bg_shown[512];          /* key of the background we want: path or "gen:<i>" */
 static int     bg_game = -1;           /* game of the last request (fallback when its image fails) */
 
-static int  bg_empty(const bgtex_t *l) { return !l->tex && !l->gen; }
+static int  bg_empty(const bgtex_t *l) { return !l->tex && !l->gen && !l->scene; }
 static void bg_clear(bgtex_t *l)
 {
    if (l->tex) glDeleteTextures(1, &l->tex);
    if (l->gtex) glDeleteTextures(1, &l->gtex);
    if (l->gfbo) glDeleteFramebuffers(1, &l->gfbo);
+   if (l->scene) scene_free(l->scene);
    memset(l, 0, sizeof(*l));
 }
 
@@ -2328,6 +2335,49 @@ static void bg_poll_upload(void)
    bg_push(l);
 }
 
+/* Animated scenes (scene.h): a game's scene/ folder replaces its background while the
+ * setting "scenes" is on, unless that folder failed to load (then its image or the
+ * generated background). The loaded scene's music is remembered for the music choice. */
+static char  g_scene_failed[512];       /* last folder that could not be loaded */
+static char  g_scene_mdir[512];         /* folder of the last loaded scene (music below) */
+static char  g_scene_music[600];        /* its .mid, "" none */
+static float g_scene_mvol = 0.8f;
+
+static int scene_wanted(const game_t *g)
+{
+   return g->scene[0] && strcmp(g->scene, g_scene_failed) && settings_get_int("scenes", 1, 0, 1);
+}
+
+static void scene_poll_upload(double t)
+{
+   char dir[512], key[540];
+   int failed = 0;
+   scene_t *s = scene_poll(dir, sizeof dir, &failed);
+   if (!s && !failed) return;
+   snprintf(key, sizeof key, "scene:%s", dir);
+   if (failed)
+   {  /* next frame the selection picks the image / generated background instead */
+      snprintf(g_scene_failed, sizeof g_scene_failed, "%s", dir);
+      if (!strcmp(key, bg_shown)) bg_shown[0] = 0;
+      return;
+   }
+   {
+      float vol = 0.8f;
+      const char *m = scene_music(s, &vol);
+      snprintf(g_scene_mdir, sizeof g_scene_mdir, "%s", dir);
+      snprintf(g_scene_music, sizeof g_scene_music, "%s", m ? m : "");
+      g_scene_mvol = vol;
+   }
+   if (strcmp(key, bg_shown)) { scene_free(s); return; }   /* stale */
+   {
+      bgtex_t l;
+      memset(&l, 0, sizeof(l));
+      l.scene = s;
+      l.t0 = t;
+      bg_push(l);
+   }
+}
+
 /* draw a layer: images "cover"-fitted with a slow drift (scrim already baked in);
  * generated ones from their palette, rendered with the scrim into a small FBO */
 static void bg_draw(bgtex_t *b, float alpha, double t)
@@ -2336,7 +2386,28 @@ static void bg_draw(bgtex_t *b, float alpha, double t)
    int opaque = alpha >= 0.999f;
    if (alpha <= 0.001f || !g_fx_bg) return;
    if (opaque) glDisable(GL_BLEND);
-   if (b->tex)
+   if (b->scene)
+   {  /* animated scene: drawn into its own FBO (scene.c), the scrim on top of it there,
+       * then composited like a generated layer. Depth state is the scene's to change. */
+      const float one[4] = { 1, 1, 1, 1 };
+      GLboolean dt = glIsEnabled(GL_DEPTH_TEST);
+      GLint df = GL_LEQUAL;
+      int fw, fh;
+      GLuint tex;
+      glGetIntegerv(GL_DEPTH_FUNC, &df);
+      tex = scene_render(b->scene, t - b->t0, g_dw, g_dh, &fw, &fh);
+      if (g_cost_on) { g_cost_scene_px += (double)fw * fh; g_cost_scene_pts += scene_cost_points(b->scene); }
+      gl_use_2d();
+      glUniform4f(u2_aux0, g_bg_dim, 0, 0, 0);
+      draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glViewport(0, 0, g_dw, g_dh);
+      if (dt) glEnable(GL_DEPTH_TEST);
+      glDepthFunc(df);
+      if (opaque) glDisable(GL_BLEND);
+      draw_2d(tex, 0, H, W, -H, c, 0);       /* FBO rows are bottom-up */
+   }
+   else if (b->tex)
    {
       /* cover-fitted and still: a 16:9 image at the output size maps 1:1 (sharp) */
       float sx = (float)W / b->w, sy = (float)H / b->h, sc = sx > sy ? sx : sy, w, h;
@@ -3412,6 +3483,7 @@ int main(int argc, char **argv)
    asset_path(g_menu_music, sizeof(g_menu_music), "music/menu.ogg", "music/menu.ogg");
    if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
    if (music_init() == 0) ui_sound_changed();
+   scene_init();
    hints_load(g_home);
    panel_init();
    welcome_init();
@@ -3589,35 +3661,46 @@ int main(int argc, char **argv)
       {
          const game_t *cg = &g_games[pl->first + sel];
          char key[512];
-         if (cg->bg[0]) snprintf(key, sizeof(key), "%s", cg->bg);
+         int use_scene = scene_wanted(cg);
+         if (use_scene) snprintf(key, sizeof(key), "scene:%s", cg->scene);
+         else if (cg->bg[0]) snprintf(key, sizeof(key), "%s", cg->bg);
          else snprintf(key, sizeof(key), "gen:%d", pl->first + sel);
          /* a generated one waits for the cover (its palette), the placeholder counts */
-         if (strcmp(key, bg_shown) && (cg->bg[0] || cg->tex_state == 1 || cg->tex_state == -1))
+         if (strcmp(key, bg_shown) && (use_scene || cg->bg[0] || cg->tex_state == 1 || cg->tex_state == -1))
          {
             snprintf(bg_shown, sizeof(bg_shown), "%s", key);
             bg_game = pl->first + sel;
-            if (cg->bg[0]) bg_request(cg->bg);
+            if (use_scene) scene_request(cg->scene);
+            else if (cg->bg[0]) bg_request(cg->bg);
             else bg_push(bg_gen_layer(bg_game));
          }
       }
       bg_poll_upload();
+      scene_poll_upload(t);
       bg_advance(dt);
 
       /* music: the game's track once the selection has settled 0.8 s, else the menu
        * theme; the attract scene keeps the menu theme; launching fades it out */
       {
          const char *want = NULL;
-         float fade_s = 1.0f;
+         float fade_s = 1.0f, gain = 1.0f;
          if (!settings_get_int("music", 1, 0, 1)) want = "";
          else if (play_t >= 0) { want = ""; fade_s = 0.6f; }
          else if (attract_active()) { want = g_menu_music; fade_s = 1.5f; }
          else if (n && t - sel_t > 0.8)
          {
             const game_t *cg = &g_games[pl->first + sel];
-            want = cg->music[0] ? cg->music : g_menu_music;
+            /* the game's own track > its scene's MIDI > the menu theme; while the scene
+             * is still loading the current track keeps playing */
+            if (cg->music[0]) want = cg->music;
+            else if (scene_wanted(cg))
+            {
+               if (!strcmp(g_scene_mdir, cg->scene)) { want = g_scene_music[0] ? g_scene_music : g_menu_music; if (g_scene_music[0]) gain = g_scene_mvol; }
+            }
+            else want = g_menu_music;
          }
          else if (!n) want = g_menu_music;
-         if (want) music_play(want, fade_s);
+         if (want) music_play_gain(want, fade_s, gain);
          music_duck(0.55f * panel_amount());
       }
       status_update(t, &g_status);
@@ -4078,10 +4161,11 @@ int main(int argc, char **argv)
          if (t - ct >= 1.0)
          {
             if (ct > 0 && cf)
-               logf_("cost: %.2f Mpx/frame (opaque %.2f, blended %.2f, heavy shaders %.2f), %.0f draws/frame",
+               logf_("cost: %.2f Mpx/frame (opaque %.2f, blended %.2f, heavy shaders %.2f), %.0f draws/frame, scene %.2f Mpx + %.0f points",
                      (g_cost_px_opaque + g_cost_px_blend) / cf / 1e6, g_cost_px_opaque / cf / 1e6,
-                     g_cost_px_blend / cf / 1e6, g_cost_px_heavy / cf / 1e6, g_cost_draws / cf);
-            g_cost_px_opaque = g_cost_px_blend = g_cost_px_heavy = g_cost_draws = 0; cf = 0; ct = t;
+                     g_cost_px_blend / cf / 1e6, g_cost_px_heavy / cf / 1e6, g_cost_draws / cf,
+                     g_cost_scene_px / cf / 1e6, g_cost_scene_pts / cf);
+            g_cost_px_opaque = g_cost_px_blend = g_cost_px_heavy = g_cost_draws = g_cost_scene_px = g_cost_scene_pts = 0; cf = 0; ct = t;
          }
       }
       if (t - fps_t >= 5.0)
@@ -4095,6 +4179,7 @@ int main(int argc, char **argv)
    /* persist settings and selection; hand the launch request to the launcher script.
     * In the attract scene the selection saved is the user's, from before it started (10.5). */
    music_shutdown();   /* release the audio device before RetroArch starts */
+   scene_shutdown();
    panel_shutdown();   /* a colour picked or settings changed with the panel still open */
    if (settings_dirty()) settings_save();
    {

@@ -22,6 +22,7 @@
 #include <string.h>
 #include "lumen.h"
 #include "music.h"
+#include "midisynth.h"
 
 #define MAX_FILE   (16 << 20)
 #define SBUF_FR    512            /* source frames decoded per refill */
@@ -32,8 +33,9 @@ typedef struct
 {
    stb_vorbis *ov;                /* .ogg: decoder over mem */
    unsigned char *mem;            /* .ogg: whole file (owned, outlives ov) */
-   short *pcm;                    /* .wav: S16 stereo at src rate */
-   unsigned frames, ppos;         /* .wav: length, play position */
+   short *pcm;                    /* .wav / .mid: S16 stereo at src rate */
+   unsigned frames, ppos;         /* .wav / .mid: length, play position */
+   unsigned loop;                 /* frame the track loops back to (.mid: first CC 111) */
    int rate;                      /* source rate */
 } src_t;
 
@@ -61,7 +63,7 @@ static SDL_mutex *req_mx;
 static SDL_cond *req_cv;
 static char req_path[512];
 static unsigned req_id;
-static float req_fade;
+static float req_fade, req_gain = 1;
 static int req_pending, quit;
 
 static char target[512];          /* main thread: current target path */
@@ -99,7 +101,7 @@ static int refill(voice_t *v)
          n = left < SBUF_FR ? (int)left : SBUF_FR;
          memcpy(v->sbuf, v->s.pcm + (size_t)v->s.ppos * 2, (size_t)n * 4);
          v->s.ppos += n;
-         if (v->s.ppos >= v->s.frames) v->s.ppos = 0;
+         if (v->s.ppos >= v->s.frames) v->s.ppos = v->s.loop < v->s.frames ? v->s.loop : 0;
       }
       if (n > 0)
       {
@@ -271,6 +273,23 @@ static int load(const char *path, src_t *s)
       b = NULL;
       if (s->pcm) return 0;
    }
+   else if (b && len >= 14 && !memcmp(b, "MThd", 4))
+   {
+      /* MIDI (scene music): rendered whole by the synth here, on the loader thread */
+      double t0 = SDL_GetTicks();
+      if (midisynth_render(b, len, &s->pcm, &s->frames, &s->loop, &why) == 0 && s->frames)
+      {
+         s->rate = MIDISYNTH_RATE;
+         if (midisynth_capped) logf_("music: %s: longer than %d s, cut there", path, MIDISYNTH_MAX_SECONDS);
+         logf_("music: %s: MIDI rendered, %.1f s, loop at %.1f s (%.0f ms)", path,
+               s->frames / (double)MIDISYNTH_RATE, s->loop / (double)MIDISYNTH_RATE, SDL_GetTicks() - t0);
+         free(b);
+         return 0;
+      }
+      if (s->pcm && !s->frames) why = "MIDI file has no notes";
+      free(s->pcm);
+      s->pcm = NULL;
+   }
    else if (b)
       why = len >= 4 && !memcmp(b, "fLaC", 4) ? "FLAC not supported" : "unknown format";
    free(b);
@@ -289,7 +308,7 @@ static int SDLCALL loader_main(void *ud)
    {
       char path[512];
       unsigned id;
-      float fade;
+      float fade, gain;
       src_t s, old, tmp[NFREE];
       static voice_t nv;                       /* loader-only scratch */
       int rate, ok = 0, k, n = 0, tries;
@@ -303,6 +322,7 @@ static int SDLCALL loader_main(void *ud)
       memcpy(path, req_path, sizeof path);
       id = req_id;
       fade = req_fade;
+      gain = req_gain;
       req_pending = 0;
       SDL_UnlockMutex(req_mx);
 
@@ -314,7 +334,7 @@ static int SDLCALL loader_main(void *ud)
       nv.s = s;
       nv.step = (unsigned)(((unsigned long long)rate << 16) / dev_rate);
       if (!nv.step) nv.step = 1;
-      nv.target = 1;
+      nv.target = gain;
       nv.gstep = fade > 0 ? 1.0f / (fade * dev_rate) : 1;
       next_frame(&nv);
       for (tries = 0; ; )
@@ -407,7 +427,9 @@ int music_init(void)
    return 0;
 }
 
-void music_play(const char *path, float fade_s)
+void music_play(const char *path, float fade_s) { music_play_gain(path, fade_s, 1.0f); }
+
+void music_play_gain(const char *path, float fade_s, float gain)
 {
    int k;
    unsigned id;
@@ -431,6 +453,7 @@ void music_play(const char *path, float fade_s)
       snprintf(req_path, sizeof req_path, "%s", path);
       req_id = id;
       req_fade = fade_s;
+      req_gain = gain < 0 ? 0 : gain > 1 ? 1 : gain;
       req_pending = 1;
       SDL_CondSignal(req_cv);
    }

@@ -99,6 +99,8 @@ lib.stock = Vorinstallierte Spiele
 lib.hidden = Ausgeblendet
 lib.visible = Sichtbar
 lib.stock_note = Die 20 Spiele, die auf der Konsole vorinstalliert sind. Nur lesbar: Spielstände landen im aktiven Profil.
+lib.scenes = Animierte Hintergründe
+lib.scenes_note = Animierte Hintergründe: Low-Poly-Szenen mit eigener Musik, für Spiele, die eine haben (hinzugefügt über die Lumen-Webverwaltung).
 
 # Info
 about.version = Version

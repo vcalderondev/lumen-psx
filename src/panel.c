@@ -67,7 +67,7 @@ static const char *const k_page_key[P_COUNT] = {
 enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
-       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500,
+       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500, ID_LIB_SCENES,
        ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_INFO = 900 };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
@@ -347,7 +347,12 @@ static void page_build(void)
       int stock = settings_get_int("show_stock_games", 0, 0, 1);
       if ((r = row_add(R_CHOICE, ID_LIB_STOCK, tr("lib.stock"), tr(stock ? "lib.visible" : "lib.hidden"))))
       { r->at_lo = !stock; r->at_hi = stock; }
-      snprintf(s_foot, sizeof(s_foot), "%s", tr("lib.stock_note"));
+      {  /* animated per-game scenes (setting "scenes", read by main.c every frame) */
+         int sc = settings_get_int("scenes", 1, 0, 1);
+         if ((r = row_add(R_CHOICE, ID_LIB_SCENES, tr("lib.scenes"), tr(sc ? "value.on" : "value.off"))))
+         { r->at_lo = !sc; r->at_hi = sc; }
+      }
+      snprintf(s_foot, sizeof(s_foot), "%s\n%s", tr("lib.stock_note"), tr("lib.scenes_note"));
       break;
    }
    case P_ABOUT:
@@ -570,6 +575,10 @@ static void row_change(const row_t *r, int dir)
       settings_set_int("show_stock_games", dir > 0);
       ui_library_changed();
       logf_("panel: show_stock_games %d", dir > 0);
+      break;
+   case ID_LIB_SCENES:
+      settings_set_int("scenes", dir > 0);
+      logf_("panel: scenes %d", dir > 0);
       break;
    case ID_SS_LENGTH:
       i = nearest(k_seconds, NELEM(k_seconds), settings_get_int("demo_seconds", 60, 20, 300)) + dir;

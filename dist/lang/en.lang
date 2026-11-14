@@ -99,6 +99,8 @@ lib.stock = Built-in games
 lib.hidden = Hidden
 lib.visible = Visible
 lib.stock_note = The 20 games that come with the console. Read-only: their saves go to the active profile.
+lib.scenes = Animated backgrounds
+lib.scenes_note = Animated backgrounds: low-poly scenes with their own music, for the games that have one (added from the Lumen web library manager).
 
 # about
 about.version = Version
