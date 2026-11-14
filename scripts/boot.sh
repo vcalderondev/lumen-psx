@@ -241,7 +241,13 @@ if [ -x "${LUMEN_HOME}/lumen-buttons" ] || chmod +x "${LUMEN_HOME}/lumen-buttons
   for i in 1 2 3 4 5 6 7 8 9 10; do grep -q ready /tmp/lumen-buttons.out 2>/dev/null && break; sleep 0.1; done
 fi
 if [ -n "${BUTTONS_PID}" ] && grep -q ready /tmp/lumen-buttons.out 2>/dev/null; then
-  echo 1 > /data/power/disable        # power manager suspends after our apps_okay
+  # POWER: Sony's suspend works but the resume does not come back yet (under work); it is
+  # only enabled with <home>/debug/power-suspend (test switch), otherwise POWER is ignored
+  if [ -f "${LUMEN_HOME}/debug/power-suspend" ]; then
+    echo 1 > /data/power/disable      # power manager suspends after our apps_okay
+  else
+    echo 2 > /data/power/disable      # ignored: unplug to turn off
+  fi
   echo "buttons daemon running (${BUTTONS_PID})"
 else
   echo 2 > /data/power/disable        # no daemon: keep POWER ignored

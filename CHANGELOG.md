@@ -22,10 +22,19 @@ upstream PCSX-ReARMed, on a PSC compositor built from source.
 - L1/R1 change the page of games, L2/R2 change the platform.
 - PS5-style dashboard: translucent pill tabs, Outfit font, Settings as a full section,
   dark scrim over the art, MSAA 2x; design guidelines in docs/.
+- Console buttons: RESET restarts the game (or reloads the dashboard); OPEN pauses the
+  game and opens a dialog: continue, quit, or, in multi-disc games, pick the disc.
+- Multi-disc games: the discs of a game folder (Game.ini `Discs=`, else every .cue) are
+  given to RetroArch as one playlist, so discs can be swapped in game.
 - Crash reporter for RetroArch (`lumen/debug/psc-crash.so`): a crash leaves
   `logs/crash.log`.
 - Release workflow: builds Lumen, takes the pinned psc-platform release
   (`platform.lock`) and publishes the USB package with this changelog.
+
+### Known issues
+- POWER does nothing during a Lumen session: Sony's suspend to RAM goes to sleep but the
+  session does not come back yet. Turn the console off by unplugging it (saves and
+  states are written when a game exits). Being worked on.
 
 ### Removed
 - Project Eris' RetroArch 1.8.8 and its cores (archived to backup_eris/ by the installer
