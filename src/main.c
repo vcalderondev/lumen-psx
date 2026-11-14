@@ -74,11 +74,19 @@ typedef struct {
    spring x, z, ry, sc, al;
 } game_t;
 
+/* System declaration: <home>/systems/<id>.ini (see docs/systems.md). */
+enum { KIND_DISC, KIND_CART, KIND_ARCADE };
+enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN };
+
 typedef struct {
-   char name[32], core[128];
+   char id[32], name[48], logo[300], core[128];
+   char layout[8], paths[512], exts[128], art[16], media_art[16], sound[300];
+   int order, show_name, kind, launch, idle_float;
+   float aspect, w, h, color[3];
+   /* runtime */
    int first, count;
-   GLuint label;
-   int label_w, label_h;
+   GLuint label, logo_tex;
+   int label_w, label_h, logo_w, logo_h;
 } platform_t;
 
 static game_t     g_games[MAX_GAMES];
@@ -101,6 +109,7 @@ static void trim(char *s)
 
 static int file_exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
 
+/* Game.ini style: "\nKey=value" (no sections) */
 static void ini_get(const char *ini, const char *key, char *out, size_t n)
 {
    char pat[64]; const char *p, *e; size_t len;
@@ -116,24 +125,139 @@ static void ini_get(const char *ini, const char *key, char *out, size_t n)
    trim(out);
 }
 
-static int cmp_title(const void *a, const void *b)
+/* Declaration ini: [section] key = value ; comment */
+static void decl_get(const char *ini, const char *section, const char *key, char *out, size_t n, const char *def)
 {
-   const game_t *x = a, *y = b;
-   if (x->platform != y->platform) return x->platform - y->platform;
-   return strcasecmp(x->title, y->title);
+   char line[600], cur[48] = "";
+   const char *p = ini;
+   snprintf(out, n, "%s", def ? def : "");
+   while (*p)
+   {
+      const char *e = strchr(p, '\n');
+      size_t len = e ? (size_t)(e - p) : strlen(p);
+      char *eq, *sc;
+      if (len >= sizeof(line)) len = sizeof(line) - 1;
+      memcpy(line, p, len); line[len] = 0;
+      p = e ? e + 1 : p + len;
+      if ((sc = strchr(line, ';'))) *sc = 0;
+      trim(line);
+      if (line[0] == '[') { char *rb = strchr(line, ']'); if (rb) *rb = 0; snprintf(cur, sizeof(cur), "%s", line + 1); continue; }
+      if (!(eq = strchr(line, '='))) continue;
+      *eq = 0; trim(line); trim(eq + 1);
+      if (!strcasecmp(cur, section) && !strcasecmp(line, key)) { snprintf(out, n, "%s", eq + 1); return; }
+   }
 }
 
-static void scan_psx(void)
+static void parse_color(const char *s, float c[3])
 {
-   char dir[512], path[640], buf[4096], discs[512];
-   DIR *d; struct dirent *de; int pi = g_nplat;
-   snprintf(dir, sizeof(dir), "%s/games", g_root);
-   if (!(d = opendir(dir))) { logf_("no games dir %s", dir); return; }
-   snprintf(g_plat[pi].name, sizeof(g_plat[pi].name), "PlayStation");
-   snprintf(g_plat[pi].core, sizeof(g_plat[pi].core), "pcsx_rearmed_libretro.so");
+   unsigned v;
+   if (s[0] == '#' && sscanf(s + 1, "%x", &v) == 1)
+   { c[0] = ((v >> 16) & 255) / 255.0f; c[1] = ((v >> 8) & 255) / 255.0f; c[2] = (v & 255) / 255.0f; }
+}
+
+static void platform_from_decl(platform_t *pl, const char *ini)
+{
+   char v[300];
+   memset(pl, 0, sizeof(*pl));
+   decl_get(ini, "system", "id", pl->id, sizeof(pl->id), "psx");
+   decl_get(ini, "system", "name", pl->name, sizeof(pl->name), pl->id);
+   decl_get(ini, "system", "logo", v, sizeof(v), "");
+   if (v[0]) snprintf(pl->logo, sizeof(pl->logo), "%s/systems/%s/%s", g_home, pl->id, v);
+   decl_get(ini, "system", "order", v, sizeof(v), "50");   pl->order = atoi(v);
+   decl_get(ini, "system", "show_name", v, sizeof(v), "1"); pl->show_name = atoi(v);
+   decl_get(ini, "library", "layout", pl->layout, sizeof(pl->layout), "files");
+   decl_get(ini, "library", "paths", pl->paths, sizeof(pl->paths), "");
+   decl_get(ini, "library", "extensions", pl->exts, sizeof(pl->exts), "");
+   decl_get(ini, "launch", "core", pl->core, sizeof(pl->core), "");
+   decl_get(ini, "media", "kind", v, sizeof(v), "disc");
+   pl->kind = !strcmp(v, "cartridge") || !strcmp(v, "card") ? KIND_CART : (!strcmp(v, "arcade") ? KIND_ARCADE : KIND_DISC);
+   decl_get(ini, "media", "aspect", v, sizeof(v), pl->kind == KIND_DISC ? "1.136" : "1.0");
+   pl->aspect = (float)atof(v); if (pl->aspect <= 0.1f) pl->aspect = 1.0f;
+   if (pl->aspect > 1.2f) { pl->w = 1.25f; pl->h = 1.25f / pl->aspect; } else { pl->h = 1.0f; pl->w = pl->aspect; }
+   pl->color[0] = 0.08f; pl->color[1] = 0.07f; pl->color[2] = 0.09f;
+   decl_get(ini, "media", "color", v, sizeof(v), ""); parse_color(v, pl->color);
+   decl_get(ini, "media", "art", pl->art, sizeof(pl->art), "cover");
+   decl_get(ini, "media", "media_art", pl->media_art, sizeof(pl->media_art), pl->kind == KIND_DISC ? "disc" : "cart");
+   decl_get(ini, "animation", "launch", v, sizeof(v), "");
+   pl->launch = !strcmp(v, "insert_cartridge") ? ANIM_INSERT_CART : (!strcmp(v, "insert_coin") ? ANIM_INSERT_COIN :
+                (!strcmp(v, "open_case_disc") ? ANIM_OPEN_CASE_DISC :
+                 (pl->kind == KIND_CART ? ANIM_INSERT_CART : (pl->kind == KIND_ARCADE ? ANIM_INSERT_COIN : ANIM_OPEN_CASE_DISC))));
+   decl_get(ini, "animation", "idle", v, sizeof(v), "float"); pl->idle_float = strcmp(v, "none") != 0;
+   decl_get(ini, "animation", "sound", v, sizeof(v), "");
+   if (v[0]) snprintf(pl->sound, sizeof(pl->sound), "%s/systems/%s/%s", g_home, pl->id, v);
+}
+
+static int cmp_order(const void *a, const void *b)
+{
+   const platform_t *x = a, *y = b;
+   return x->order != y->order ? x->order - y->order : strcmp(x->id, y->id);
+}
+
+static void load_systems(void)
+{
+   char dir[300], path[600];
+   DIR *d; struct dirent *de;
+   snprintf(dir, sizeof(dir), "%s/systems", g_home);
+   if ((d = opendir(dir)))
+   {
+      while ((de = readdir(d)) && g_nplat < MAX_PLATFORMS)
+      {
+         size_t l = strlen(de->d_name); FILE *f; char *buf; long sz;
+         if (de->d_name[0] == '.' || l < 5 || strcasecmp(de->d_name + l - 4, ".ini")) continue;
+         snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+         if (!(f = fopen(path, "rb"))) continue;
+         fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET);
+         buf = calloc(1, sz + 1);
+         if (buf && fread(buf, 1, sz, f) == (size_t)sz) { platform_from_decl(&g_plat[g_nplat], buf); g_nplat++; }
+         free(buf); fclose(f);
+      }
+      closedir(d);
+   }
+   if (!g_nplat)  /* built-in default: PlayStation library in the PSC layout */
+   {
+      char def[400];
+      snprintf(def, sizeof(def), "[system]\nid=psx\nname=PlayStation\n[library]\nlayout=psc\npaths=%s/games\n"
+               "extensions=cue,pbp,chd,m3u\n[launch]\ncore=pcsx_rearmed_libretro.so\n[media]\nkind=disc\n", g_root);
+      platform_from_decl(&g_plat[0], def);
+      g_nplat = 1;
+   }
+   qsort(g_plat, g_nplat, sizeof(platform_t), cmp_order);
+   logf_("systems: %d", g_nplat);
+}
+
+static int ext_ok(const platform_t *pl, const char *name)
+{
+   const char *dot = strrchr(name, '.');
+   char list[160], *tok, *save = NULL;
+   if (!dot || !pl->exts[0]) return 0;
+   snprintf(list, sizeof(list), "%s", pl->exts);
+   for (tok = strtok_r(list, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+   { trim(tok); if (!strcasecmp(tok, dot + 1)) return 1; }
+   return 0;
+}
+
+static void find_first(char *out, size_t n, const char *base, const char *const *suffixes)
+{
+   int b;
+   for (b = 0; suffixes[b]; b++)
+   {
+      snprintf(out, n, "%s%s", base, suffixes[b]);
+      if (file_exists(out)) return;
+   }
+   out[0] = 0;
+}
+
+/* PSC/BleemSync layout: <path>/<n>/Game.ini + <disc>.cue|pbp|... + <disc>.png */
+static void scan_psc(int pi, const char *dir)
+{
+   char path[700], buf[4096], discs[512], base[700];
+   static const char *const media_sfx[] = { ".png", ".jpg", NULL };
+   static const char *const bg_sfx[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
+   DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
+   if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
    while ((de = readdir(d)) && g_ngames < MAX_GAMES)
    {
-      FILE *f; size_t n; game_t *g; char *c;
+      FILE *f; size_t n; game_t *g; char *c; char exts[160], *tok, *save = NULL;
       if (de->d_name[0] == '.') continue;
       snprintf(path, sizeof(path), "%s/%s/Game.ini", dir, de->d_name);
       if (!(f = fopen(path, "rb"))) continue;
@@ -150,45 +274,97 @@ static void scan_psx(void)
       if ((c = strchr(discs, ','))) *c = 0;
       trim(discs);
       if (!discs[0]) continue;
-      snprintf(g->content, sizeof(g->content), "%s/%s/%s.cue", dir, de->d_name, discs);
-      if (!file_exists(g->content))
+      g->content[0] = 0;
+      snprintf(exts, sizeof(exts), "%s", pl->exts[0] ? pl->exts : "cue,pbp");
+      for (tok = strtok_r(exts, ",", &save); tok && !g->content[0]; tok = strtok_r(NULL, ",", &save))
       {
-         snprintf(g->content, sizeof(g->content), "%s/%s/%s.pbp", dir, de->d_name, discs);
-         if (!file_exists(g->content)) continue;
+         trim(tok);
+         snprintf(g->content, sizeof(g->content), "%s/%s/%s.%s", dir, de->d_name, discs, tok);
+         if (!file_exists(g->content)) g->content[0] = 0;
       }
+      if (!g->content[0]) continue;
       snprintf(g->cover, sizeof(g->cover), "%s/%s/%s.png", dir, de->d_name, discs);
       g->has_cover = file_exists(g->cover);
-      {
-         static const char *const dn[] = { "disc.png", "disc.jpg", NULL };
-         int b;
-         for (b = 0; dn[b]; b++)
-         {
-            snprintf(g->disc, sizeof(g->disc), "%s/%s/%s", dir, de->d_name, dn[b]);
-            if (file_exists(g->disc)) break;
-            g->disc[0] = 0;
-         }
-      }
-      {
-         static const char *const bgn[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
-         int b;
-         for (b = 0; bgn[b]; b++)
-         {
-            snprintf(g->bg, sizeof(g->bg), "%s/%s/%s", dir, de->d_name, bgn[b]);
-            if (file_exists(g->bg)) break;
-            g->bg[0] = 0;
-         }
-      }
+      snprintf(base, sizeof(base), "%s/%s/%s", dir, de->d_name, pl->media_art);
+      find_first(g->disc, sizeof(g->disc), base, media_sfx);
+      snprintf(base, sizeof(base), "%s/%s/", dir, de->d_name);
+      find_first(g->bg, sizeof(g->bg), base, bg_sfx);
       if (!g->title[0]) snprintf(g->title, sizeof(g->title), "%s", discs);
       g->platform = pi;
       g_ngames++;
    }
    closedir(d);
-   g_nplat++;
+}
+
+/* Files layout: <path>/<name>.<ext>, art next to it: <name>.png|jpg,
+ * <name>-<media_art>.png|jpg, <name>-background.jpg|png */
+static void scan_files(int pi, const char *dir)
+{
+   DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
+   static const char *const img_sfx[] = { ".png", ".jpg", NULL };
+   static const char *const bg_sfx[] = { "-background.jpg", "-background.png", "-bg.jpg", "-bg.png", NULL };
+   if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
+   while ((de = readdir(d)) && g_ngames < MAX_GAMES)
+   {
+      game_t *g; char base[700], stem[256], *dot, *p;
+      if (de->d_name[0] == '.' || !ext_ok(pl, de->d_name)) continue;
+      g = &g_games[g_ngames];
+      memset(g, 0, sizeof(*g));
+      snprintf(g->content, sizeof(g->content), "%s/%s", dir, de->d_name);
+      snprintf(stem, sizeof(stem), "%s", de->d_name);
+      if ((dot = strrchr(stem, '.'))) *dot = 0;
+      snprintf(base, sizeof(base), "%s/%s", dir, stem);
+      find_first(g->cover, sizeof(g->cover), base, img_sfx);
+      g->has_cover = g->cover[0] != 0;
+      snprintf(base, sizeof(base), "%s/%s-%s", dir, stem, pl->media_art);
+      find_first(g->disc, sizeof(g->disc), base, img_sfx);
+      snprintf(base, sizeof(base), "%s/%s", dir, stem);
+      find_first(g->bg, sizeof(g->bg), base, bg_sfx);
+      /* title: file name without "(...)" / "[...]" tags */
+      snprintf(g->title, sizeof(g->title), "%s", stem);
+      if ((p = strpbrk(g->title, "([")) && p > g->title) *p = 0;
+      trim(g->title);
+      g->platform = pi;
+      g_ngames++;
+   }
+   closedir(d);
+}
+
+static void scan_all(void)
+{
+   int pi;
+   for (pi = 0; pi < g_nplat; pi++)
+   {
+      char paths[512], *tok, *save = NULL;
+      snprintf(paths, sizeof(paths), "%s", g_plat[pi].paths);
+      for (tok = strtok_r(paths, ";", &save); tok; tok = strtok_r(NULL, ";", &save))
+      {
+         trim(tok);
+         if (!strcmp(g_plat[pi].layout, "psc")) scan_psc(pi, tok); else scan_files(pi, tok);
+      }
+   }
+}
+
+static int cmp_title(const void *a, const void *b)
+{
+   const game_t *x = a, *y = b;
+   if (x->platform != y->platform) return x->platform - y->platform;
+   return strcasecmp(x->title, y->title);
 }
 
 static void build_platform_index(void)
 {
-   int i, p, kept = 0;
+   int i, p, kept = 0, remap[MAX_PLATFORMS];
+   for (p = 0; p < g_nplat; p++) g_plat[p].count = 0;
+   for (i = 0; i < g_ngames; i++) g_plat[g_games[i].platform].count++;
+   /* drop empty platforms, keeping game -> platform indices consistent */
+   for (p = 0; p < g_nplat; p++)
+   {
+      remap[p] = g_plat[p].count > 0 ? kept : -1;
+      if (g_plat[p].count > 0) g_plat[kept++] = g_plat[p];
+   }
+   g_nplat = kept;
+   for (i = 0; i < g_ngames; i++) g_games[i].platform = remap[g_games[i].platform];
    qsort(g_games, g_ngames, sizeof(game_t), cmp_title);
    for (p = 0; p < g_nplat; p++) { g_plat[p].first = -1; g_plat[p].count = 0; }
    for (i = 0; i < g_ngames; i++)
@@ -197,10 +373,6 @@ static void build_platform_index(void)
       if (pl->first < 0) pl->first = i;
       pl->count++;
    }
-   /* drop empty platforms */
-   for (p = 0; p < g_nplat; p++)
-      if (g_plat[p].count > 0) g_plat[kept++] = g_plat[p];
-   g_nplat = kept;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -264,6 +436,19 @@ static const char *FS_BOX =
    "           c = mix(silver, rainbow, 0.28 + spokes * 0.5) + vec3(spokes * 0.35); }\n"
    "    float rim = smoothstep(0.965, 0.99, r);\n"
    "    c = mix(c, vec3(0.55, 0.56, 0.60), rim * 0.6);\n"
+   "    frag = vec4(c + spec, alpha); return; }\n"
+   "  if (mode==7) { vec3 c = texture(tex, v_uv).rgb * tint; frag = vec4(c + vec3(pow(max(dot(reflect(-l, n), v), 0.0), 60.0) * 0.25), alpha); return; }\n"
+   "  if (mode==8) { float d = length(v_uv - 0.5) * 2.0; frag = vec4(tint, alpha * pow(clamp(1.0 - d, 0.0, 1.0), 2.0)); return; }\n"
+   "  if (mode==9) {\n"
+   "    vec2 p = v_uv * 2.0 - 1.0; float r = length(p); if (r > 1.0) discard;\n"
+   "    float ang = atan(p.y, p.x);\n"
+   "    vec3 gold = vec3(0.95, 0.74, 0.28);\n"
+   "    float rim = smoothstep(0.80, 0.84, r);\n"
+   "    float ridges = 0.5 + 0.5 * sin(ang * 90.0);\n"
+   "    float emboss = smoothstep(0.56, 0.60, r) * (1.0 - smoothstep(0.62, 0.66, r));\n"
+   "    float shade = 0.55 + 0.45 * ndl + p.y * 0.15;\n"
+   "    vec3 c = gold * shade * (1.0 - rim * 0.25 * ridges) + vec3(emboss * 0.25);\n"
+   "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 30.0) * 0.8;\n"
    "    frag = vec4(c + spec, alpha); return; }\n"
    "  vec3 base;\n"
    "  if (mode==1) base = tint;\n"
@@ -582,14 +767,66 @@ static void draw_case(const game_t *g, mat4 base, float alpha, float open, float
    glDepthMask(GL_TRUE);
 }
 
+/* Cartridge: plastic shell (declared colour/aspect), label with the game art,
+ * grip ridges at the bottom. lift/drop/tilt drive the insert animation. */
+static void draw_cart(const game_t *g, const platform_t *pl, mat4 base, float alpha)
+{
+   static const float one[3] = { 1, 1, 1 };
+   const float w = pl->w, h = pl->h, d = 0.13f, hw = w * 0.5f, hh = h * 0.5f, hd = d * 0.5f, PI = (float)M_PI;
+   float body[3], dark[3], light[3];
+   int k;
+   for (k = 0; k < 3; k++) { body[k] = pl->color[k]; dark[k] = pl->color[k] * 0.62f; light[k] = pl->color[k] * 0.85f + 0.05f; }
+   case_part(base, 0, 0, hd, 0, 0, w, h, 0, body, alpha, 1);                       /* front */
+   case_part(base, 0, 0, -hd, PI, 0, w, h, 0, dark, alpha, 1);                     /* back */
+   case_part(base, hw, 0, 0, PI / 2, 0, d, h, 0, light, alpha, 1);                 /* right */
+   case_part(base, -hw, 0, 0, -PI / 2, 0, d, h, 0, light, alpha, 1);               /* left */
+   case_part(base, 0, hh, 0, 0, -PI / 2, w, d, 0, light, alpha, 1);                /* top */
+   case_part(base, 0, -hh, 0, 0, PI / 2, w, d, 0, dark, alpha, 1);                 /* bottom */
+   /* label: upper part of the front, inset */
+   case_part(base, 0, hh - 0.08f * h - 0.62f * h * 0.5f, hd + 0.002f, 0, 0, w * 0.82f, h * 0.62f, g->tex, one, alpha, 0);
+   /* grip ridges */
+   for (k = 0; k < 4; k++)
+      case_part(base, 0, -hh + 0.06f * h + k * 0.045f * h, hd + 0.003f, 0, 0, w * 0.55f, 0.012f * h, 0, dark, alpha, 1);
+}
+
+/* Arcade marquee: black frame, backlit art (emissive), coloured halo. lit: 0..1.25 */
+static void draw_marquee(const game_t *g, const platform_t *pl, mat4 base, float alpha, float lit)
+{
+   static const float frame[3] = { 0.03f, 0.03f, 0.035f };
+   const float w = pl->w, h = pl->h, d = 0.06f, hd = d * 0.5f, PI = (float)M_PI;
+   float tint[3], glow[3];
+   tint[0] = tint[1] = tint[2] = lit;
+   glow[0] = g->col[0] * lit; glow[1] = g->col[1] * lit; glow[2] = g->col[2] * lit;
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+   glDepthMask(GL_FALSE);
+   case_part(base, 0, 0, -hd - 0.02f, 0, 0, w * 1.6f, h * 2.4f, 0, glow, alpha * 0.55f, 8);
+   glDepthMask(GL_TRUE);
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   case_part(base, 0, 0, hd - 0.002f, 0, 0, w + 0.06f, h + 0.06f, 0, frame, alpha, 1);
+   case_part(base, 0, 0, -hd, PI, 0, w + 0.06f, h + 0.06f, 0, frame, alpha, 1);
+   case_part(base, 0, 0, hd, 0, 0, w, h, g->tex, tint, alpha, 7);
+}
+
+/* dispatcher: one renderer per declared media kind */
+static void draw_media(const game_t *g, const platform_t *pl, mat4 base, float alpha,
+                       float open, float lift, float fly, float spin, float lit)
+{
+   if (pl->kind == KIND_CART) draw_cart(g, pl, base, alpha);
+   else if (pl->kind == KIND_ARCADE) draw_marquee(g, pl, base, alpha, lit);
+   else draw_case(g, base, alpha, open, lift, fly, spin);
+}
+
 /* Mirror the insert about the floor plane under the case (y = -0.5*scale). */
-static void draw_reflection(const game_t *g, mat4 base, float alpha)
+static void draw_reflection(const game_t *g, const platform_t *pl, mat4 base, float alpha)
 {
    static const float one[3] = { 1, 1, 1 };
    const float hw = CASE_W * 0.5f, ins_l = -hw + HINGE, ins_r = hw - 0.018f;
-   float floor_y = -0.5f * g->sc.x - 0.01f;
+   float floor_y = -0.5f * pl->h * g->sc.x - 0.01f;
    mat4 m = m4_mul(m4_translate(0, 2.0f * floor_y, 0), m4_mul(m4_scale(1, -1, 1), base));
-   m = m4_mul(m, m4_mul(m4_translate((ins_l + ins_r) * 0.5f, 0, CASE_D * 0.5f), m4_scale(ins_r - ins_l, 0.972f, 1)));
+   if (pl->kind == KIND_DISC)
+      m = m4_mul(m, m4_mul(m4_translate((ins_l + ins_r) * 0.5f, 0, CASE_D * 0.5f), m4_scale(ins_r - ins_l, 0.972f, 1)));
+   else
+      m = m4_mul(m, m4_mul(m4_translate(0, 0, 0.065f), m4_scale(pl->w, pl->h, 1)));
    draw_quad_box(m, g->tex, one, alpha, 2);
 }
 
@@ -953,7 +1190,7 @@ int main(int argc, char **argv)
    int held_dir = 0; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
    spring bg[3], info_y, info_a, plat_x;
-   label_t l_title = { 0 }, l_sub = { 0 }, l_count = { 0 }, l_brand = { 0 }, l_start = { 0 };
+   label_t l_title = { 0 }, l_sub = { 0 }, l_count = { 0 }, l_brand = { 0 }, l_start = { 0 }, l_coin1 = { 0 }, l_coin2 = { 0 };
    float fade = 1.0f; /* 1 = black, fades in at start */
 
    for (i = 1; i < argc; i++)
@@ -1021,14 +1258,21 @@ int main(int argc, char **argv)
    g_font_small = open_font(fonts_reg, 16);
    g_font_cover = open_font(fonts_bold, 22);
 
-   scan_psx();
+   load_systems();
+   scan_all();
    build_platform_index();
    logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
    for (i = 0; i < g_nplat; i++)
    {
-      char s[64];
-      snprintf(s, sizeof(s), "%s", g_plat[i].name);
-      g_plat[i].label = text_tex(g_font_small, s, &g_plat[i].label_w, &g_plat[i].label_h);
+      platform_t *p = &g_plat[i];
+      if (p->logo[0])
+      {
+         SDL_Surface *ls = IMG_Load(p->logo);
+         if (ls) { p->logo_w = ls->w; p->logo_h = ls->h; p->logo_tex = surface_to_tex(ls, 1, NULL); SDL_FreeSurface(ls); }
+         else logf_("[%s] logo not found: %s", p->id, p->logo);
+      }
+      if (!p->logo_tex) p->show_name = 1;
+      if (p->show_name) p->label = text_tex(g_font_small, p->name, &p->label_w, &p->label_h);
    }
 
    /* resume last selection */
@@ -1050,6 +1294,8 @@ int main(int argc, char **argv)
    label_set(&l_brand, g_font_small, "lumen");
    hints_load(g_home, g_font_small);
    label_set(&l_start, g_font_sub, "Iniciando\xE2\x80\xA6");
+   label_set(&l_coin1, g_font_sub, "INSERT COIN");
+   label_set(&l_coin2, g_font_sub, "CREDIT 1");
 
    /* first frame positions: start off to the right so they fly in */
    for (i = 0; i < g_ngames; i++)
@@ -1181,22 +1427,58 @@ int main(int argc, char **argv)
       /* animation targets */
       {
          float zoom = 0.0f, open = 0.0f, lift = 0.0f, fly = 0.0f, spin = 0.0f, flash = 0.0f, launching = 0.0f;
+         float drop = 0.0f, tilt = 0.0f, shake = 0.0f, led = 0.0f, slot = 0.0f, lit = 1.0f;
+         float coin_x = 0.0f, coin_spin = 0.0f, coin_in = 0.0f, credit = 0.0f, insert = 0.0f;
+         int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
          if (play_t >= 0)
          {
-            float pt = (float)(t - play_t), u;
+            float pt = (float)(t - play_t), u, end = 2.8f, fl_t = 2.35f;
 #define SMOOTH(x) ((x) * (x) * (3 - 2 * (x)))
             launching = 1.0f;
             zoom = SMOOTH(clampf(pt / 0.5f, 0, 1));
-            u = clampf((pt - 0.45f) / 0.65f, 0, 1); open = SMOOTH(u);
-            u = clampf((pt - 1.05f) / 0.35f, 0, 1); lift = SMOOTH(u);
-            u = clampf((pt - 1.40f) / 1.10f, 0, 1); fly = u * u * u;
-            spin = pt > 1.05f ? (pt - 1.05f) * (pt - 1.05f) * 9.0f : 0.0f;
-            flash = clampf(1.0f - fabsf(pt - 2.35f) / 0.22f, 0, 1);
-            fade = clampf((pt - 2.35f) / 0.30f, 0, 1);
-            if (pt > 2.80f) { exit_code = 10; running = 0; }
+            if (anim == ANIM_INSERT_CART)
+            {
+               u = clampf((pt - 0.45f) / 0.30f, 0, 1); lift = SMOOTH(u);
+               u = clampf((pt - 0.75f) / 0.40f, 0, 1); drop = u * u;
+               tilt = lift * 0.35f;
+               slot = clampf((pt - 0.40f) / 0.35f, 0, 1);
+               if (pt > 1.15f) shake = expf(-(pt - 1.15f) * 9.0f) * sinf((pt - 1.15f) * 70.0f);
+               led = clampf((pt - 1.22f) / 0.12f, 0, 1);
+               fl_t = 1.60f; end = 2.05f;
+            }
+            else if (anim == ANIM_INSERT_COIN)
+            {
+               insert = pt < 1.35f ? 1.0f : 0.0f;
+               u = clampf((pt - 0.40f) / 0.75f, 0, 1); coin_x = 1.0f - SMOOTH(u);
+               coin_spin = SMOOTH(u) * 9.0f;
+               coin_in = SMOOTH(clampf((pt - 1.15f) / 0.20f, 0, 1));
+               lit = 0.55f;
+               if (pt > 1.35f)
+               {
+                  float k = pt - 1.35f;
+                  lit = k < 0.45f ? (fmodf(k * 23.0f, 1.0f) > 0.45f ? 1.25f : 0.35f) : 1.25f;
+                  credit = fmodf(k * 3.0f, 1.0f) > 0.35f ? 1.0f : 0.0f;
+               }
+               fl_t = 2.15f; end = 2.6f;
+            }
+            else
+            {
+               u = clampf((pt - 0.45f) / 0.65f, 0, 1); open = SMOOTH(u);
+               u = clampf((pt - 1.05f) / 0.35f, 0, 1); lift = SMOOTH(u);
+               u = clampf((pt - 1.40f) / 1.10f, 0, 1); fly = u * u * u;
+               spin = pt > 1.05f ? (pt - 1.05f) * (pt - 1.05f) * 9.0f : 0.0f;
+            }
+            flash = clampf(1.0f - fabsf(pt - fl_t) / 0.22f, 0, 1);
+            fade = clampf((pt - fl_t) / 0.30f, 0, 1);
+            if (pt > end) { exit_code = 10; running = 0; }
 #undef SMOOTH
          }
-         else fade = fade > 0 ? fade - dt * 1.6f : 0;
+         else
+         {
+            fade = fade > 0 ? fade - dt * 1.6f : 0;
+            if (pl && pl->kind == KIND_ARCADE) lit = 1.0f + 0.04f * sinf((float)t * 3.0f);
+         }
+         g_vp = m4_mul(g_proj, m4_mul(m4_translate(shake * 0.03f, shake * 0.02f, 0), g_view));
 
          for (i = 0; i < n; i++)
          {
@@ -1274,7 +1556,7 @@ int main(int argc, char **argv)
                g = &g_games[pl->first + idx];
                if (g->al.x < 0.01f || !g->tex) continue;
                base = m4_mul(m4_translate(g->x.x, 0, g->z.x), m4_mul(m4_rot_y(g->ry.x), m4_scale(g->sc.x, g->sc.x, g->sc.x)));
-               draw_reflection(g, base, g->al.x * (1.0f - fade));
+               draw_reflection(g, &g_plat[g->platform], base, g->al.x * (1.0f - fade));
             }
          }
          glEnable(GL_DEPTH_TEST);
@@ -1287,20 +1569,47 @@ int main(int argc, char **argv)
                int idx, o = i * s;
                game_t *g;
                mat4 base;
-               float bob = 0.0f, sway = 0.0f, op = 0.0f;
+               float bob = 0.0f, sway = 0.0f, op = 0.0f, ty = 0.0f, tx_ = 0.0f;
+               const platform_t *gp;
                if (i == 0 && s == 1) continue;
                idx = ((sel + o) % n + n) % n;
                g = &g_games[pl->first + idx];
                if (g->al.x < 0.01f || !g->tex) continue;
+               gp = &g_plat[g->platform];
                if (o == 0)
                {
-                  bob = sinf((float)t * 1.9f) * 0.035f;
-                  sway = -0.17f + sinf((float)t * 1.9f + 0.6f) * 0.06f;
-                  if (play_t >= 0) { op = open; sway *= 1.0f - zoom; bob *= 1.0f - zoom; }
+                  if (gp->idle_float)
+                  {
+                     bob = sinf((float)t * 1.9f) * 0.035f;
+                     sway = -0.17f + sinf((float)t * 1.9f + 0.6f) * 0.06f;
+                  }
+                  if (play_t >= 0)
+                  {
+                     op = open; sway *= 1.0f - zoom; bob *= 1.0f - zoom;
+                     ty = lift * 0.35f - drop * 3.2f;
+                     tx_ = tilt;
+                  }
                }
-               base = m4_mul(m4_translate(g->x.x, bob, g->z.x),
-                      m4_mul(m4_rot_y(g->ry.x + sway), m4_scale(g->sc.x, g->sc.x, g->sc.x)));
-               draw_case(g, base, g->al.x, op, o == 0 ? lift : 0.0f, o == 0 ? fly : 0.0f, o == 0 ? spin : 0.0f);
+               base = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x),
+                      m4_mul(m4_rot_y(g->ry.x + sway), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
+               draw_media(g, gp, base, g->al.x, op, o == 0 && gp->kind == KIND_DISC ? lift : 0.0f,
+                          o == 0 ? fly : 0.0f, o == 0 ? spin : 0.0f, o == 0 ? lit : 1.0f);
+            }
+         }
+         if (play_t >= 0 && anim == ANIM_INSERT_COIN && pl)
+         {
+            static const float one[3] = { 1, 1, 1 }, slotc[3] = { 0.02f, 0.02f, 0.025f }, plate[3] = { 0.30f, 0.30f, 0.34f };
+            float sy = -0.5f * pl->h * 1.10f - 0.42f;
+            mat4 m;
+            m = m4_mul(m4_translate(0, sy, 1.15f), m4_scale(0.62f, 0.30f, 1));
+            draw_quad_box(m, 0, plate, 1.0f - fade, 1);
+            m = m4_mul(m4_translate(0, sy, 1.16f), m4_scale(0.30f, 0.035f, 1));
+            draw_quad_box(m, 0, slotc, 1.0f - fade, 1);
+            if (coin_in < 1.0f)
+            {
+               m = m4_mul(m4_translate(coin_x * 1.9f, sy + 0.16f - coin_in * 0.16f, 1.22f),
+                   m4_mul(m4_rot_y(coin_in * 1.45f), m4_mul(m4_rot_z(-coin_spin), m4_scale(0.24f, 0.24f, 1))));
+               draw_quad_box(m, 0, one, 1.0f - fade, 9);
             }
          }
          glDisable(GL_DEPTH_TEST);
@@ -1321,16 +1630,28 @@ int main(int argc, char **argv)
             if (pl) { snprintf(s, sizeof(s), "%d juegos  \xC2\xB7  %s", pl->count, pl->name); label_set(&l_count, g_font_small, s); }
             draw_2d(l_count.tex, W - 36 - l_count.w, 26, l_count.w, l_count.h, dim, 0);
 
-            for (i = 0; i < g_nplat; i++) total += g_plat[i].label_w + 36 + 10;
+#define LOGO_H 22.0f
+#define PILL_CONTENT(p) (((p)->logo_tex ? LOGO_H * (p)->logo_w / (float)(p)->logo_h : 0.0f) + \
+                         ((p)->logo_tex && (p)->show_name ? 8.0f : 0.0f) + ((p)->show_name ? (p)->label_w : 0.0f))
+            for (i = 0; i < g_nplat; i++) total += PILL_CONTENT(&g_plat[i]) + 36 + 10;
             px = (W - total) * 0.5f + plat_x.x * 0.02f;
             for (i = 0; i < g_nplat; i++)
             {
-               float pw = g_plat[i].label_w + 36, ph = 32;
+               platform_t *p = &g_plat[i];
+               float pw = PILL_CONTENT(p) + 36, ph = 32, cx = px + 18;
+               const float *fg = i == sel_plat ? txt_dark : txt;
                draw_2d(0, px, 64, pw, ph, i == sel_plat ? pill_on : pill_off, 1);
-               draw_2d(g_plat[i].label, px + 18, 64 + (ph - g_plat[i].label_h) * 0.5f,
-                       g_plat[i].label_w, g_plat[i].label_h, i == sel_plat ? txt_dark : txt, 0);
+               if (p->logo_tex)
+               {
+                  float lw = LOGO_H * p->logo_w / (float)p->logo_h;
+                  draw_2d(p->logo_tex, cx, 64 + (ph - LOGO_H) * 0.5f, lw, LOGO_H, fg, 0);
+                  cx += lw + 8.0f;
+               }
+               if (p->show_name)
+                  draw_2d(p->label, cx, 64 + (ph - p->label_h) * 0.5f, p->label_w, p->label_h, fg, 0);
                px += pw + 10;
             }
+#undef PILL_CONTENT
 
             if (cg)
             {
@@ -1351,6 +1672,23 @@ int main(int argc, char **argv)
                const float hc[4] = { 0.43f, 0.42f, 0.52f, 1 - fade };
                (void)hc;
                hints_draw(686, 1 - fade);
+            }
+            if (play_t >= 0 && anim == ANIM_INSERT_CART && slot > 0.0f)
+            {
+               const float sc[4] = { 0.02f, 0.02f, 0.03f, 0.92f * slot * (1 - fade) };
+               const float rim[4] = { 0.35f, 0.34f, 0.42f, 0.8f * slot * (1 - fade) };
+               const float ledc[4] = { 1.0f, 0.18f, 0.12f, led * (1 - fade) };
+               const float ledg[4] = { 1.0f, 0.25f, 0.15f, 0.55f * led * (1 - fade) };
+               draw_2d(0, W * 0.5f - 232, 598, 464, 34, rim, 1);
+               draw_2d(0, W * 0.5f - 220, 604, 440, 22, sc, 1);
+               draw_2d(0, W * 0.5f + 262, 606, 18, 18, ledc, 1);
+               draw_2d(0, W * 0.5f + 271 - 60, 615 - 60, 120, 120, ledg, 3);
+            }
+            if (play_t >= 0 && anim == ANIM_INSERT_COIN)
+            {
+               const float yc[4] = { 1.0f, 0.82f, 0.30f, (1 - fade) * (insert ? (fmodf((float)t * 2.5f, 1.0f) > 0.4f ? 1.0f : 0.25f) : credit) };
+               label_t *lb = insert ? &l_coin1 : &l_coin2;
+               draw_2d(lb->tex, (W - lb->w) * 0.5f, 640, lb->w, lb->h, yc, 0);
             }
             if (flash > 0.001f)
             {

@@ -5,6 +5,7 @@ set -e
 . /opt/psc/bin/psc-env
 cd "$(dirname "$0")"
 mkdir -p out
+rm -f out/lumen
 $CC $PSC_FLAGS -O2 -std=gnu11 -Wall -Wno-unused-function -Wno-format-truncation \
    -Ithird_party/include -I/opt/psc/sysroot/usr/include/SDL2 -D_REENTRANT \
    src/main.c -o out/lumen \
