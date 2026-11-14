@@ -1,0 +1,106 @@
+# Lumen — English (also the fallback for keys missing in other languages)
+# Format: key = value. Named placeholders in braces: {n}, {name}, {system}, {title}.
+lang.name = English
+
+# carousel
+top.games_one = 1 game  ·  {system}
+top.games = {n} games  ·  {system}
+empty.library = Add games to /games
+launch.starting = Starting…
+coin.insert = INSERT COIN
+coin.credit = CREDIT 1
+card.players_one = {n} player
+card.players = {n} players
+card.memory_card = Memory card · {name}
+
+# help bar
+hint.play = Play
+hint.platform = Platform
+hint.exit = Exit
+hint.settings = Settings
+hint.move = Move
+hint.change = Change
+hint.select = Select
+hint.back = Back
+hint.close = Close
+hint.type = Type
+hint.erase = Erase
+hint.done = Done
+hint.cancel = Cancel
+btn.l1_r1 = L1 / R1
+btn.select_start = Select + Start
+btn.cross_circle = ✕ / ○
+btn.triangle = △
+btn.square = □
+btn.dpad = D-pad
+btn.start = Start
+
+# settings panel
+panel.title = Settings
+section.language = Language
+section.profile = Profile
+section.screensaver = Screensaver
+section.graphics = Graphics
+section.about = About
+value.on = On
+value.off = Off
+
+# profiles
+profile.main = Main
+profile.active = Active profile
+profile.create = Create profile
+profile.rename = Rename
+profile.color = Colour
+profile.delete = Delete profile
+profile.count = {n} of 8 profiles
+profile.full = There are already 8 profiles
+profile.default_name = Player {n}
+profile.name_title = Profile name
+profile.name_taken = That name already exists
+profile.name_empty = Type a name
+profile.main_locked = The main profile can't be deleted
+profile.delete_confirm = Delete "{name}" and all its saved games?
+profile.delete_note = This can't be undone.
+profile.cards_note = Each profile has its own memory cards and save states.
+confirm.delete = Delete
+confirm.cancel = Cancel
+
+# screensaver
+ss.after = Start after
+ss.minutes = {n} min
+ss.never = Never
+ss.demos = Game demos
+ss.demo_length = Length of each demo
+ss.seconds = {n} s
+ss.preview = Preview now
+ss.note = Demos never save. Press any button to come back.
+
+# graphics
+gfx.original = Original
+gfx.enhanced = Enhanced
+gfx.note = "Enhanced" raises the resolution or smooths the picture; some games may run slower.
+gfx.none = No system offers enhanced graphics
+
+# about
+about.version = Version
+about.games = Games
+about.systems = Systems
+about.profiles = Profiles
+about.free = Free space
+about.gb = {n} GB
+about.mb = {n} MB
+
+# on-screen keyboard
+osk.space = Space
+osk.erase = Erase
+osk.shift = Shift
+osk.ok = OK
+
+# attract mode
+attract.press_start = PRESS START
+attract.demo = DEMO
+attract.demo_of = Demo · {title}
+
+# errors
+error.save = Couldn't save the settings
+error.profile = Couldn't change the profile

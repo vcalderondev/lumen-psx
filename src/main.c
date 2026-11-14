@@ -26,12 +26,11 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
-#include "gl.h"
+#include "lumen.h"
+#include "i18n.h"
+#include "settings.h"
+#include "version.h"
 
-#define W 1280
-#define H 720
-#define MAX_GAMES 2048
-#define MAX_PLATFORMS 16
 #define TEX_WINDOW 6       /* covers kept on the GPU around the selection */
 #define VISIBLE 4          /* boxes drawn on each side */
 #define BG_OPACITY 0.30f   /* per-game background image opacity */
@@ -39,7 +38,7 @@
 /* ------------------------------------------------------------------------ */
 /* logging                                                                   */
 static FILE *g_log;
-static void logf_(const char *fmt, ...)
+void logf_(const char *fmt, ...)
 {
    va_list ap;
    if (!g_log) g_log = stderr;
@@ -47,7 +46,7 @@ static void logf_(const char *fmt, ...)
    fputc('\n', g_log); fflush(g_log);
 }
 
-static double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
+double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
 
 static long rss_kb(void)
 {
@@ -61,42 +60,15 @@ static long rss_kb(void)
 }
 
 /* ------------------------------------------------------------------------ */
-/* data                                                                      */
-typedef struct {
-   char title[128], publisher[96], year[16], players[8];
-   char content[512], cover[512], bg[512], disc[512];
-   int platform;
-   /* runtime */
-   GLuint tex, back_tex, spine_tex;
-   int tex_state;              /* 0 none, 2 decoding, 1 loaded, -1 placeholder */
-   int has_cover;
-   float col[3];               /* average cover colour */
-   spring x, z, ry, sc, al;
-} game_t;
+/* data (types in lumen.h)                                                   */
+game_t     g_games[MAX_GAMES];
+int        g_ngames;
+platform_t g_plat[MAX_PLATFORMS];
+int        g_nplat;
 
-/* System declaration: <home>/systems/<id>.ini (see docs/systems.md). */
-enum { KIND_DISC, KIND_CART, KIND_ARCADE };
-enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN };
-
-typedef struct {
-   char id[32], name[48], logo[300], core[128];
-   char layout[8], paths[512], exts[128], art[16], media_art[16], sound[300];
-   int order, show_name, kind, launch, idle_float;
-   float aspect, w, h, color[3];
-   /* runtime */
-   int first, count;
-   GLuint label, logo_tex;
-   int label_w, label_h, logo_w, logo_h;
-} platform_t;
-
-static game_t     g_games[MAX_GAMES];
-static int        g_ngames;
-static platform_t g_plat[MAX_PLATFORMS];
-static int        g_nplat;
-
-static char g_root[256]     = "/media";
-static char g_home[256]     = "/media/lumen";
-static char g_core_dir[256] = "/media/lumen/cores";
+char g_root[256]     = "/media";
+char g_home[256]     = "/media/lumen";
+char g_core_dir[256] = "/media/lumen/cores";
 static char g_state[256]    = "/media/lumen/state.txt";
 
 static void trim(char *s)
@@ -382,7 +354,7 @@ static GLuint g_prog_box, g_prog_2d, g_vbo_quad, g_vao_quad;
 static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam, u_phase, u_refl;
 static GLint  u2_mvp, u2_tex, u2_color, u2_mode;
 static GLuint g_white;
-static TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
+TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
 
 static const char *VS_BOX =
    "#version 300 es\n"
@@ -599,7 +571,7 @@ static GLuint surface_to_tex(SDL_Surface *s, int mip, float *avg)
    return t;
 }
 
-static GLuint text_tex(TTF_Font *f, const char *s, int *w, int *h)
+GLuint text_tex(TTF_Font *f, const char *s, int *w, int *h)
 {
    SDL_Color white = { 255, 255, 255, 255 };
    SDL_Surface *surf; GLuint t;
@@ -634,8 +606,14 @@ static GLuint card_tex(const game_t *g, int back)
       {
          snprintf(line, sizeof(line), "%s%s%s", g->year, g->year[0] && g->publisher[0] ? "  ·  " : "", g->publisher);
          if (line[0]) LINE(g_font_small, line);
-         if (g->players[0]) { snprintf(line, sizeof(line), "%s jugador%s", g->players, strcmp(g->players, "1") ? "es" : ""); LINE(g_font_small, line); }
-         y = 220; LINE(g_font_small, "Memory card 1");
+         if (g->players[0])
+         {
+            trf(line, sizeof(line), strcmp(g->players, "1") ? "card.players" : "card.players_one", "n", g->players, NULL);
+            LINE(g_font_small, line);
+         }
+         /* active profile name from step 3; until then the main profile */
+         trf(line, sizeof(line), "card.memory_card", "name", tr("profile.main"), NULL);
+         y = 220; LINE(g_font_small, line);
       }
    }
 #undef LINE
@@ -858,7 +836,7 @@ static void draw_reflection(const game_t *g, const platform_t *pl, mat4 base, fl
    draw_quad_box(m, g->tex, one, alpha, 2);
 }
 
-static void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
+void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
 {
    mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(x + w * 0.5f, y + h * 0.5f, 0), m4_scale(w, -h, 1)));
    glUniformMatrix4fv(u2_mvp, 1, GL_FALSE, m.m);
@@ -869,13 +847,24 @@ static void draw_2d(GLuint tex, float x, float y, float w, float h, const float 
 }
 
 /* ------------------------------------------------------------------------ */
-typedef struct { GLuint tex; int w, h; char key[200]; } label_t;
-static void label_set(label_t *l, TTF_Font *f, const char *s)
+void label_set(label_t *l, TTF_Font *f, const char *s)
 {
    if (!strcmp(l->key, s) && (l->tex || !*s)) return;
    if (l->tex) glDeleteTextures(1, &l->tex);
    snprintf(l->key, sizeof(l->key), "%s", s);
    l->tex = text_tex(f, s, &l->w, &l->h);
+}
+
+void label_free(label_t *l)
+{
+   if (l->tex) glDeleteTextures(1, &l->tex);
+   memset(l, 0, sizeof(*l));
+}
+
+void gl_use_2d(void)
+{
+   glUseProgram(g_prog_2d);
+   glUniform1i(u2_tex, 0);
 }
 
 static TTF_Font *open_font(const char **paths, int size)
@@ -1109,35 +1098,60 @@ static void in_event(const SDL_Event *e)
 
 /* ------------------------------------------------------------------------ */
 /* help bar: button icons ($home/icons/<name>.png, optional) + labels        */
-typedef struct { const char *icons[3]; const char *fallback; const char *text; } hint_t;
+typedef struct { const char *icons[3]; const char *fallback_key; const char *text_key; } hint_t;
 static const hint_t g_hints[] = {
-   { { "cross", "circle", NULL }, "\xE2\x9C\x95 / \xE2\x97\x8B", "Jugar" },
-   { { "l1", "r1", NULL },        "L1 / R1",                     "Plataforma" },
-   { { "select", "start", NULL }, "Select + Start",              "Salir" },
+   { { "cross", "circle", NULL }, "btn.cross_circle", "hint.play" },
+   { { "l1", "r1", NULL },        "btn.l1_r1",        "hint.platform" },
+   { { "select", "start", NULL }, "btn.select_start", "hint.exit" },
 };
 #define NHINTS ((int)(sizeof(g_hints) / sizeof(g_hints[0])))
-typedef struct { GLuint icon[3]; int iw[3], ih[3]; GLuint fb, txt; int fbw, fbh, tw, th; } hint_gl_t;
+typedef struct { GLuint icon[3]; int iw[3], ih[3], have_icons; GLuint fb, txt; int fbw, fbh, tw, th; } hint_gl_t;
 static hint_gl_t g_hint_gl[NHINTS];
 
-static void hints_load(const char *home, TTF_Font *font)
+/* (re)build the hint texts in the active language; icons stay */
+static void hints_reload(void)
+{
+   int i;
+   for (i = 0; i < NHINTS; i++)
+   {
+      hint_gl_t *h = &g_hint_gl[i];
+      if (h->fb) glDeleteTextures(1, &h->fb);
+      if (h->txt) glDeleteTextures(1, &h->txt);
+      h->fb = h->txt = 0; h->fbw = h->fbh = h->tw = h->th = 0;
+      if (!h->have_icons)
+         h->fb = text_tex(g_font_small, tr(g_hints[i].fallback_key), &h->fbw, &h->fbh);
+      h->txt = text_tex(g_font_small, tr(g_hints[i].text_key), &h->tw, &h->th);
+   }
+}
+
+/* icons once ($home/icons/<name>.png), then the texts */
+static void hints_load(const char *home)
 {
    int i, k;
    for (i = 0; i < NHINTS; i++)
    {
       hint_gl_t *h = &g_hint_gl[i];
-      int have = 1;
+      h->have_icons = 1;
       for (k = 0; k < 3 && g_hints[i].icons[k]; k++)
       {
          char path[400]; SDL_Surface *sf;
          snprintf(path, sizeof(path), "%s/icons/%s.png", home, g_hints[i].icons[k]);
          sf = IMG_Load(path);
          if (sf) { h->iw[k] = sf->w; h->ih[k] = sf->h; h->icon[k] = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
-         if (!h->icon[k]) have = 0;
+         if (!h->icon[k]) h->have_icons = 0;
       }
-      if (!have)
-         h->fb = text_tex(font, g_hints[i].fallback, &h->fbw, &h->fbh);
-      h->txt = text_tex(font, g_hints[i].text, &h->tw, &h->th);
    }
+   hints_reload();
+}
+
+/* section 5.3: text baked into textures follows the language; every other label is
+ * set each frame through label_set(..., tr(...)) */
+void ui_language_changed(void)
+{
+   int i;
+   hints_reload();
+   for (i = 0; i < g_ngames; i++)
+      if (g_games[i].back_tex) { glDeleteTextures(1, &g_games[i].back_tex); g_games[i].back_tex = 0; }
 }
 
 /* draw the hints centred on y; returns nothing, icons scaled to icon_h */
@@ -1236,7 +1250,7 @@ int main(int argc, char **argv)
    snprintf(font_r, sizeof(font_r), "%s/fonts/regular.ttf", g_home);
    snprintf(padb, sizeof(padb), "%s/gamecontrollerdb.txt", g_home);
    if (log_path) g_log = fopen(log_path, "w");
-   logf_("lumen start");
+   logf_("lumen %s start", LUMEN_VERSION);
 
    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0)
    { logf_("SDL_Init: %s", SDL_GetError()); return 1; }
@@ -1247,6 +1261,9 @@ int main(int argc, char **argv)
    for (i = 0; i < SDL_NumJoysticks(); i++) in_open(i);
    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
    TTF_Init();
+   settings_load(g_home);
+   i18n_init(g_home);
+   i18n_set_language(settings_get("language", "es"));
 
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -1323,10 +1340,7 @@ int main(int argc, char **argv)
    bg[0].x = 0.05f; bg[1].x = 0.05f; bg[2].x = 0.08f;
    memset(&info_y, 0, sizeof(info_y)); memset(&info_a, 0, sizeof(info_a)); memset(&plat_x, 0, sizeof(plat_x));
    label_set(&l_brand, g_font_small, "lumen");
-   hints_load(g_home, g_font_small);
-   label_set(&l_start, g_font_sub, "Iniciando\xE2\x80\xA6");
-   label_set(&l_coin1, g_font_sub, "INSERT COIN");
-   label_set(&l_coin2, g_font_sub, "CREDIT 1");
+   hints_load(g_home);
 
    /* first frame positions: start off to the right so they fly in */
    for (i = 0; i < g_ngames; i++)
@@ -1667,7 +1681,13 @@ int main(int argc, char **argv)
             game_t *cg = n ? &g_games[pl->first + sel] : NULL;
 
             draw_2d(l_brand.tex, 36, 26, l_brand.w, l_brand.h, txt, 0);
-            if (pl) { snprintf(s, sizeof(s), "%d juegos  \xC2\xB7  %s", pl->count, pl->name); label_set(&l_count, g_font_small, s); }
+            if (pl)
+            {
+               char cnt[16];
+               snprintf(cnt, sizeof(cnt), "%d", pl->count);
+               label_set(&l_count, g_font_small,
+                         trf(s, sizeof(s), pl->count == 1 ? "top.games_one" : "top.games", "n", cnt, "system", pl->name, NULL));
+            }
             draw_2d(l_count.tex, W - 36 - l_count.w, 26, l_count.w, l_count.h, dim, 0);
 
 #define LOGO_H 22.0f
@@ -1705,7 +1725,7 @@ int main(int argc, char **argv)
             }
             else
             {
-               label_set(&l_title, g_font_title, "Agrega juegos a /games");
+               label_set(&l_title, g_font_title, tr("empty.library"));
                draw_2d(l_title.tex, (W - l_title.w) * 0.5f, 330, l_title.w, l_title.h, txt, 0);
             }
             {
@@ -1728,6 +1748,7 @@ int main(int argc, char **argv)
             {
                const float yc[4] = { 1.0f, 0.82f, 0.30f, (1 - fade) * (insert ? (fmodf((float)t * 2.5f, 1.0f) > 0.4f ? 1.0f : 0.25f) : credit) };
                label_t *lb = insert ? &l_coin1 : &l_coin2;
+               label_set(lb, g_font_sub, tr(insert ? "coin.insert" : "coin.credit"));
                draw_2d(lb->tex, (W - lb->w) * 0.5f, 640, lb->w, lb->h, yc, 0);
             }
             if (flash > 0.001f)
@@ -1742,6 +1763,7 @@ int main(int argc, char **argv)
                if (play_t >= 0)
                {
                   const float st[4] = { 0.93f, 0.92f, 0.97f, fade };
+                  label_set(&l_start, g_font_sub, tr("launch.starting"));
                   draw_2d(l_start.tex, (W - l_start.w) * 0.5f, (H - l_start.h) * 0.5f, l_start.w, l_start.h, st, 0);
                }
             }
@@ -1758,7 +1780,8 @@ int main(int argc, char **argv)
       (void)info_t;
    }
 
-   /* persist selection; hand the launch request to the launcher script */
+   /* persist settings and selection; hand the launch request to the launcher script */
+   if (settings_dirty()) settings_save();
    {
       FILE *f = fopen(g_state, "w");
       if (f) { fprintf(f, "%d %d\n", sel_plat, sel); fclose(f); }

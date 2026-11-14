@@ -9,7 +9,8 @@ A lightweight 3D game frontend for the PlayStation Classic.
 - per-game background image (`games/<n>/background.jpg|png`) at ~30 % opacity,
   crossfaded and decoded on a worker thread so browsing never stutters
 - launches games in RetroArch and comes back to the same game afterwards
-- tiny: a single ~45 KB binary; only covers near the selection stay in memory
+- tiny: a single ~75 KB binary; only covers near the selection stay in memory
+- translated UI: Spanish (default), English, Portuguese, French, German, Italian
 
 Target: SDL2 2.0.4, SDL2_image 2.0.1, SDL2_ttf 2.0.14, OpenGL ES 3.2 (PowerVR GE8300),
 Weston 1.11 / Wayland, glibc 2.24, Cortex-A35 (armhf), 1 GB RAM.
@@ -42,6 +43,8 @@ USB layout:
 /lumen/fonts/{regular,bold}.ttf   optional, defaults to the system Liberation Sans
 /lumen/cores/*.so             libretro cores (PlayStation: pcsx_rearmed_libretro.so)
 /lumen/state.txt, logs/       last selection, logs
+/lumen/settings.ini           settings (key=value; created with the defaults on first exit)
+/lumen/lang/<code>.lang       UI translations (es, en, pt, fr, de, it)
 /lumen/systems/<id>.ini       one declaration per system (docs/systems.md)
 /games/<id>/...               one library per system, e.g.
 /games/psx/<n>/Game.ini, <disc>.cue, <disc>.png, disc.png, background.jpg
@@ -51,6 +54,22 @@ USB layout:
 At power-on the console's USB loader must hand control to `/lumen/boot.sh`
 (it never returns; the loader reboots when it does). `run.sh` alone starts a
 session from an already running system.
+
+## Languages and settings
+
+The UI language comes from `language=` in `/lumen/settings.ini` (default `es`); any
+`<code>.lang` in `/lumen/lang/` can be chosen. A `.lang` file is UTF-8, one
+`key = value` per line, `#` comments, `\n` for a line break, and named placeholders
+in braces (`{n}`, `{name}`, `{system}`, `{title}`) that a translation may reorder.
+Keys missing in a language fall back to English, then to the key itself.
+To add a language, copy `dist/lang/es.lang`, translate the values (including
+`lang.name`) and run `tools/check-lang.sh`, which checks that every file has exactly
+the Spanish key set and keeps its placeholders.
+
+`settings.ini` holds one `key=value` per line; unknown keys are kept. Keys:
+`language`, `profile`, `screensaver_minutes` (0 = off), `demo_enabled`, `demo_seconds`,
+`attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`), `version`.
+It is written atomically (temporary file + rename) and only when something changed.
 
 ## Controls
 
@@ -64,10 +83,13 @@ session from an already running system.
 ## Layout
 
 ```
-src/main.c, src/gl.h          frontend
+src/main.c, src/gl.h          frontend (src/lumen.h: shared data model and render services)
+src/i18n.c, src/settings.c    translation layer, settings store
+dist/lang/*.lang              UI translations
 scripts/boot.sh               boot entry
 scripts/run.sh                session loop
 dist/                         data files installed next to the binary
 third_party/include/SDL2      SDL_image 2.0.1 / SDL_ttf 2.0.14 headers (zlib licence)
 tools/install.sh              USB installer
+tools/check-lang.sh           checks the translation files against es.lang
 ```

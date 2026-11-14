@@ -1,0 +1,106 @@
+# Lumen — Deutsch
+# Format: Schlüssel = Wert. Benannte Platzhalter in geschweiften Klammern: {n}, {name}, {system}, {title}.
+lang.name = Deutsch
+
+# Karussell
+top.games_one = 1 Spiel  ·  {system}
+top.games = {n} Spiele  ·  {system}
+empty.library = Spiele nach /games kopieren
+launch.starting = Wird gestartet…
+coin.insert = INSERT COIN
+coin.credit = CREDIT 1
+card.players_one = {n} Spieler
+card.players = {n} Spieler
+card.memory_card = Memory Card · {name}
+
+# Hilfeleiste
+hint.play = Spielen
+hint.platform = Plattform
+hint.exit = Beenden
+hint.settings = Einstellungen
+hint.move = Bewegen
+hint.change = Ändern
+hint.select = Auswählen
+hint.back = Zurück
+hint.close = Schließen
+hint.type = Schreiben
+hint.erase = Löschen
+hint.done = Fertig
+hint.cancel = Abbrechen
+btn.l1_r1 = L1 / R1
+btn.select_start = Select + Start
+btn.cross_circle = ✕ / ○
+btn.triangle = △
+btn.square = □
+btn.dpad = Steuerkreuz
+btn.start = Start
+
+# Einstellungen
+panel.title = Einstellungen
+section.language = Sprache
+section.profile = Profil
+section.screensaver = Bildschirmschoner
+section.graphics = Grafik
+section.about = Info
+value.on = An
+value.off = Aus
+
+# Profile
+profile.main = Hauptprofil
+profile.active = Aktives Profil
+profile.create = Profil erstellen
+profile.rename = Umbenennen
+profile.color = Farbe
+profile.delete = Profil löschen
+profile.count = {n} von 8 Profilen
+profile.full = Es gibt bereits 8 Profile
+profile.default_name = Spieler {n}
+profile.name_title = Profilname
+profile.name_taken = Dieser Name existiert bereits
+profile.name_empty = Gib einen Namen ein
+profile.main_locked = Das Hauptprofil kann nicht gelöscht werden
+profile.delete_confirm = „{name}“ und alle Spielstände löschen?
+profile.delete_note = Das kann nicht rückgängig gemacht werden.
+profile.cards_note = Jedes Profil hat eigene Memory Cards und Speicherstände.
+confirm.delete = Löschen
+confirm.cancel = Abbrechen
+
+# Bildschirmschoner
+ss.after = Starten nach
+ss.minutes = {n} Min.
+ss.never = Nie
+ss.demos = Spieldemos
+ss.demo_length = Dauer jeder Demo
+ss.seconds = {n} s
+ss.preview = Jetzt testen
+ss.note = Demos speichern nie. Drücke eine beliebige Taste, um zurückzukehren.
+
+# Grafik
+gfx.original = Original
+gfx.enhanced = Verbessert
+gfx.note = „Verbessert“ erhöht die Auflösung oder glättet das Bild; manche Spiele laufen langsamer.
+gfx.none = Kein System bietet verbesserte Grafik
+
+# Info
+about.version = Version
+about.games = Spiele
+about.systems = Systeme
+about.profiles = Profile
+about.free = Freier Speicher
+about.gb = {n} GB
+about.mb = {n} MB
+
+# Bildschirmtastatur
+osk.space = Leerzeichen
+osk.erase = Löschen
+osk.shift = Umschalt
+osk.ok = OK
+
+# Arcade-Modus
+attract.press_start = START DRÜCKEN
+attract.demo = DEMO
+attract.demo_of = Demo · {title}
+
+# Fehler
+error.save = Die Einstellungen konnten nicht gespeichert werden
+error.profile = Das Profil konnte nicht geändert werden

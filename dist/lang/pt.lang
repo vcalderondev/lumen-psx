@@ -1,0 +1,106 @@
+# Lumen — Português
+# Formato: chave = valor. Marcadores com nome entre chaves: {n}, {name}, {system}, {title}.
+lang.name = Português
+
+# carrossel
+top.games_one = 1 jogo  ·  {system}
+top.games = {n} jogos  ·  {system}
+empty.library = Adicione jogos em /games
+launch.starting = Iniciando…
+coin.insert = INSERT COIN
+coin.credit = CREDIT 1
+card.players_one = {n} jogador
+card.players = {n} jogadores
+card.memory_card = Memory card · {name}
+
+# barra de ajuda
+hint.play = Jogar
+hint.platform = Plataforma
+hint.exit = Sair
+hint.settings = Ajustes
+hint.move = Mover
+hint.change = Alterar
+hint.select = Aceitar
+hint.back = Voltar
+hint.close = Fechar
+hint.type = Escrever
+hint.erase = Apagar
+hint.done = Pronto
+hint.cancel = Cancelar
+btn.l1_r1 = L1 / R1
+btn.select_start = Select + Start
+btn.cross_circle = ✕ / ○
+btn.triangle = △
+btn.square = □
+btn.dpad = Direcional
+btn.start = Start
+
+# painel de ajustes
+panel.title = Ajustes
+section.language = Idioma
+section.profile = Perfil
+section.screensaver = Proteção de tela
+section.graphics = Gráficos
+section.about = Sobre
+value.on = Sim
+value.off = Não
+
+# perfis
+profile.main = Principal
+profile.active = Perfil ativo
+profile.create = Criar perfil
+profile.rename = Renomear
+profile.color = Cor
+profile.delete = Excluir perfil
+profile.count = {n} de 8 perfis
+profile.full = Já existem 8 perfis
+profile.default_name = Jogador {n}
+profile.name_title = Nome do perfil
+profile.name_taken = Esse nome já existe
+profile.name_empty = Escreva um nome
+profile.main_locked = O perfil principal não pode ser excluído
+profile.delete_confirm = Excluir «{name}» e todos os seus jogos salvos?
+profile.delete_note = Esta ação não pode ser desfeita.
+profile.cards_note = Cada perfil tem seus próprios memory cards e estados salvos.
+confirm.delete = Excluir
+confirm.cancel = Cancelar
+
+# proteção de tela
+ss.after = Ativar após
+ss.minutes = {n} min
+ss.never = Nunca
+ss.demos = Demos de jogos
+ss.demo_length = Duração de cada demo
+ss.seconds = {n} s
+ss.preview = Testar agora
+ss.note = As demos não salvam o progresso. Pressione qualquer botão para voltar.
+
+# gráficos
+gfx.original = Original
+gfx.enhanced = Melhorado
+gfx.note = «Melhorado» aumenta a resolução ou suaviza a imagem; alguns jogos podem ficar mais lentos.
+gfx.none = Nenhum sistema oferece gráficos melhorados
+
+# sobre
+about.version = Versão
+about.games = Jogos
+about.systems = Sistemas
+about.profiles = Perfis
+about.free = Espaço livre
+about.gb = {n} GB
+about.mb = {n} MB
+
+# teclado na tela
+osk.space = Espaço
+osk.erase = Apagar
+osk.shift = Maiúsc.
+osk.ok = OK
+
+# modo arcade
+attract.press_start = PRESSIONE START
+attract.demo = DEMO
+attract.demo_of = Demo · {title}
+
+# erros
+error.save = Não foi possível salvar os ajustes
+error.profile = Não foi possível alterar o perfil
