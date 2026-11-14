@@ -24,6 +24,7 @@ else
   copy_file scripts/run.sh "$VOL/lumen/run.sh"
   for f in dist/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/$(basename "$f")"; done
   for f in dist/lang/*.lang; do copy_file "$f" "$VOL/lumen/lang/$(basename "$f")"; done
+  mkdir -p "$VOL/lumen/profiles"
   if [ "$1" = "--cores" ] && [ -d "$2" ]; then
     for f in "$2"/*.so; do copy_file "$f" "$VOL/lumen/cores/$(basename "$f")"; done
   fi

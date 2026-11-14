@@ -63,5 +63,6 @@ typedef struct { int up, down, left, right, confirm, back, options, start, l1, r
 
 /* UI callbacks implemented in main.c */
 void   ui_language_changed(void);   /* rebuild text baked into textures after i18n_set_language() */
+void   ui_cards_changed(void);      /* the active profile changed: regenerate the back of the cases */
 
 #endif

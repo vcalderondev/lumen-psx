@@ -38,13 +38,15 @@ USB layout:
 /lumen/boot.sh                boot entry: takes over the display, runs a session,
                               falls back to the stock Sony menu when it ends
 /lumen/run.sh                 session loop (frontend <-> RetroArch)
-/lumen/lumen.conf             optional: RETROARCH=..., run_retroarch() override
+/lumen/lumen.conf             optional: RETROARCH=..., LUMEN_MAIN_SAVES/STATES,
+                              LUMEN_CORE_OPT_DIR, run_retroarch() override
 /lumen/gamecontrollerdb.txt   controller mappings
 /lumen/fonts/{regular,bold}.ttf   optional, defaults to the system Liberation Sans
 /lumen/cores/*.so             libretro cores (PlayStation: pcsx_rearmed_libretro.so)
 /lumen/state.txt, logs/       last selection, logs
 /lumen/settings.ini           settings (key=value; created with the defaults on first exit)
 /lumen/lang/<code>.lang       UI translations (es, en, pt, fr, de, it)
+/lumen/profiles/<id>/         one folder per extra profile: profile.ini, saves/, states/
 /lumen/systems/<id>.ini       one declaration per system (docs/systems.md)
 /games/<id>/...               one library per system, e.g.
 /games/psx/<n>/Game.ini, <disc>.cue, <disc>.png, disc.png, background.jpg
@@ -71,6 +73,25 @@ the Spanish key set and keeps its placeholders.
 `attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`), `version`.
 It is written atomically (temporary file + rename) and only when something changed.
 
+## Profiles
+
+Each profile has its own memory cards and save states. `main` (shown as
+"Principal") always exists and keeps the save folders RetroArch already uses
+(`LUMEN_MAIN_SAVES` / `LUMEN_MAIN_STATES` in `lumen.conf`; when unset, RetroArch's own
+config decides), so existing saves are never lost. Up to 7 more profiles (`p1`…`p9`)
+are created in the settings panel; each gets `/lumen/profiles/<id>/profile.ini`
+(`name`, `color`, `created`), `saves/` and `states/`, and every game launched under it
+starts with an empty memory card. The active profile (`profile=` in `settings.ini`) is
+shown at the top right and on the back of the case. Deleting a profile asks for
+confirmation and removes its folder with all its saves; `main` cannot be deleted.
+
+Launch request: the frontend exits with code 10 after writing `/tmp/lumen-launch`
+as `key=value` lines (`version=2`, `core`, `content`, `system`, `title`, `profile`,
+`mode`, `demo_seconds`). `run.sh` parses it (the old two-line form still works),
+picks the profile's save folders and writes them to `/tmp/lumen-ra-extra.cfg`, whose
+path is exported as `LUMEN_RA_EXTRA`; the default `run_retroarch()` passes it with
+`--appendconfig`, and a `lumen.conf` override must append it to its config too.
+
 ## Controls
 
 | Input | Action |
@@ -89,10 +110,11 @@ Backspace (back), Escape (leave).
 
 ## Settings panel
 
-Pages: **Language** (applied live, no restart), **Profile**, **Screensaver** (start
+Pages: **Language** (applied live, no restart), **Profile** (switch, create, rename,
+colour, delete), **Screensaver** (start
 after Never/1–30 min, game demos on/off, length of each demo, preview), **Graphics**
 (per-system presets; empty until a system declares them) and **About** (version,
-games, systems, free space on the USB). Changes are written to `settings.ini` when
+games, systems, profiles, free space on the USB). Changes are written to `settings.ini` when
 the panel closes.
 
 ## Layout
@@ -101,6 +123,8 @@ the panel closes.
 src/main.c, src/gl.h          frontend (src/lumen.h: shared data model and render services)
 src/i18n.c, src/settings.c    translation layer, settings store
 src/panel.c                   settings panel, on-screen keyboard, confirm dialog
+src/profiles.c                profiles (separate memory cards and save states)
+src/launch.c                  launch request v2 writer
 dist/lang/*.lang              UI translations
 scripts/boot.sh               boot entry
 scripts/run.sh                session loop

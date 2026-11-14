@@ -12,6 +12,7 @@
 #include "panel.h"
 #include "i18n.h"
 #include "settings.h"
+#include "profiles.h"
 #include "version.h"
 
 /* ------------------------------------------------------------------------ */
@@ -58,16 +59,20 @@ static const char *const k_page_key[P_COUNT] = {
 };
 
 enum { R_ACTION, R_CHOICE, R_INFO };
-enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_INFO = 900 };
+enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
+       ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_INFO = 900 };
 
 typedef struct {
    int type, id, enabled, dim, check, enter, at_lo, at_hi;
+   int swatch;                  /* profile colour drawn left of the value, -1 none */
+   int swatches;                /* colour row: draw the 8 swatches, this one selected */
+   const char *why;             /* disabled row: tr key shown as a toast on Cross */
    char label[96], value[96];
 } row_t;
 
 static row_t   s_rows[MAX_ROWS];
 static int     s_nrows;
-static const char *s_footer_key;       /* tr key of the page footer, or NULL */
+static char    s_foot[400];            /* page footer text (translated), "" = none */
 
 static int     s_open, s_page, s_sel;
 static spring  s_slide, s_fade, s_px, s_pa, s_hl, s_scroll;
@@ -75,6 +80,10 @@ static char    s_free[32];             /* About: free space, measured when the p
 
 static label_t s_title, s_ptitle, s_footer, s_lt, s_gt;
 static label_t s_rl[MAX_ROWS], s_rv[MAX_ROWS];
+
+/* Profile page: colour being chosen, written to profile.ini when it is committed
+ * (leaving the page, closing the panel or any other profile action), not on every press */
+static int s_pcolor = -1;
 
 /* screensaver choices */
 static const int k_minutes[] = { 0, 1, 2, 3, 5, 10, 15, 30 };
@@ -123,6 +132,10 @@ typedef void (*confirm_fn)(void);
 static label_t     s_cmsg, s_cnote, s_cbtn[2];
 static int         s_csel;              /* 0 cancel (default), 1 delete */
 static confirm_fn  s_con_yes;
+static char        s_cbuf[300];         /* confirm message */
+
+static void osk_open(const char *title_key, const char *initial, osk_accept_fn accept);
+static void confirm_open(const char *message, confirm_fn on_yes);
 
 /* toast */
 static label_t     s_toast;
@@ -137,7 +150,7 @@ static row_t *row_add(int type, int id, const char *label, const char *value)
    if (s_nrows >= MAX_ROWS) return NULL;
    r = &s_rows[s_nrows++];
    memset(r, 0, sizeof(*r));
-   r->type = type; r->id = id; r->enabled = 1;
+   r->type = type; r->id = id; r->enabled = 1; r->swatch = -1;
    snprintf(r->label, sizeof(r->label), "%s", label);
    snprintf(r->value, sizeof(r->value), "%s", value ? value : "");
    return r;
@@ -163,15 +176,15 @@ static void page_build(void)
    char v[96], num[32];
    row_t *r;
    int i;
-   s_nrows = 0; s_footer_key = NULL;
+   s_nrows = 0; s_foot[0] = 0;
    switch (s_page)
    {
    case P_ROOT:
       i = lang_active_index();
       r = row_add(R_ACTION, P_LANGUAGE, tr("section.language"), i >= 0 ? i18n_name(i) : i18n_language());
       if (r) r->enter = 1;
-      r = row_add(R_ACTION, P_PROFILE, tr("section.profile"), tr("profile.main"));    /* profiles: step 3 */
-      if (r) r->enter = 1;
+      r = row_add(R_ACTION, P_PROFILE, tr("section.profile"), profiles_display_name(profiles_active()));
+      if (r) { r->enter = 1; r->swatch = profiles_active()->color; }
       minutes_text(v, sizeof(v), settings_get_int("screensaver_minutes", 5, 0, 60));
       r = row_add(R_ACTION, P_SCREENSAVER, tr("section.screensaver"), v);
       if (r) r->enter = 1;
@@ -186,10 +199,23 @@ static void page_build(void)
             r->check = !strcmp(i18n_code(i), i18n_language());
       break;
    case P_PROFILE:
-      /* until profiles exist (step 3): only the active profile, no actions */
-      if ((r = row_add(R_CHOICE, ID_PROFILE_ACTIVE, tr("profile.active"), tr("profile.main"))))
-         r->at_lo = r->at_hi = 1;
+   {
+      const profile_t *ap = profiles_active();
+      int ai = profiles_find(ap->id), np = profiles_count(), color = s_pcolor >= 0 ? s_pcolor : ap->color;
+      if ((r = row_add(R_CHOICE, ID_PROFILE_ACTIVE, tr("profile.active"), profiles_display_name(ap))))
+      { r->swatch = color; r->at_lo = ai <= 0; r->at_hi = ai >= np - 1; }
+      if ((r = row_add(R_ACTION, ID_PROFILE_CREATE, tr("profile.create"), NULL)) && np >= MAX_PROFILES)
+      { r->enabled = 0; r->dim = 1; r->why = "profile.full"; }
+      row_add(R_ACTION, ID_PROFILE_RENAME, tr("profile.rename"), NULL);
+      if ((r = row_add(R_CHOICE, ID_PROFILE_COLOR, tr("profile.color"), NULL)))
+      { r->swatches = 1; r->swatch = color; r->at_lo = color <= 0; r->at_hi = color >= PROFILE_COLORS - 1; }
+      if ((r = row_add(R_ACTION, ID_PROFILE_DELETE, tr("profile.delete"), NULL)) && !strcmp(ap->id, "main"))
+      { r->enabled = 0; r->dim = 1; r->why = "profile.main_locked"; }
+      snprintf(num, sizeof(num), "%d", np);
+      trf(v, sizeof(v), "profile.count", "n", num, NULL);
+      snprintf(s_foot, sizeof(s_foot), "%s\n%s", v, tr("profile.cards_note"));
       break;
+   }
    case P_SCREENSAVER:
    {
       int m = nearest(k_minutes, NELEM(k_minutes), settings_get_int("screensaver_minutes", 5, 0, 60));
@@ -205,12 +231,12 @@ static void page_build(void)
       if ((r = row_add(R_CHOICE, ID_SS_LENGTH, tr("ss.demo_length"), v)))
       { r->at_lo = s == 0; r->at_hi = s == NELEM(k_seconds) - 1; r->dim = !demos; r->enabled = demos; }
       row_add(R_ACTION, ID_SS_PREVIEW, tr("ss.preview"), NULL);
-      s_footer_key = "ss.note";
+      snprintf(s_foot, sizeof(s_foot), "%s", tr("ss.note"));
       break;
    }
    case P_GRAPHICS:
       /* per-system presets arrive with step 4 */
-      s_footer_key = "gfx.none";
+      snprintf(s_foot, sizeof(s_foot), "%s", tr("gfx.none"));
       break;
    case P_ABOUT:
       row_add(R_INFO, ID_INFO, tr("about.version"), LUMEN_VERSION);
@@ -218,6 +244,8 @@ static void page_build(void)
       row_add(R_INFO, ID_INFO, tr("about.games"), num);
       snprintf(num, sizeof(num), "%d", g_nplat);
       row_add(R_INFO, ID_INFO, tr("about.systems"), num);
+      snprintf(num, sizeof(num), "%d", profiles_count());
+      row_add(R_INFO, ID_INFO, tr("about.profiles"), num);
       if (s_free[0])
       {
          const char *unit = strchr(s_free, '.') ? "about.gb" : "about.mb";
@@ -276,12 +304,60 @@ static void page_enter(int page, int dir)
    s_pa.x = 0.0f; s_pa.v = 0;
 }
 
+static void color_commit(void)
+{
+   if (s_pcolor < 0) return;
+   if (profiles_set_color(profiles_active()->id, s_pcolor) != 0) panel_toast("error.profile");
+   s_pcolor = -1;
+}
+
 static void panel_close(void)
 {
    if (!s_open) return;
+   color_commit();
    s_open = 0;
    logf_("panel: close");
    if (settings_dirty() && settings_save() != 0) panel_toast("error.save");
+}
+
+/* ---- Profile page actions (7.4): any failure shows a toast ---- */
+static void select_row(int id)
+{
+   int i;
+   for (i = 0; i < s_nrows; i++) if (s_rows[i].id == id) { s_sel = i; return; }
+}
+
+static const char *profile_error(int rc)
+{
+   return rc == -1 ? "profile.full" : rc == -2 ? "profile.name_taken" : "error.profile";
+}
+
+static const char *accept_create(const char *name)
+{
+   char id[16];
+   int rc = profiles_create(name, -1, id, sizeof(id));
+   if (rc != 0) return profile_error(rc);
+   if (profiles_set_active(id) != 0) panel_toast("error.profile");
+   ui_cards_changed();
+   return NULL;
+}
+
+static const char *accept_rename(const char *name)
+{
+   int rc = profiles_rename(profiles_active()->id, name);
+   if (rc != 0) return profile_error(rc);
+   ui_cards_changed();
+   return NULL;
+}
+
+static void delete_yes(void)
+{
+   char id[16];
+   snprintf(id, sizeof(id), "%s", profiles_active()->id);
+   if (profiles_delete(id) != 0) panel_toast("error.profile");
+   ui_cards_changed();
+   page_build();
+   select_row(ID_PROFILE_ACTIVE);
 }
 
 static void row_action(const row_t *r)
@@ -299,6 +375,32 @@ static void row_action(const row_t *r)
          logf_("panel: language %s", keep);
       }
    }
+   else if (r->id == ID_PROFILE_CREATE)
+   {
+      char name[64], num[8];
+      int k;
+      color_commit();
+      for (k = profiles_count() + 1; k < 100; k++)
+      {
+         snprintf(num, sizeof(num), "%d", k);
+         trf(name, sizeof(name), "profile.default_name", "n", num, NULL);
+         if (!profiles_name_taken(name, NULL)) break;
+      }
+      osk_open("profile.name_title", name, accept_create);
+   }
+   else if (r->id == ID_PROFILE_RENAME)
+   {
+      char name[64];
+      color_commit();
+      snprintf(name, sizeof(name), "%s", profiles_display_name(profiles_active()));
+      osk_open("profile.name_title", name, accept_rename);
+   }
+   else if (r->id == ID_PROFILE_DELETE)
+   {
+      color_commit();
+      trf(s_cbuf, sizeof(s_cbuf), "profile.delete_confirm", "name", profiles_display_name(profiles_active()), NULL);
+      confirm_open(s_cbuf, delete_yes);
+   }
    else if (r->id == ID_SS_PREVIEW)
    {
       panel_close();
@@ -312,6 +414,19 @@ static void row_change(const row_t *r, int dir)
    if (!r->enabled || (dir < 0 && r->at_lo) || (dir > 0 && r->at_hi)) return;
    switch (r->id)
    {
+   case ID_PROFILE_ACTIVE:
+   {
+      const profile_t *p = profiles_get(profiles_find(profiles_active()->id) + dir);
+      color_commit();
+      if (!p) break;
+      if (profiles_set_active(p->id) != 0) panel_toast("error.profile");
+      ui_cards_changed();
+      break;
+   }
+   case ID_PROFILE_COLOR:
+      i = (s_pcolor >= 0 ? s_pcolor : profiles_active()->color) + dir;
+      if (i >= 0 && i < PROFILE_COLORS) s_pcolor = i;
+      break;
    case ID_SS_AFTER:
       i = nearest(k_minutes, NELEM(k_minutes), settings_get_int("screensaver_minutes", 5, 0, 60)) + dir;
       if (i >= 0 && i < NELEM(k_minutes)) settings_set_int("screensaver_minutes", k_minutes[i]);
@@ -339,9 +454,11 @@ static void page_input(const ui_nav_t *nav)
    }
    if (r && r->type == R_CHOICE && (nav->left || nav->right)) row_change(r, nav->right ? 1 : -1);
    if (nav->confirm && r && r->type == R_ACTION && r->enabled) row_action(r);
+   else if (nav->confirm && r && !r->enabled && r->why) panel_toast(r->why);
    else if (nav->back || nav->options)
    {
       int from = s_page;
+      color_commit();
       page_enter(P_ROOT, -1);
       s_sel = from - 1;   /* root rows are the pages in order */
       rows_snap();
@@ -587,7 +704,6 @@ void panel_init(void)
    label_set(&s_gt, g_font_sub, "\xE2\x80\xBA");   /* › */
    s_slide.x = PW + 40.0f;
    s_page = P_ROOT;
-   (void)osk_open; (void)confirm_open;   /* first reached from the Profile page (step 3) */
 }
 
 void panel_open(void)
@@ -662,6 +778,16 @@ void panel_update(const ui_nav_t *nav, double t, float dt)
    }
 }
 
+/* 18 px profile colour circle ending at x = xr, centred in the row at y; returns the new xr */
+#define SW_D 18.0f
+static float draw_swatch(int color, float xr, float y, float a)
+{
+   float f[4];
+   profiles_color(color, f); f[3] = a;
+   draw_round_rect(xr - SW_D, y + (ROW_H - SW_D) * 0.5f, SW_D, SW_D, SW_D * 0.5f, f, 0.0f);
+   return xr - SW_D - 10;
+}
+
 void panel_draw(double t)
 {
    float a = panel_amount(), px = PX0 + s_slide.x, py = PY0;
@@ -686,7 +812,7 @@ void panel_draw(double t)
    }
 
    /* footer note */
-   if (s_footer_key) wlabel_set(&s_footer, g_font_small, tr(s_footer_key), (int)(PW - 2 * PAD));
+   if (s_foot[0]) wlabel_set(&s_footer, g_font_small, s_foot, (int)(PW - 2 * PAD));
    else label_free(&s_footer);
    bottom = py + PH - 24.0f - (s_footer.tex ? s_footer.h + 16.0f : 0.0f);
    if (s_footer.tex)
@@ -721,9 +847,30 @@ void panel_draw(double t)
          col(c, C_TXT, la * (r->at_hi ? 0.25f : 0.8f));
          draw_label(&s_gt, xr - s_gt.w, y + (ROW_H - s_gt.h) * 0.5f, c);
          xr -= s_gt.w + 12;
-         col(c, C_TXT, la);
-         draw_label(&s_rv[i], xr - s_rv[i].w, y + (ROW_H - s_rv[i].h) * 0.5f, c);
-         xr -= s_rv[i].w + 12;
+         if (r->swatches)
+         {
+            int k;
+            for (k = PROFILE_COLORS - 1; k >= 0; k--)
+            {
+               float sx = xr - SW_D, sy = y + (ROW_H - SW_D) * 0.5f;
+               if (k == r->swatch)
+               {
+                  col(f, (const float[3]){ 1, 1, 1 }, 0.85f * la);
+                  draw_round_rect(sx - 3, sy - 3, SW_D + 6, SW_D + 6, SW_D * 0.5f + 3, f, 0.0f);
+               }
+               profiles_color(k, f); f[3] = la * (k == r->swatch ? 1.0f : 0.55f);
+               draw_round_rect(sx, sy, SW_D, SW_D, SW_D * 0.5f, f, 0.0f);
+               xr -= SW_D + 10;
+            }
+            xr -= 2;
+         }
+         else
+         {
+            col(c, C_TXT, la);
+            draw_label(&s_rv[i], xr - s_rv[i].w, y + (ROW_H - s_rv[i].h) * 0.5f, c);
+            xr -= s_rv[i].w + 12;
+            if (r->swatch >= 0) xr = draw_swatch(r->swatch, xr, y, la);
+         }
          col(c, C_TXT, la * (r->at_lo ? 0.25f : 0.8f));
          draw_label(&s_lt, xr - s_lt.w, y + (ROW_H - s_lt.h) * 0.5f, c);
       }
@@ -743,6 +890,7 @@ void panel_draw(double t)
          }
          col(c, C_DIM, la);
          draw_label(&s_rv[i], xr - s_rv[i].w, y + (ROW_H - s_rv[i].h) * 0.5f, c);
+         if (r->swatch >= 0) draw_swatch(r->swatch, xr - s_rv[i].w - 12, y, la);
       }
    }
    glDisable(GL_SCISSOR_TEST);

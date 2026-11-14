@@ -9,7 +9,7 @@
  *   - platform pills (only platforms that have games)
  *   - "play": the case flips to show its back, zooms, fades to black, then the
  *     frontend exits with code 10 and writes the launch request to
- *     /tmp/lumen-launch (core path + content path) for scripts/run.sh
+ *     /tmp/lumen-launch (launch request v2, src/launch.c) for scripts/run.sh
  *   - Select+Start (or Escape) exits with code 0 (back to the Sony menu)
  *   - Triangle opens the settings panel (src/panel.c)
  *
@@ -31,6 +31,8 @@
 #include "i18n.h"
 #include "settings.h"
 #include "panel.h"
+#include "profiles.h"
+#include "launch.h"
 #include "version.h"
 
 #define TEX_WINDOW 6       /* covers kept on the GPU around the selection */
@@ -636,8 +638,7 @@ static GLuint card_tex(const game_t *g, int back)
             trf(line, sizeof(line), strcmp(g->players, "1") ? "card.players" : "card.players_one", "n", g->players, NULL);
             LINE(g_font_small, line);
          }
-         /* active profile name from step 3; until then the main profile */
-         trf(line, sizeof(line), "card.memory_card", "name", tr("profile.main"), NULL);
+         trf(line, sizeof(line), "card.memory_card", "name", profiles_display_name(profiles_active()), NULL);
          y = 220; LINE(g_font_small, line);
       }
    }
@@ -1289,8 +1290,14 @@ static void hints_load(const char *home)
  * set each frame through label_set(..., tr(...)) */
 void ui_language_changed(void)
 {
-   int i;
    hints_reload();
+   ui_cards_changed();
+}
+
+/* the back of the case shows the active profile: regenerate it lazily (7.4) */
+void ui_cards_changed(void)
+{
+   int i;
    for (i = 0; i < g_ngames; i++)
       if (g_games[i].back_tex) { glDeleteTextures(1, &g_games[i].back_tex); g_games[i].back_tex = 0; }
 }
@@ -1384,7 +1391,7 @@ int main(int argc, char **argv)
    int held_dir = 0; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
    spring bg[3], info_y, info_a, plat_x;
-   label_t l_title = { 0 }, l_sub = { 0 }, l_count = { 0 }, l_brand = { 0 }, l_start = { 0 }, l_coin1 = { 0 }, l_coin2 = { 0 };
+   label_t l_title = { 0 }, l_sub = { 0 }, l_count = { 0 }, l_prof = { 0 }, l_brand = { 0 }, l_start = { 0 }, l_coin1 = { 0 }, l_coin2 = { 0 };
    float fade = 1.0f; /* 1 = black, fades in at start */
 
    for (i = 1; i < argc; i++)
@@ -1413,6 +1420,7 @@ int main(int argc, char **argv)
    settings_load(g_home);
    i18n_init(g_home);
    i18n_set_language(settings_get("language", "es"));
+   profiles_load(g_home);
 
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -1882,7 +1890,18 @@ int main(int argc, char **argv)
                label_set(&l_count, g_font_small,
                          trf(s, sizeof(s), pl->count == 1 ? "top.games_one" : "top.games", "n", cnt, "system", pl->name, NULL));
             }
-            draw_2d(l_count.tex, W - 36 - l_count.w, 26, l_count.w, l_count.h, dim, 0);
+            {
+               /* profile chip (swatch + name) at the right edge, game count to its left */
+               const profile_t *ap = profiles_active();
+               float sw[4], chip_x, cnt_x;
+               label_set(&l_prof, g_font_small, profiles_display_name(ap));
+               chip_x = W - 36 - l_prof.w;
+               draw_2d(l_prof.tex, chip_x, 26, l_prof.w, l_prof.h, txt, 0);
+               profiles_color(ap->color, sw); sw[3] = ua;
+               draw_round_rect(chip_x - 8 - 14, 26 + floorf((l_prof.h - 14) * 0.5f), 14, 14, 7, sw, 0.0f);
+               cnt_x = chip_x - 8 - 14 - 16 - l_count.w;
+               draw_2d(l_count.tex, cnt_x, 26, l_count.w, l_count.h, dim, 0);
+            }
 
 #define LOGO_H 22.0f
 #define PILL_CONTENT(p) (((p)->logo_tex ? LOGO_H * (p)->logo_w / (float)(p)->logo_h : 0.0f) + \
@@ -2019,10 +2038,17 @@ int main(int argc, char **argv)
    }
    if (exit_code == 10 && g_nplat)
    {
-      game_t *g = &g_games[g_plat[sel_plat].first + sel];
-      FILE *f = fopen("/tmp/lumen-launch", "w");
-      if (f) { fprintf(f, "%s/%s\n%s\n", g_core_dir, g_plat[sel_plat].core, g->content); fclose(f); }
-      logf_("launch request: %s", g->content);
+      const platform_t *lp = &g_plat[sel_plat];
+      game_t *g = &g_games[lp->first + sel];
+      char core[400];
+      launch_req_t req;
+      memset(&req, 0, sizeof(req));
+      snprintf(core, sizeof(core), "%s/%s", g_core_dir, lp->core);
+      req.core = core; req.content = g->content; req.system = lp->id; req.title = g->title;
+      req.profile = profiles_active()->id;
+      req.demo = 0; req.demo_seconds = settings_get_int("demo_seconds", 60, 20, 300);
+      if (launch_write("/tmp/lumen-launch", &req) == 0) logf_("launch request: %s (profile %s)", g->content, req.profile);
+      else { logf_("launch request refused, not launching"); exit_code = 1; }
    }
    SDL_LockMutex(bg_mx); bg_quit = 1; SDL_CondSignal(bg_cv); SDL_UnlockMutex(bg_mx);
    SDL_LockMutex(cv_mx); cv_quit = 1; SDL_CondSignal(cv_cv); SDL_UnlockMutex(cv_mx);
