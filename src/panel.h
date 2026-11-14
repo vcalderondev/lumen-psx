@@ -5,7 +5,7 @@
 
 /* help bar sets (main.c draws them; the panel says which one applies) */
 enum { HINTS_CAROUSEL, HINTS_PANEL_ROOT, HINTS_PANEL_PAGE, HINTS_PANEL_LIST, HINTS_PANEL_INFO,
-       HINTS_OSK, HINTS_CONFIRM, HINTS_ATTRACT, HINTS_COUNT };
+       HINTS_OSK, HINTS_CONFIRM, HINTS_ATTRACT, HINTS_WELCOME, HINTS_WELCOME_LAST, HINTS_COUNT };
 
 void  panel_init(void);                 /* after fonts + i18n + settings */
 void  panel_open(void);
@@ -22,5 +22,6 @@ void  panel_toast_draw(double t);
 void  ui_language_changed(void);        /* section 5.3 */
 void  ui_sound_changed(void);           /* "music" / "music_volume" changed: apply them */
 void  ui_start_attract(void);           /* "Preview now" (step 5; a no-op before) */
+void  ui_request_reboot(void);          /* Display page: save and restart the console */
 
 #endif

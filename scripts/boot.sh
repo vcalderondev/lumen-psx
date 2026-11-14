@@ -38,7 +38,14 @@ LUMEN_WESTON=""
 # is installed; compositor=stock in settings.ini keeps Sony's Weston 1.11. It is
 # unpacked to RAM and overlaid on /usr (overlayfs: nothing on the eMMC changes, gone
 # at power-off). Measured on the console: 24 -> 45 fps for a 1080p dashboard.
-PW_TAR="${LUMEN_HOME}/compositor/psc-weston.tar.gz"
+# package per compositor setting: weston16 -> psc-weston-16, weston6 (default) ->
+# psc-weston-6 (psc-weston.tar.gz from earlier installs); stock -> Sony's Weston 1.11
+PW_VER=6
+case "$(sed -n 's/^compositor=//p' "${LUMEN_HOME}/settings.ini" 2>/dev/null | tr -d '\r' | tail -1)" in
+  weston16) PW_VER=16 ;;
+esac
+PW_TAR="${LUMEN_HOME}/compositor/psc-weston-${PW_VER}.tar.gz"
+[ -f "${PW_TAR}" ] || { [ "${PW_VER}" = 6 ] && PW_TAR="${LUMEN_HOME}/compositor/psc-weston.tar.gz"; }
 PW_ON=""; PW_SAMPLER=""
 # One-shot guard: the marker is written before each attempt and removed when the
 # session ends. Still there at boot = the last attempt ended in a power-off (black
@@ -148,6 +155,7 @@ if [ -z "${STARTED}" ] && [ "${DISPLAY_MODE}" = 1080p ]; then
 fi
 [ -n "${STARTED}" ] || { weston_stock; DISPLAY_MODE=720p; }
 export LUMEN_DISPLAY="${DISPLAY_MODE:-720p}"
+case "${STARTED}" in psc) export LUMEN_COMPOSITOR="weston${PW_VER}" ;; *) export LUMEN_COMPOSITOR=stock ;; esac
 /usr/bin/wait_sdl
 
 # console buttons: POWER suspends (handshake with the system power manager),
@@ -177,8 +185,14 @@ if [ -f "${PW_MARK}" ]; then
       sleep 1; i=$((i + 1)); done ) &
 fi
 sh "${LUMEN_HOME}/run.sh"
-echo "session ended: $?"
+SESSION_RC=$?
+echo "session ended: ${SESSION_RC}"
 rm -f "${PW_MARK}"; sync
+if [ "${SESSION_RC}" = 12 ]; then   # Display settings changed: start over with the new setup
+  echo "restart requested by the frontend"
+  [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
+  sync; reboot; sleep 30
+fi
 
 # 3. stock Sony menu (internal games); power button handled by Sony's power manager
 [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null

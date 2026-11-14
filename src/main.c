@@ -41,6 +41,7 @@
 #include "launch.h"
 #include "attract.h"
 #include "music.h"
+#include "welcome.h"
 #include "status.h"
 #include "stats.h"
 #include "version.h"
@@ -1548,7 +1549,7 @@ static void bg_request(const char *path)
 /* ------------------------------------------------------------------------ */
 /* input: game controllers + raw joysticks mapped to logical actions         */
 /* IN_SQUARE acts as IN_BACK everywhere except the keyboard, where it erases */
-enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_BACK, IN_SQUARE, IN_START, IN_SELECT, IN_OPTIONS, IN_COUNT };
+enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_L2, IN_R2, IN_PLAY, IN_BACK, IN_SQUARE, IN_START, IN_SELECT, IN_OPTIONS, IN_COUNT };
 static int           in_down[IN_COUNT];     /* current state                  */
 static int           in_pressed[IN_COUNT];  /* edge this frame                */
 static SDL_JoystickID in_ctrl_ids[8];       /* joysticks opened as controllers */
@@ -1600,6 +1601,8 @@ static int in_raw_button(int b)
    case 3: return IN_SQUARE;
    case 2: return IN_PLAY;
    case 1: return IN_BACK;
+   case 4: return IN_L2;
+   case 5: return IN_R2;
    case 6: return IN_L1;
    case 7: return IN_R1;
    case 8: return IN_SELECT;
@@ -1653,6 +1656,9 @@ static void in_event(const SDL_Event *e)
    case SDL_CONTROLLERAXISMOTION:
       if (e->caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) in_axis(0, e->caxis.value);
       if (e->caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) in_axis(1, e->caxis.value);
+      /* analog triggers (DualShock 4 and others): L2 / R2 past half travel */
+      if (e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) in_set(IN_L2, e->caxis.value > 16000);
+      if (e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) in_set(IN_R2, e->caxis.value > 16000);
       break;
    case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP:
       if (!in_is_ctrl(e->jbutton.which))
@@ -1684,6 +1690,8 @@ static void in_event(const SDL_Event *e)
       case SDLK_DOWN: b = IN_DOWN; break;
       case SDLK_PAGEUP: b = IN_L1; break;
       case SDLK_PAGEDOWN: b = IN_R1; break;
+      case SDLK_HOME: b = IN_L2; break;
+      case SDLK_END: b = IN_R2; break;
       case SDLK_RETURN: b = IN_PLAY; break;
       case SDLK_TAB: case SDLK_F1: b = IN_OPTIONS; break;
       case SDLK_BACKSPACE: b = IN_SQUARE; break;
@@ -1730,7 +1738,8 @@ typedef struct { const char *icons[3]; const char *fallback_key; const char *tex
 static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
    [HINTS_CAROUSEL] = {
       { { "cross" },    "btn.cross",        "hint.play" },
-      { { "l1", "r1" }, "btn.l1_r1",        "hint.platform" },
+      { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
+      { { "l2", "r2" }, "btn.l2_r2",        "hint.platform" },
       { { "select" },   "btn.select",       "hint.settings" } },
    [HINTS_PANEL_ROOT] = {
       { { "dpad" },     "btn.dpad",         "hint.move" },
@@ -1757,6 +1766,14 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "cross" },    "btn.cross",        "hint.select" },
       { { "circle" },   "btn.circle",       "hint.cancel" } },
    [HINTS_ATTRACT] = { { { NULL }, NULL, NULL } },   /* the attract scene draws its own PRESS START */
+   [HINTS_WELCOME] = {
+      { { "cross" },    "btn.cross",        "hint.next" },
+      { { "circle" },   "btn.circle",       "hint.back" },
+      { { "triangle" }, "btn.triangle",     "hint.dont_show" } },
+   [HINTS_WELCOME_LAST] = {
+      { { "cross" },    "btn.cross",        "hint.start" },
+      { { "circle" },   "btn.circle",       "hint.back" },
+      { { "triangle" }, "btn.triangle",     "hint.dont_show" } },
 };
 typedef struct { char name[16]; GLuint tex; int w, h; } icon_t;
 static icon_t g_icons[24];
@@ -1831,6 +1848,11 @@ void ui_cards_changed(void)
    for (i = 0; i < g_ngames; i++)
       if (g_games[i].back_tex) { glDeleteTextures(1, &g_games[i].back_tex); g_games[i].back_tex = 0; }
 }
+
+/* Display page: leave with exit code 12; run.sh / boot.sh restart the console so the
+ * new output and compositor are set up from scratch */
+static int g_want_reboot;
+void ui_request_reboot(void) { g_want_reboot = 1; logf_("restart requested (display settings)"); }
 
 /* the Sound page changed music / music_volume */
 void ui_sound_changed(void)
@@ -2125,6 +2147,7 @@ static void library_rescan(int *sel_plat, int *sel)
 #define TILE_Y    206.0f
 #define TAB_Y     118.0f
 #define INFO_Y    452.0f
+#define DASH_PAGE 6        /* games per L1 / R1 page: the tiles visible right of the selection */
 static status_t  g_status;
 static char      g_menu_music[512];          /* <home>/assets/music/menu.ogg or "" */
 static struct { char id[16]; GLuint tex; int w, h; label_t initials; } g_avatar;
@@ -2284,7 +2307,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          if (i == sel_plat) { sx = total; sw = pws[i]; }
          total += pws[i] + (i + 1 < g_nplat ? 12.0f : 0.0f);
       }
-      if (g_nplat > 1) { l1w = glyph_w("l1", 24) + 14; r1w = glyph_w("r1", 24) + 14; }
+      if (g_nplat > 1) { l1w = glyph_w("l2", 24) + 14; r1w = glyph_w("r2", 24) + 14; }
       left = DASH_X + l1w; right = W - DASH_X - r1w;
       if (total > right - left)
       {
@@ -2295,7 +2318,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       }
       spring_step(&off, want, 200, 22, 1.0f / 60.0f);
       x0 = left - off.x;
-      if (g_nplat > 1) glyph_draw("l1", DASH_X, TAB_Y + (ph - 24) * 0.5f, 24, gl);
+      if (g_nplat > 1) glyph_draw("l2", DASH_X, TAB_Y + (ph - 24) * 0.5f, 24, gl);
       if (total > right - left)
       {
          glEnable(GL_SCISSOR_TEST);
@@ -2325,7 +2348,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       }
       glDisable(GL_SCISSOR_TEST);
       if (g_nplat > 1)
-         glyph_draw("r1", total > right - left ? W - DASH_X - glyph_w("r1", 24) : x + 2, TAB_Y + (ph - 24) * 0.5f, 24, gl);
+         glyph_draw("r2", total > right - left ? W - DASH_X - glyph_w("r2", 24) : x + 2, TAB_Y + (ph - 24) * 0.5f, 24, gl);
    }
 
    /* tiles: soft shadows first, then the covers; tiles left of the selection fade away */
@@ -2444,8 +2467,8 @@ static int       g_ntin, g_ntshot;
 
 static int test_btn(const char *n)
 {
-   static const char *names[] = { "left", "right", "up", "down", "l1", "r1", "play", "back", "square", "start", "select", "options" };
-   static const int ids[] = { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_BACK, IN_SQUARE, IN_START, IN_SELECT, IN_OPTIONS };
+   static const char *names[] = { "left", "right", "up", "down", "l1", "r1", "l2", "r2", "play", "back", "square", "start", "select", "options" };
+   static const int ids[] = { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_L2, IN_R2, IN_PLAY, IN_BACK, IN_SQUARE, IN_START, IN_SELECT, IN_OPTIONS };
    int i;
    if (!strcmp(n, "quit")) return -2;
    for (i = 0; i < (int)(sizeof(ids) / sizeof(ids[0])); i++) if (!strcmp(n, names[i])) return ids[i];
@@ -2718,6 +2741,7 @@ int main(int argc, char **argv)
    if (music_init() == 0) ui_sound_changed();
    hints_load(g_home);
    panel_init();
+   welcome_init();
    attract_init(start_attract, g_home);
    memset(&att, 0, sizeof(att));
 
@@ -2744,7 +2768,7 @@ int main(int argc, char **argv)
          info_y.x = 18.0f; info_a.x = 0.0f;
       }
       pl = g_nplat ? &g_plat[sel_plat] : NULL;
-      int n = pl ? pl->count : 0, move = 0, plat_move = 0, play = 0, att_swallow, restore = -1;
+      int n = pl ? pl->count : 0, move = 0, plat_move = 0, page = 0, play = 0, att_swallow, restore = -1;
       if (dt > 0.05f) dt = 0.05f;
       last = t;
 
@@ -2755,10 +2779,11 @@ int main(int argc, char **argv)
          else in_event(&e);
       }
       if (g_ntin && !test_input(t - t0)) running = 0;
+      if (g_want_reboot) { exit_code = 12; running = 0; }
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
-         attract_update(t, dt, !panel_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
+         attract_update(t, dt, !panel_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
          att_swallow = was || attract_active() || att.amount > 0.02f;
          if (att_swallow) g_want_settings = 0;
       }
@@ -2777,13 +2802,26 @@ int main(int argc, char **argv)
       else
       {
          if (in_pressed[IN_PLAY] || (in_pressed[IN_START] && !in_down[IN_SELECT])) play = 1;
-         if (in_pressed[IN_L1] || in_pressed[IN_UP]) plat_move = -1;
-         if (in_pressed[IN_R1] || in_pressed[IN_DOWN]) plat_move = 1;
+         /* L1 / R1: previous / next page of games; L2 / R2 (and up / down): system */
+         if (in_pressed[IN_L1]) page = -1;
+         if (in_pressed[IN_R1]) page = 1;
+         if (in_pressed[IN_L2] || in_pressed[IN_UP]) plat_move = -1;
+         if (in_pressed[IN_R2] || in_pressed[IN_DOWN]) plat_move = 1;
          if (in_pressed[IN_LEFT]) { move = -1; held_next = t + 0.32; }
          if (in_pressed[IN_RIGHT]) { move = 1; held_next = t + 0.32; }
       }
       held_dir = in_down[IN_LEFT] ? -1 : (in_down[IN_RIGHT] ? 1 : 0);
       (void)start_down; (void)select_down; (void)pad;
+      if (welcome_active())
+      {  /* first-run presentation: owns the input until it is closed */
+         ui_nav_t wn;
+         nav_fill(&wn, t);
+         if (att_swallow) memset(&wn, 0, sizeof(wn));
+         welcome_update(&wn, dt);
+         memset(in_pressed, 0, sizeof(in_pressed));
+         g_want_settings = 0; held_dir = 0;
+         move = plat_move = page = play = 0;
+      }
       {  /* settings panel: owns the input while open or closing (6.3) */
          ui_nav_t nav;
          int was_open = panel_active();
@@ -2797,10 +2835,10 @@ int main(int argc, char **argv)
             else if (was_open) nav.options = 1;
          }
          panel_update(&nav, t, dt);
-         if (was_open || panel_active()) { move = plat_move = play = 0; held_dir = 0; }
+         if (was_open || panel_active()) { move = plat_move = page = play = 0; held_dir = 0; }
       }
-      if (play_t >= 0) { move = plat_move = play = 0; }
-      if (att_swallow) { move = plat_move = play = 0; held_dir = 0; held_next = t + 0.32; }
+      if (play_t >= 0) { move = plat_move = page = play = 0; }
+      if (att_swallow) { move = plat_move = page = play = 0; held_dir = 0; held_next = t + 0.32; }
       if (!move && held_dir && t >= held_next) { move = held_dir; held_next = t + 0.085; }
       {  /* attract: auto-rotation; the user's selection is kept and restored on leave */
          int now_att = attract_active();
@@ -2821,6 +2859,13 @@ int main(int argc, char **argv)
       }
 
       if (n && move) { sel = (sel + move + n) % n; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; }
+      if (n > 1 && page)
+      {  /* a page is what the row shows to the right of the selection; from the last
+          * (first) game the next (previous) page wraps to the other end */
+         int ns = page > 0 ? (sel == n - 1 ? 0 : sel + DASH_PAGE) : (sel == 0 ? n - 1 : sel - DASH_PAGE);
+         ns = ns < 0 ? 0 : (ns > n - 1 ? n - 1 : ns);
+         if (ns != sel) { sel = ns; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; }
+      }
       if (g_nplat > 1 && plat_move)
       {
          int np = restore >= 0 ? restore : (sel_plat + plat_move + g_nplat) % g_nplat, k;
@@ -3053,7 +3098,7 @@ int main(int argc, char **argv)
 
          glUseProgram(g_prog_2d);
          glUniform1i(u2_tex, 0);
-         covered = panel_active() && panel_amount() > 0.995f;   /* settings section fully open */
+         covered = (panel_active() && panel_amount() > 0.995f) || welcome_amount() > 0.995f;   /* a full-screen section is open */
          if (!covered)
          {  /* full-screen art (current layer, next one crossfading over it), then the
              * legibility overlay (left side, top and bottom bands) in one pass */
@@ -3187,7 +3232,8 @@ int main(int argc, char **argv)
                 * panel is open it is centred in the free space left of it */
                static int h_cur = HINTS_CAROUSEL, h_prev = -1;
                static float h_mix = 1.0f;
-               int want = panel_active() ? panel_hint_set() : (attract_active() ? HINTS_ATTRACT : HINTS_CAROUSEL);
+               int want = welcome_active() ? (welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
+                          panel_active() ? panel_hint_set() : (attract_active() ? HINTS_ATTRACT : HINTS_CAROUSEL);
                const float ha = (1 - fade) * (1 - att.amount);
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
@@ -3217,6 +3263,12 @@ int main(int argc, char **argv)
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);
             attract_draw(t);
+            if (welcome_active())
+            {  /* over everything; the help bar is drawn again on top of it */
+               int hs = welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME;
+               welcome_draw(t);
+               hints_draw(hs, 672, welcome_amount());
+            }
             if (flash > 0.001f)
             {
                const float white[4] = { 1, 1, 1, flash * 0.85f };

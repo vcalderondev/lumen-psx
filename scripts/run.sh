@@ -250,3 +250,6 @@ done
 
 kill "${SYNCER}" 2>/dev/null
 sync
+# 12: the frontend asked for a restart (Display settings); boot.sh restarts the console
+[ "${rc}" = 12 ] && exit 12
+exit 0
