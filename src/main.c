@@ -1241,8 +1241,25 @@ static void draw_reflection(const game_t *g, const platform_t *pl, mat4 base, fl
    draw_quad_box(m, g->tex, one, alpha, 2);
 }
 
+/* cost meter (LUMEN_COST=1): device pixels covered per frame, split by blending and by
+ * shader weight, plus draw calls; logged once per second. A proxy for GPU load that a
+ * software renderer can measure too (tools/host). */
+static int    g_cost_on;
+static double g_cost_px_opaque, g_cost_px_blend, g_cost_px_heavy, g_cost_draws;
+static void cost_add(float w, float h, int mode)
+{
+   double px = fabs((double)w * h) * g_ui_scale * g_ui_scale;
+   GLint vp[4];
+   glGetIntegerv(GL_VIEWPORT, vp);
+   if (vp[2] != g_dw) px *= (double)vp[2] * vp[3] / ((double)g_dw * g_dh);   /* offscreen FBO */
+   if (glIsEnabled(GL_BLEND)) g_cost_px_blend += px; else g_cost_px_opaque += px;
+   if (mode == 7 || mode == 8 || mode == 10 || mode == 5) g_cost_px_heavy += px;
+   g_cost_draws += 1;
+}
+
 void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
 {
+   if (g_cost_on) cost_add(w, h, mode);
    if (mode == 0 && tex && fabsf(w * g_ui_scale - floorf(w * g_ui_scale + 0.5f)) < 0.01f &&
        fabsf(h * g_ui_scale - floorf(h * g_ui_scale + 0.5f)) < 0.01f)
    {  /* textures drawn 1:1 (text, glyphs) start on a device pixel: no half-pixel
@@ -1615,6 +1632,8 @@ static void in_event(const SDL_Event *e)
       case SDLK_RETURN: b = IN_PLAY; break;
       case SDLK_TAB: case SDLK_F1: b = IN_OPTIONS; break;
       case SDLK_BACKSPACE: b = IN_SQUARE; break;
+      case SDLK_b: b = IN_BACK; break;        /* keyboards / psc-sim: Circle */
+      case SDLK_s: b = IN_SELECT; break;      /* Select alone: settings */
       case SDLK_ESCAPE: b = IN_SELECT; in_set(IN_START, d); break;
       }
       in_set(b, d);
@@ -2351,6 +2370,106 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
    }
 }
 
+/* ------------------------------------------------------------------------ */
+/* test hooks (tools/host): scripted input and screenshots, driven by environment
+ * variables, inert when unset.
+ *   LUMEN_INPUT="2:right;2.5:right;4:select;6:back;9:quit"  logical buttons at seconds
+ *     (left right up down l1 r1 play back square options start select quit)
+ *   LUMEN_SHOT="/out/a.ppm@3;/out/b.ppm@7"                   framebuffer dumps (PPM) */
+typedef struct { double at; int btn; char path[200]; int done; } test_ev_t;
+static test_ev_t g_tin[64], g_tshot[16];
+static int       g_ntin, g_ntshot;
+
+static int test_btn(const char *n)
+{
+   static const char *names[] = { "left", "right", "up", "down", "l1", "r1", "play", "back", "square", "start", "select", "options" };
+   static const int ids[] = { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_BACK, IN_SQUARE, IN_START, IN_SELECT, IN_OPTIONS };
+   int i;
+   if (!strcmp(n, "quit")) return -2;
+   for (i = 0; i < (int)(sizeof(ids) / sizeof(ids[0])); i++) if (!strcmp(n, names[i])) return ids[i];
+   return -1;
+}
+
+static void test_parse(void)
+{
+   char buf[2048], *tok, *save = NULL;
+   const char *e = getenv("LUMEN_INPUT");
+   if (e)
+   {
+      snprintf(buf, sizeof(buf), "%s", e);
+      for (tok = strtok_r(buf, ";", &save); tok && g_ntin < 64; tok = strtok_r(NULL, ";", &save))
+      {
+         char *c = strchr(tok, ':');
+         if (!c) continue;
+         *c = 0;
+         g_tin[g_ntin].at = atof(tok); g_tin[g_ntin].btn = test_btn(c + 1);
+         if (g_tin[g_ntin].btn != -1) g_ntin++;
+      }
+   }
+   save = NULL;
+   if ((e = getenv("LUMEN_SHOT")))
+   {
+      snprintf(buf, sizeof(buf), "%s", e);
+      for (tok = strtok_r(buf, ";", &save); tok && g_ntshot < 16; tok = strtok_r(NULL, ";", &save))
+      {
+         char *c = strrchr(tok, '@');
+         if (!c) continue;
+         *c = 0;
+         snprintf(g_tshot[g_ntshot].path, sizeof(g_tshot[g_ntshot].path), "%s", tok);
+         g_tshot[g_ntshot++].at = atof(c + 1);
+      }
+   }
+   g_cost_on = getenv("LUMEN_COST") != NULL;
+   if (g_ntin || g_ntshot) logf_("test: %d inputs, %d screenshots", g_ntin, g_ntshot);
+}
+
+/* press scripted buttons for one frame (released on the next); returns 0 on "quit" */
+static int test_input(double ts)
+{
+   static int held[16], nheld;
+   int i, run = 1;
+   for (i = 0; i < nheld; i++) in_set(held[i], 0);
+   nheld = 0;
+   for (i = 0; i < g_ntin; i++)
+      if (!g_tin[i].done && ts >= g_tin[i].at)
+      {
+         g_tin[i].done = 1;
+         if (g_tin[i].btn == -2) run = 0;
+         else { in_set(g_tin[i].btn, 1); if (nheld < 16) held[nheld++] = g_tin[i].btn; }
+      }
+   return run;
+}
+
+/* dump the back buffer (before the swap) as a binary PPM */
+static void test_shots(double ts)
+{
+   int i, y;
+   for (i = 0; i < g_ntshot; i++)
+      if (!g_tshot[i].done && ts >= g_tshot[i].at)
+      {
+         unsigned char *px = malloc((size_t)g_dw * g_dh * 4), *row;
+         FILE *f;
+         g_tshot[i].done = 1;
+         if (!px) continue;
+         glReadPixels(0, 0, g_dw, g_dh, GL_RGBA, GL_UNSIGNED_BYTE, px);
+         if ((f = fopen(g_tshot[i].path, "wb")))
+         {
+            fprintf(f, "P6\n%d %d\n255\n", g_dw, g_dh);
+            row = malloc((size_t)g_dw * 3);
+            for (y = g_dh - 1; row && y >= 0; y--)
+            {
+               int x;
+               for (x = 0; x < g_dw; x++) memcpy(row + x * 3, px + ((size_t)y * g_dw + x) * 4, 3);
+               fwrite(row, 3, g_dw, f);
+            }
+            free(row);
+            fclose(f);
+            logf_("test: screenshot %s", g_tshot[i].path);
+         }
+         free(px);
+      }
+}
+
 int main(int argc, char **argv)
 {
    char font_b[300], font_r[300], font_m[300], font_sb[300], font_b_old[300], font_r_old[300], padb[300];
@@ -2364,6 +2483,7 @@ int main(int argc, char **argv)
    double last_activity = 0;
    attract_out_t att;
    SDL_Window *win; SDL_GLContext ctx;
+   int win_w = W, win_h = H;
    SDL_GameController *pad = NULL;
    double t0 = now_s(), last, fps_t, info_t = 0, play_t = -1;
    int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0;
@@ -2418,7 +2538,12 @@ int main(int argc, char **argv)
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, ms > 0);
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, ms);
    }
-   win = SDL_CreateWindow("lumen", 0, 0, W, H, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
+   {  /* the window takes the output's size: under a compositor FULLSCREEN_DESKTOP does
+       * it anyway, without one (psc-sim's Xvfb) the requested size is what you get */
+      SDL_DisplayMode dm;
+      if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) { win_w = dm.w; win_h = dm.h; }
+   }
+   win = SDL_CreateWindow("lumen", 0, 0, win_w, win_h, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
    ctx = win ? SDL_GL_CreateContext(win) : NULL;
    if (!ctx)
    {
@@ -2426,7 +2551,7 @@ int main(int argc, char **argv)
       if (win) SDL_DestroyWindow(win);
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
-      win = SDL_CreateWindow("lumen", 0, 0, W, H, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
+      win = SDL_CreateWindow("lumen", 0, 0, win_w, win_h, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
       if (!win) { logf_("CreateWindow: %s", SDL_GetError()); return 1; }
       ctx = SDL_GL_CreateContext(win);
       if (!ctx) { logf_("GL context: %s", SDL_GetError()); return 1; }
@@ -2523,6 +2648,7 @@ int main(int argc, char **argv)
 
    last = fps_t = now_s();
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
+   test_parse();
 
    while (running)
    {
@@ -2546,6 +2672,7 @@ int main(int argc, char **argv)
          if (e.type == SDL_QUIT) running = 0;
          else in_event(&e);
       }
+      if (g_ntin && !test_input(t - t0)) running = 0;
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
@@ -3027,6 +3154,7 @@ int main(int argc, char **argv)
          }
       }
 
+      if (g_ntshot) test_shots(t - t0);
       SDL_GL_SwapWindow(win);
       frames++;
       log_tick();
@@ -3054,6 +3182,19 @@ int main(int argc, char **argv)
             }
          }
          if (bench == 1 && step >= 0) bframes += 1;
+      }
+      if (g_cost_on)
+      {
+         static int cf; static double ct;
+         cf++;
+         if (t - ct >= 1.0)
+         {
+            if (ct > 0 && cf)
+               logf_("cost: %.2f Mpx/frame (opaque %.2f, blended %.2f, heavy shaders %.2f), %.0f draws/frame",
+                     (g_cost_px_opaque + g_cost_px_blend) / cf / 1e6, g_cost_px_opaque / cf / 1e6,
+                     g_cost_px_blend / cf / 1e6, g_cost_px_heavy / cf / 1e6, g_cost_draws / cf);
+            g_cost_px_opaque = g_cost_px_blend = g_cost_px_heavy = g_cost_draws = 0; cf = 0; ct = t;
+         }
       }
       if (t - fps_t >= 5.0)
       {
