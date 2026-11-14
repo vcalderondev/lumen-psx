@@ -62,11 +62,16 @@ extensions = cue,bin            ; tried in this order for disc 1 (default cue,bi
   `tools/make-stock-games.sh <regional.db>` (titles trimmed, the ™ and ® signs removed).
 - For every line: content = `<path>/<id>/<basename1>.<ext>` with the first extension that
   exists (`.cue` preferred); a game whose disc image is missing is skipped (counted in
-  the log). Cover = `<path>/<id>/<basename1>.png`, else the first `*.png` in the folder.
+  the log). A game with more than one basename (multi-disc) gets a playlist written to
+  `/tmp/lumen-stock/<basename1>.m3u` on every scan, listing `<path>/<id>/<basenameN>.<ext>`
+  for each disc found (same extension search), and that playlist is the content, so
+  RetroArch's disc control can swap discs; naming it after disc 1 keeps the save names of
+  the single-disc case. With only one disc found the content stays that disc.
+  Cover = `<path>/<id>/<basename1>.png`, else the first `*.png` in the folder.
   On the first scan the listing of each folder is logged once (`lumen.log`), to confirm
   the console's file names.
-- Read-only: nothing is ever written under `paths`. Saves follow the active profile like
-  any other game (launch request v2).
+- Read-only: nothing is ever written under `paths` (playlists go to `/tmp`). Saves
+  follow the active profile like any other game (launch request v2).
 - Shown only when `show_stock_games = 1` in `settings.ini` (Settings → Library →
   Built-in games: Hidden / Visible, default Hidden). A hidden stock system is not
   loaded at all; changing the setting rescans the libraries live.

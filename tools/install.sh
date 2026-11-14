@@ -1,6 +1,7 @@
 #!/bin/sh
 # Install Lumen onto the console's USB stick as /lumen (MD5-verified, no ._ files, ejects).
-#   tools/install.sh [--cores DIR]          binary + run.sh + data (+ libretro cores from DIR)
+#   tools/install.sh [--cores DIR]          binaries + run.sh/boot.sh + data + system declarations
+#                                           + assets (+ libretro cores from DIR)
 #   tools/install.sh --bg <system>/<game dir> <img>  per-game background -> /games/<system>/<dir>/background.<ext>
 # USB mount point: $LUMEN_USB (default /Volumes/SONY)
 set -e
@@ -21,9 +22,16 @@ if [ "$1" = "--bg" ]; then
 else
   [ -f out/lumen ] || { echo "build first: out/lumen missing"; exit 1; }
   copy_file out/lumen "$VOL/lumen/lumen"
+  [ -f out/lumen-buttons ] && copy_file out/lumen-buttons "$VOL/lumen/lumen-buttons"
   copy_file scripts/run.sh "$VOL/lumen/run.sh"
+  copy_file scripts/boot.sh "$VOL/lumen/boot.sh"
   for f in dist/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/$(basename "$f")"; done
   for f in dist/lang/*.lang; do copy_file "$f" "$VOL/lumen/lang/$(basename "$f")"; done
+  for f in dist/systems/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/systems/$(basename "$f")"; done
+  copy_file assets/splash.png "$VOL/lumen/assets/splash.png"
+  for d in icons glyphs fonts; do
+    for f in assets/$d/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/assets/$d/$(basename "$f")"; done
+  done
   mkdir -p "$VOL/lumen/profiles"
   if [ "$1" = "--cores" ] && [ -d "$2" ]; then
     for f in "$2"/*.so; do copy_file "$f" "$VOL/lumen/cores/$(basename "$f")"; done

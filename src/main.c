@@ -416,6 +416,51 @@ static void scan_files(int pi, const char *dir)
  * next to the declaration: "id|title|publisher|year|players|basename1,basename2" lines,
  * '#' comments. Disc 1 = the first basename. Cover: <BASENAME>.png, else the first
  * *.png of the folder. The folder listings are logged on the first scan only. */
+/* first existing <folder>/<base>.<ext> for the declared extensions, "" if none */
+static void stock_find_disc(const char *exts_decl, const char *folder, const char *base, char *out, size_t n)
+{
+   char exts[160], *tok, *save = NULL;
+   out[0] = 0;
+   snprintf(exts, sizeof(exts), "%s", exts_decl);
+   for (tok = strtok_r(exts, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+   {
+      trim(tok);
+      snprintf(out, n, "%s/%s.%s", folder, base, tok);
+      if (file_exists(out)) return;
+   }
+   out[0] = 0;
+}
+
+/* Multi-disc built-in game: the partition is read-only, so the playlist goes to
+ * /tmp/lumen-stock/<basename1>.m3u (named after disc 1 so saves keep that name).
+ * Replaces content with the playlist when at least two discs exist. */
+static void stock_playlist(const platform_t *pl, const char *folder, char *discs, char *content, size_t n)
+{
+   char m3u[600], path[600], *tok, *save = NULL, *b1 = NULL;
+   int count = 0;
+   FILE *f = NULL;
+   for (tok = strtok_r(discs, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+   {
+      trim(tok);
+      if (!tok[0] || strchr(tok, '/')) continue;
+      stock_find_disc(pl->exts, folder, tok, path, sizeof(path));
+      if (!path[0]) { logf_("[%s] %s: disc %s missing", pl->id, folder, tok); continue; }
+      if (!f)
+      {
+         b1 = tok;
+         mkdir("/tmp/lumen-stock", 0755);
+         snprintf(m3u, sizeof(m3u), "/tmp/lumen-stock/%s.m3u", b1);
+         if (!(f = fopen(m3u, "w"))) { logf_("[%s] cannot write %s", pl->id, m3u); return; }
+      }
+      fprintf(f, "%s\n", path);
+      count++;
+   }
+   if (!f) return;
+   if (fclose(f) != 0) { logf_("[%s] cannot write %s", pl->id, m3u); return; }
+   if (count >= 2) snprintf(content, n, "%s", m3u);
+   else unlink(m3u);
+}
+
 static void scan_stock(int pi, const char *dir)
 {
    static int listed;
@@ -426,7 +471,7 @@ static void scan_stock(int pi, const char *dir)
    if (!f) { logf_("[%s] stock metadata missing: %s", pl->id, pl->meta); return; }
    while (fgets(line, sizeof(line), f) && g_ngames < MAX_GAMES)
    {
-      char *fld[6], *p = line, *c, exts[160], *tok, *save = NULL, folder[600], listing[400];
+      char *fld[6], *p = line, *c, folder[600], listing[400], discs[300];
       game_t *g;
       int k;
       DIR *d; struct dirent *de;
@@ -435,19 +480,14 @@ static void scan_stock(int pi, const char *dir)
       if (!*p || *p == '#') continue;
       for (k = 0; k < 6; k++) { fld[k] = p; if ((c = strchr(p, '|'))) { *c = 0; p = c + 1; } else p += strlen(p); }
       for (k = 0; k < 6; k++) trim(fld[k]);
+      snprintf(discs, sizeof(discs), "%s", fld[5]);
       if ((c = strchr(fld[5], ','))) *c = 0;
       trim(fld[5]);
       if (!fld[0][0] || !fld[5][0] || strchr(fld[0], '/') || strchr(fld[5], '/') || strstr(fld[0], "..")) continue;
       snprintf(folder, sizeof(folder), "%s/%s", dir, fld[0]);
       g = &g_games[g_ngames];
       memset(g, 0, sizeof(*g));
-      snprintf(exts, sizeof(exts), "%s", pl->exts);
-      for (tok = strtok_r(exts, ",", &save); tok && !g->content[0]; tok = strtok_r(NULL, ",", &save))
-      {
-         trim(tok);
-         snprintf(g->content, sizeof(g->content), "%s/%s.%s", folder, fld[5], tok);
-         if (!file_exists(g->content)) g->content[0] = 0;
-      }
+      stock_find_disc(pl->exts, folder, fld[5], g->content, sizeof(g->content));
       snprintf(g->cover, sizeof(g->cover), "%s/%s.png", folder, fld[5]);
       g->has_cover = file_exists(g->cover);
       listing[0] = 0;
@@ -467,6 +507,7 @@ static void scan_stock(int pi, const char *dir)
       if (!listed) logf_("[%s] %s: %s", pl->id, folder, listing[0] ? listing : "(empty or missing)");
       if (!g->has_cover) g->cover[0] = 0;
       if (!g->content[0]) { missing++; continue; }
+      if (strchr(discs, ',')) stock_playlist(pl, folder, discs, g->content, sizeof(g->content));
       snprintf(g->title, sizeof(g->title), "%s", fld[1][0] ? fld[1] : fld[5]);
       snprintf(g->publisher, sizeof(g->publisher), "%s", fld[2]);
       snprintf(g->year, sizeof(g->year), "%s", fld[3]);
@@ -1656,6 +1697,7 @@ static void library_rescan(int *sel_plat, int *sel)
       game_t *g = &g_games[i];
       g->x.x = 6.0f + (i % 8) * 0.6f; g->z.x = -3.0f; g->ry.x = -1.2f; g->sc.x = 1.0f; g->al.x = 0.0f;
    }
+   attract_library_changed();
    logf_("library rescan: games %d, platforms %d, %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
 }
 

@@ -335,6 +335,10 @@ in en) intentionally stay English-style in es too where shown.
 | `gfx.enhanced` | Mejorado | Enhanced |
 | `gfx.note` | «Mejorado» aumenta la resolución o suaviza la imagen; algunos juegos pueden ir más lentos. | "Enhanced" raises the resolution or smooths the picture; some games may run slower. |
 | `gfx.none` | Ningún sistema ofrece gráficos mejorados | No system offers enhanced graphics |
+| `lib.stock` | Juegos de fábrica | Built-in games |
+| `lib.hidden` | Ocultos | Hidden |
+| `lib.visible` | Visibles | Visible |
+| `lib.stock_note` | Los 20 juegos que trae la consola. Solo lectura: sus partidas se guardan en el perfil activo. | The 20 games that come with the console. Read-only: their saves go to the active profile. |
 | **about** | | |
 | `about.version` | Versión | Version |
 | `about.games` | Juegos | Games |

@@ -15,6 +15,7 @@ typedef struct {
 } attract_out_t;
 
 void  attract_init(int start_active, const char *home);   /* after the library scan */
+void  attract_library_changed(void);                /* after a live library rescan */
 void  attract_note_input(double t);                 /* any input this frame */
 int   attract_active(void);                         /* ENTER/IDLE/DEMO_OUT */
 void  attract_start(double t);
