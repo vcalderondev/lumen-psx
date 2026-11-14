@@ -217,6 +217,14 @@ case "${STARTED}" in psc) export LUMEN_COMPOSITOR="weston${PW_VER}" ;; *) export
   esac
   echo 'i=0; while [ $i -lt 100 ] && [ ! -S "${XDG_RUNTIME_DIR}/wayland-0" ]; do sleep 0.1; i=$((i + 1)); done; sleep 0.5'
 } > /tmp/lumen-weston-start.sh
+# Sony's power manager runs /usr/bin/resume_run after every resume: it starts Sony's
+# Weston and menu ("An error has occurred" over Lumen). For this session it runs Lumen's
+# resume instead (bind mount from RAM, nothing on the eMMC changes), and it waits up to
+# 15 s (default 5) for apps_okay: closing a game with its save takes a few seconds.
+printf '#!/bin/sh\n/usr/bin/cpu_mode full 2>/dev/null\nsh /tmp/lumen-power.sh resume\n' > /tmp/lumen-resume_run
+chmod 755 /tmp/lumen-resume_run
+mount --bind /tmp/lumen-resume_run /usr/bin/resume_run && echo "resume_run: Lumen's for this session"
+for d in /dev/shm/power /data/power; do [ -d "$d" ] && echo 15 > "$d/apps_timeout"; done
 /usr/bin/wait_sdl
 
 # console buttons: POWER suspends (handshake with the system power manager),
@@ -274,6 +282,7 @@ if [ "${SESSION_RC}" = 12 ]; then   # Display settings changed: start over with 
 fi
 
 # 3. stock Sony menu (internal games); power button handled by Sony's power manager
+umount /usr/bin/resume_run 2>/dev/null   # Sony's resume again
 [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
 echo "starting stock menu"
 killall -s TERM sdl_display 2>/dev/null
