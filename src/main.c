@@ -1065,9 +1065,11 @@ static void game_free_tex(game_t *g)
 /* drawing                                                                   */
 static mat4 g_proj, g_view, g_vp, g_ortho;
 
+static void cost_add_3d(const mat4 *mvp, int mode);
 static void draw_quad_box(mat4 model, GLuint tex, const float tint[3], float alpha, int mode)
 {
    mat4 mvp = m4_mul(g_vp, model);
+   cost_add_3d(&mvp, mode);
    glUniformMatrix4fv(u_mvp, 1, GL_FALSE, mvp.m);
    glUniformMatrix4fv(u_model, 1, GL_FALSE, model.m);
    glUniform3fv(u_tint, 1, tint);
@@ -1271,6 +1273,31 @@ static void cost_add(float w, float h, int mode)
    if (vp[2] != g_dw) px *= (double)vp[2] * vp[3] / ((double)g_dw * g_dh);   /* offscreen FBO */
    if (glIsEnabled(GL_BLEND)) g_cost_px_blend += px; else g_cost_px_opaque += px;
    if (mode == 7 || mode == 8 || mode == 10 || mode == 5) g_cost_px_heavy += px;
+   g_cost_draws += 1;
+}
+
+/* 3D quads (unit square in model space): the projected area in device pixels. The box
+ * shader's heavy modes are the glass lid (4), the discs (5, 6), the marquee art and
+ * halo (7, 8) and the coin (9). */
+static void cost_add_3d(const mat4 *mvp, int mode)
+{
+   static const float cx[4] = { -0.5f, 0.5f, 0.5f, -0.5f }, cy[4] = { -0.5f, -0.5f, 0.5f, 0.5f };
+   const float *m = mvp->m;
+   float sx[4], sy[4], area = 0.0f;
+   double px;
+   int k;
+   if (!g_cost_on) return;
+   for (k = 0; k < 4; k++)
+   {
+      float x = m[0] * cx[k] + m[4] * cy[k] + m[12], y = m[1] * cx[k] + m[5] * cy[k] + m[13];
+      float w = m[3] * cx[k] + m[7] * cy[k] + m[15];
+      if (w < 0.01f) w = 0.01f;
+      sx[k] = clampf(x / w, -1.0f, 1.0f) * 0.5f * g_dw; sy[k] = clampf(y / w, -1.0f, 1.0f) * 0.5f * g_dh;
+   }
+   for (k = 0; k < 4; k++) area += sx[k] * sy[(k + 1) & 3] - sx[(k + 1) & 3] * sy[k];
+   px = fabs(area) * 0.5;
+   if (glIsEnabled(GL_BLEND)) g_cost_px_blend += px; else g_cost_px_opaque += px;
+   if (mode >= 4 && mode <= 9) g_cost_px_heavy += px;
    g_cost_draws += 1;
 }
 
@@ -2930,6 +2957,8 @@ int main(int argc, char **argv)
    while (running)
    {
       SDL_Event e; double t = now_s(); float dt = (float)(t - last);
+      double t_upd = t, t_pre = t;   /* launch trace: end of the update, start of the swap */
+      const double lp_px = g_cost_px_opaque + g_cost_px_blend, lp_heavy = g_cost_px_heavy;
       platform_t *pl;
       if (g_lib_rescan && play_t < 0)
       {
@@ -3260,6 +3289,7 @@ int main(int argc, char **argv)
          spring_step(&plat_x, 0, 120, 16, dt);
 
          /* ---- render ---- */
+         t_upd = now_s();
          glViewport(0, 0, g_dw, g_dh);
          glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
          glClearDepthf(1.0f);
@@ -3462,6 +3492,7 @@ int main(int argc, char **argv)
       if (g_ntshot) test_shots(t - t0);
       {
          double pre = now_s();
+         t_pre = pre;
          SDL_GL_SwapWindow(win);
          b_draw += pre - t; b_swap += now_s() - pre;
          if (frames == 30)
@@ -3471,6 +3502,13 @@ int main(int argc, char **argv)
          }
       }
       frames++;
+      if (g_cost_on && play_t >= 0)
+      {  /* launch trace: one line per frame (pt, frame time, CPU issuing, swap, cost) */
+         double fpx = g_cost_px_opaque + g_cost_px_blend, fh = g_cost_px_heavy;
+         logf_("launch frame: pt %.3f dt %.1f ms, update %.1f ms, draw %.1f ms, swap %.1f ms, %.2f Mpx (heavy %.2f)",
+               t - play_t, dt * 1000.0, (t_upd - t) * 1000.0, (t_pre - t_upd) * 1000.0, (now_s() - t_pre) * 1000.0,
+               (fpx - lp_px) / 1e6, (fh - lp_heavy) / 1e6);
+      }
       log_tick();
       {  /* bench: <home>/bench present -> two rounds (vsync on, then off: frame rates
           * not quantised to 60/30/20), each turning one more thing off per step; per
