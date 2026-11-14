@@ -206,10 +206,10 @@ case "${STARTED}" in psc) export LUMEN_COMPOSITOR="weston${PW_VER}" ;; *) export
 # RESET quits a running game. Only hand POWER to the system if the daemon runs.
 rm -f /data/power/prepare_suspend /data/power/apps_okay
 BUTTONS_PID=""
-# POWER button actions (power.sh, run by lumen-buttons): copied to RAM, since "off"
-# unmounts the stick; the session shells and USB writers are recorded for it
+# POWER (Sony's suspend): power.sh, run by lumen-buttons, pauses the processes that use
+# the USB stick; it runs from RAM and the stick's writers are recorded for it
 cp "${LUMEN_HOME}/power.sh" /tmp/lumen-power.sh 2>/dev/null
-echo $$ > /tmp/lumen-session.pids; : > /tmp/lumen-usb-writers.pids
+: > /tmp/lumen-usb-writers.pids
 if [ -x "${LUMEN_HOME}/lumen-buttons" ] || chmod +x "${LUMEN_HOME}/lumen-buttons" 2>/dev/null; then
   "${LUMEN_HOME}/lumen-buttons" --log "${LOG}/buttons.log" > /tmp/lumen-buttons.out 2>&1 &
   BUTTONS_PID=$!
