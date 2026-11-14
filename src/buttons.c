@@ -382,24 +382,40 @@ static int game_discs(void)
    return n > 1 ? n : 1;
    }
 }
-/* OPEN in a game: pause it and ask (lumen --dialog), then act on the answer */
+/* OPEN in a game: pause it and ask (lumen --dialog), then act on the answer:
+ * 0 continue, 2 quit, 10 + k switch to disc k. RetroArch has no "go to disc k" command:
+ * the disc in use is tracked in /tmp/lumen-disc-current (run.sh writes 1 at launch) and
+ * DISK_NEXT / DISK_PREV move the tray's selection by the difference. */
+static int read_int_file(const char *path, int def)
+{
+   FILE *f = fopen(path, "r"); int v = def;
+   if (f) { if (fscanf(f, "%d", &v) != 1) v = def; fclose(f); }
+   return v;
+}
 static void open_in_game(void)
 {
-   char cmd[700];
-   int discs = game_discs(), rc;
+   char cmd[700], kind[48];
+   int discs = game_discs(), cur = read_int_file("/tmp/lumen-disc-current", 1), rc;
+   if (cur < 1 || cur > discs) cur = 1;
+   if (discs > 1) snprintf(kind, sizeof(kind), "discs:%d:%d", discs, cur); else snprintf(kind, sizeof(kind), "game");
    ra_cmd("PAUSE_TOGGLE");
    snprintf(cmd, sizeof(cmd), "SDL_VIDEODRIVER=wayland XDG_RUNTIME_DIR=/run/user/0 %s/lumen --home %s --dialog %s"
-            " --log /tmp/lumen-dialog.log", g_home, g_home, discs > 1 ? "disc" : "game");
+            " --log /tmp/lumen-dialog.log", g_home, g_home, kind);
    signal(SIGCHLD, SIG_DFL);
    rc = system(cmd);
    signal(SIGCHLD, SIG_IGN);
    rc = WIFEXITED(rc) ? WEXITSTATUS(rc) : 0;
-   logf_("open: discs %d, answer %d (%s)", discs, rc, rc == 1 ? "change disc" : rc == 2 ? "exit" : "continue");
-   if (rc == 1)
+   logf_("open: discs %d (current %d), answer %d", discs, cur, rc);
+   if (rc > 10 && rc <= 10 + discs && rc - 10 != cur)
    {
+      int k = rc - 10, d = k - cur, s;
+      FILE *f;
       ra_cmd("DISK_EJECT_TOGGLE"); usleep(300000);
-      ra_cmd("DISK_NEXT"); usleep(300000);
+      for (s = 0; s < (d > 0 ? d : -d); s++) { ra_cmd(d > 0 ? "DISK_NEXT" : "DISK_PREV"); usleep(150000); }
+      usleep(150000);
       ra_cmd("DISK_EJECT_TOGGLE"); usleep(200000);
+      if ((f = fopen("/tmp/lumen-disc-current", "w"))) { fprintf(f, "%d\n", k); fclose(f); }
+      logf_("open: disc %d -> %d", cur, k);
       ra_cmd("PAUSE_TOGGLE");
    }
    else if (rc == 2) { ra_cmd("PAUSE_TOGGLE"); usleep(100000); ra_cmd("QUIT"); }

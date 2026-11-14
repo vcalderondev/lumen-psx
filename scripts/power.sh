@@ -41,6 +41,12 @@ suspend)
   say "suspend: game and frontend closed, stopping the compositor"
   killall -s TERM weston 2>/dev/null; wait_gone weston 30; killall -s KILL weston 2>/dev/null
   say "suspend: compositor stopped ($(pidof weston >/dev/null && echo STILL RUNNING || echo gone))"
+  # test switch: <home>/debug/rtc-wake makes the RTC wake the console after 20 s, to tell
+  # "POWER does not wake it" from "the resume itself hangs"
+  if [ -f "${HOME_DIR}/debug/rtc-wake" ]; then
+    echo 0 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null; echo +20 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null
+    say "suspend: RTC wake in 20 s ($(cat /sys/class/rtc/rtc0/wakealarm 2>/dev/null))"
+  fi
   say "suspend: pausing the log copiers, then apps_okay"
   for p in $(pids_of "${WRITERS}"); do kill -STOP "$p" 2>/dev/null; done
   sync
@@ -50,16 +56,18 @@ resume)
   # resume_count moves: the first one does it
   [ -f /tmp/lumen-suspending ] || exit 0
   mkdir /tmp/lumen-resuming 2>/dev/null || exit 0
+  # RAM only until the compositor is up (the stick may come back late or not at all):
+  # green LED = woke up and resumed; the steps are written to the stick afterwards
   echo 1 > /sys/class/leds/green/brightness 2>/dev/null
   echo 0 > /sys/class/leds/red/brightness 2>/dev/null
-  say "resume (${2:-?}): woke up, LEDs green, log copiers running"
-  for p in $(pids_of "${WRITERS}"); do kill -CONT "$p" 2>/dev/null; done
-  say "resume: starting the compositor"
+  R=/tmp/lumen-resume.log
+  echo "$(date +%T) resume (${2:-?}): woke up" > "$R"
   sh /tmp/lumen-weston-start.sh
-  say "resume: compositor $([ -S /run/user/0/wayland-0 ] && echo up || echo NOT UP)"
+  echo "$(date +%T) resume: compositor $([ -S /run/user/0/wayland-0 ] && echo up || echo NOT UP)" >> "$R"
+  for p in $(pids_of "${WRITERS}"); do kill -CONT "$p" 2>/dev/null; done
   rm -f /tmp/lumen-suspending; rmdir /tmp/lumen-resuming
-  { echo "--- power_manage"; tail -25 /tmp/power.log; echo "--- kernel"; dmesg | tail -120; } >> "${SLOG}" 2>/dev/null
-  sync
+  ( { cat "$R"; echo "--- mounts"; grep -E ' /media |fuse' /proc/mounts; echo "--- power_manage"; tail -25 /tmp/power.log
+      echo "--- kernel"; dmesg | tail -150; } >> "${SLOG}" 2>/dev/null; sync ) &
   ;;
 *)
   echo "usage: $0 suspend|resume" >&2; exit 2 ;;
