@@ -215,6 +215,8 @@ ARGS=""
 while true; do
   rm -f /tmp/lumen-launch
   # ARGS is a single word or empty (--attract / --focus-demo)
+  # keep the previous frontend log (benchmarks run before a game would be lost)
+  [ -s "${LOG}/lumen.log" ] && mv -f "${LOG}/lumen.log" "${LOG}/lumen-prev.log"
   SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland}" "${LUMEN_HOME}/lumen" \
     --home "${LUMEN_HOME}" --log "${LOG}/lumen.log" ${ARGS}
   rc=$?
