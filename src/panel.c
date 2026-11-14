@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/statvfs.h>
+#include <unistd.h>
 #include "lumen.h"
 #include "panel.h"
 #include "i18n.h"
@@ -23,7 +24,7 @@
 #define PH      596.0f
 #define PX0     ((W - PW) * 0.5f)
 #define PY0     44.0f
-#define ROW_H   58.0f
+#define ROW_H   48.0f
 #define ROWS_Y  132.0f       /* first row, relative to the section top */
 #define PAD     28.0f
 #define SLIDE_OFF 560.0f     /* s_slide when closed: drives the open/close motion */
@@ -57,16 +58,55 @@ static void draw_label(const label_t *l, float x, float y, const float c[4])
 /* ------------------------------------------------------------------------ */
 /* state                                                                     */
 /* root rows are the pages in this order (page_input() relies on it) */
-enum { P_ROOT, P_LANGUAGE, P_PROFILE, P_SCREENSAVER, P_SOUND, P_GRAPHICS, P_LIBRARY, P_ABOUT, P_COUNT };
+enum { P_ROOT, P_LANGUAGE, P_PROFILE, P_SCREENSAVER, P_SOUND, P_DISPLAY, P_GRAPHICS, P_LIBRARY, P_ABOUT, P_COUNT };
 static const char *const k_page_key[P_COUNT] = {
    "panel.title", "section.language", "section.profile", "section.screensaver", "section.sound",
-   "section.graphics", "section.library", "section.about"
+   "section.display", "section.graphics", "section.library", "section.about"
 };
 
 enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
-       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500, ID_INFO = 900 };
+       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500,
+       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_INFO = 900 };
+
+/* ---- Display page: output resolution and compositor, applied by boot.sh at the next
+ * boot (settings display / compositor / scanout). The compositors are the ones whose
+ * packages are installed in <home>/compositor/ (Sony's is always there). */
+static const char *const k_comp_id[] = { "stock", "weston6", "weston16" };
+static const char *const k_comp_key[] = { "display.comp_stock", "display.comp_w6", "display.comp_w16" };
+static int comp_available(int i)
+{
+   char p[400];
+   if (i == 0) return 1;
+   snprintf(p, sizeof(p), "%s/compositor/psc-weston-%s.tar.gz", g_home, i == 1 ? "6" : "16");
+   if (access(p, R_OK) == 0) return 1;
+   if (i == 1) { snprintf(p, sizeof(p), "%s/compositor/psc-weston.tar.gz", g_home); return access(p, R_OK) == 0; }
+   return 0;
+}
+/* the compositor setting as an index; unset = Weston 6 when installed (boot.sh's default) */
+static int comp_setting(void)
+{
+   const char *c = settings_get("compositor", "");
+   int i;
+   for (i = 0; i < 3; i++) if (!strcmp(c, k_comp_id[i]) && comp_available(i)) return i;
+   return comp_available(1) ? 1 : 0;
+}
+/* what is running now: boot.sh exports LUMEN_COMPOSITOR and LUMEN_DISPLAY */
+static int comp_in_use(void)
+{
+   const char *c = getenv("LUMEN_COMPOSITOR");
+   int i;
+   for (i = 0; c && i < 3; i++) if (!strcmp(c, k_comp_id[i])) return i;
+   return 0;
+}
+static int out_1080(void) { return !strcmp(settings_get("display", "720p"), "1080p"); }
+static int out_in_use_1080(void) { const char *d = getenv("LUMEN_DISPLAY"); return d ? !strcmp(d, "1080p") : g_ui_scale > 1.2f; }
+static int display_pending(void)
+{
+   return out_1080() != out_in_use_1080() || comp_setting() != comp_in_use();
+}
+static void restart_yes(void) { ui_request_reboot(); }
 
 typedef struct {
    int type, id, enabled, dim, check, enter, at_lo, at_hi;
@@ -212,6 +252,9 @@ static void page_build(void)
       if (r) r->enter = 1;
       r = row_add(R_ACTION, P_SOUND, tr("section.sound"), tr(music_on() ? "value.on" : "value.off"));
       if (r) r->enter = 1;
+      snprintf(v, sizeof(v), "%s  \xC2\xB7  %s", out_in_use_1080() ? "1080p" : "720p", tr(k_comp_key[comp_in_use()]));
+      r = row_add(R_ACTION, P_DISPLAY, tr("section.display"), v);
+      if (r) r->enter = 1;
       r = row_add(R_ACTION, P_GRAPHICS, tr("section.graphics"), NULL);
       if (r) r->enter = 1;
       r = row_add(R_ACTION, P_LIBRARY, tr("section.library"), NULL);
@@ -261,6 +304,27 @@ static void page_build(void)
       }
       row_add(R_ACTION, ID_SS_PREVIEW, tr("ss.preview"), NULL);
       snprintf(s_foot, sizeof(s_foot), "%s", tr("ss.note"));
+      break;
+   }
+   case P_DISPLAY:
+   {
+      int c = comp_setting(), hd = out_1080(), sc = settings_get_int("scanout", 1, 0, 1), k, lo = 1, hi = 1;
+      if ((r = row_add(R_CHOICE, ID_DSP_OUTPUT, tr("display.output"), hd ? "1080p" : "720p")))
+      { r->at_lo = !hd; r->at_hi = hd; }
+      for (k = c - 1; k >= 0; k--) if (comp_available(k)) lo = 0;
+      for (k = c + 1; k < 3; k++) if (comp_available(k)) hi = 0;
+      if ((r = row_add(R_CHOICE, ID_DSP_COMP, tr("display.compositor"), tr(k_comp_key[c]))))
+      { r->at_lo = lo; r->at_hi = hi; }
+      if ((r = row_add(R_CHOICE, ID_DSP_SCANOUT, tr("display.scanout"), tr(sc ? "value.on" : "value.off"))))
+      {
+         r->at_lo = !sc; r->at_hi = sc;
+         if (c == 0) { r->enabled = 0; r->dim = 1; r->why = "display.scanout_stock"; }
+      }
+      snprintf(v, sizeof(v), "%s  \xC2\xB7  %s", out_in_use_1080() ? "1080p" : "720p", tr(k_comp_key[comp_in_use()]));
+      row_add(R_INFO, ID_INFO, tr("display.in_use"), v);
+      if ((r = row_add(R_ACTION, ID_DSP_RESTART, tr("display.restart"), NULL)) && !display_pending())
+      { r->enabled = 0; r->dim = 1; r->why = "display.nothing_pending"; }
+      snprintf(s_foot, sizeof(s_foot), "%s", tr("display.note"));
       break;
    }
    case P_SOUND:
@@ -473,6 +537,10 @@ static void row_action(const row_t *r)
       trf(s_cbuf, sizeof(s_cbuf), "profile.delete_confirm", "name", profiles_display_name(profiles_active()), NULL);
       confirm_open(s_cbuf, delete_yes);
    }
+   else if (r->id == ID_DSP_RESTART)
+   {
+      confirm_open(tr("display.restart_confirm"), restart_yes);
+   }
    else if (r->id == ID_SS_PREVIEW)
    {
       panel_close();
@@ -519,6 +587,16 @@ static void row_change(const row_t *r, int dir)
       settings_set_int("music", dir > 0);
       ui_sound_changed();
       break;
+   case ID_DSP_OUTPUT:
+      settings_set("display", dir > 0 ? "1080p" : "720p");
+      break;
+   case ID_DSP_COMP:
+      for (i = comp_setting() + dir; i >= 0 && i < 3; i += dir)
+         if (comp_available(i)) { settings_set("compositor", k_comp_id[i]); break; }
+      break;
+   case ID_DSP_SCANOUT:
+      settings_set_int("scanout", dir > 0);
+      break;
    case ID_SND_VOLUME:
       i = music_volume() + dir * VOL_STEP;
       if (i >= 0 && i <= 100) { settings_set_int("music_volume", i); ui_sound_changed(); }
@@ -552,6 +630,8 @@ static void row_cycle(const row_t *r)
    case ID_SS_AFTER:  settings_set_int("screensaver_minutes", k_minutes[0]); break;
    case ID_SS_LENGTH: settings_set_int("demo_seconds", k_seconds[0]); break;
    case ID_SND_VOLUME: settings_set_int("music_volume", 0); ui_sound_changed(); break;
+   case ID_DSP_COMP:   /* wrap to the first installed compositor (Sony's) */
+      settings_set("compositor", k_comp_id[0]); break;
    default: row_change(r, -1); break;   /* Sí/No, Original/Mejorado */
    }
 }
