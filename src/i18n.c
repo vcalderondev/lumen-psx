@@ -13,7 +13,7 @@
 
 typedef struct { const char *k, *v; } entry_t;
 typedef struct { char code[16]; void *block; entry_t *e; int n; } lang_t;
-typedef struct { char code[16]; char name[48]; } lang_info_t;
+typedef struct { char code[16]; char name[48]; char main_profile[64]; } lang_info_t;
 
 static lang_info_t s_list[I18N_MAX_LANGS];
 static int         s_nlist;
@@ -126,6 +126,8 @@ int i18n_init(const char *home)
       if (lang_load(&tmp, li->code)) { logf_("i18n: cannot read %s/%s", s_dir, de->d_name); continue; }
       nm = lang_find(&tmp, "lang.name");
       snprintf(li->name, sizeof(li->name), "%s", nm ? nm : li->code);
+      nm = lang_find(&tmp, "profile.main");
+      snprintf(li->main_profile, sizeof(li->main_profile), "%s", nm ? nm : "");
       lang_free(&tmp);
       s_nlist++;
    }
@@ -170,6 +172,7 @@ const char *i18n_language(void) { return s_cur ? s_cur->code : ""; }
 int         i18n_count(void) { return s_nlist; }
 const char *i18n_code(int i) { return i >= 0 && i < s_nlist ? s_list[i].code : ""; }
 const char *i18n_name(int i) { return i >= 0 && i < s_nlist ? s_list[i].name : ""; }
+const char *i18n_main_profile_name(int i) { return i >= 0 && i < s_nlist ? s_list[i].main_profile : ""; }
 unsigned    i18n_generation(void) { return s_gen; }
 
 const char *tr(const char *key)

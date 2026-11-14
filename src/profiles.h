@@ -16,7 +16,7 @@ const profile_t *profiles_get(int i);                    /* 0 = main, others sor
 int              profiles_find(const char *id);          /* index or -1 */
 const profile_t *profiles_active(void);                  /* from settings "profile", falls back to main */
 const char      *profiles_display_name(const profile_t *p);  /* name or tr("profile.main") */
-int              profiles_set_active(const char *id);    /* settings_set + settings_save; 0 / -1 unknown / -3 I/O */
+int              profiles_set_active(const char *id);    /* settings_set only (saved on panel close / exit); 0 / -1 unknown */
 int              profiles_create(const char *name, int color, char *id_out, size_t n);
                  /* 0 ok, -1 full, -2 name taken, -3 I/O; creates saves/ and states/.
                     color outside 0..7 = first colour not used by another profile */

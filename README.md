@@ -100,7 +100,9 @@ as `key=value` lines (`version=2`, `core`, `content`, `system`, `title`, `profil
 `mode`, `demo_seconds`). `run.sh` parses it (the old two-line form still works),
 picks the profile's save folders and writes them to `/tmp/lumen-ra-extra.cfg`, whose
 path is exported as `LUMEN_RA_EXTRA`; the default `run_retroarch()` passes it with
-`--appendconfig`, and a `lumen.conf` override must append it to its config too.
+`--appendconfig`, and a `lumen.conf` override must pass it with `--appendconfig` too
+(RetroArch keeps the first copy of a key within one file, so concatenating it after
+`retroarch.cfg` does not work).
 
 ## Screensaver and game demos
 

@@ -63,8 +63,9 @@ void   label_set(label_t *l, TTF_Font *f, const char *s);   /* re-renders only w
 void   label_free(label_t *l);
 void   gl_use_2d(void);        /* glUseProgram(g_prog_2d) + sampler 0 */
 
-/* one frame of navigation for UI modules: press edges, with auto-repeat on the directions */
-typedef struct { int up, down, left, right, confirm, back, options, start, l1, r1; } ui_nav_t;
+/* one frame of navigation for UI modules: press edges, with auto-repeat on the directions.
+ * back = Circle or Square; erase = Square alone (the keyboard tells them apart) */
+typedef struct { int up, down, left, right, confirm, back, erase, options, start, l1, r1; } ui_nav_t;
 
 /* UI callbacks implemented in main.c */
 void   ui_language_changed(void);   /* rebuild text baked into textures after i18n_set_language() */

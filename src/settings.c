@@ -2,6 +2,7 @@
  * Static storage only; every pair read is kept and written back, so unknown keys survive. */
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,7 +130,18 @@ void settings_set_int(const char *key, int value)
 
 int settings_dirty(void) { return s_dirty; }
 
-/* atomic: tmp file -> fsync -> rename over settings.ini -> sync */
+/* make a rename / mkdir inside dir durable without a global sync() (which would flush
+ * every dirty page of every mounted filesystem on the render thread) */
+int settings_fsync_dir(const char *dir)
+{
+   int fd = open(dir, O_RDONLY | O_DIRECTORY), rc;
+   if (fd < 0) return -1;
+   rc = fsync(fd);
+   close(fd);
+   return rc;
+}
+
+/* atomic: tmp file -> fsync -> rename over settings.ini -> fsync of the folder */
 int settings_save(void)
 {
    char tmp[320];
@@ -150,7 +162,12 @@ int settings_save(void)
       unlink(tmp);
       return -1;
    }
-   sync();
+   {
+      char dir[300];
+      char *slash;
+      snprintf(dir, sizeof(dir), "%s", s_path);
+      if ((slash = strrchr(dir, '/'))) { *slash = 0; settings_fsync_dir(dir[0] ? dir : "/"); }
+   }
    s_dirty = 0;
    logf_("settings: saved %d keys", s_n);
    return 0;
