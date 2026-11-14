@@ -1078,7 +1078,9 @@ static GLuint g_disc_tex;   /* art for the disc being launched (0 = generic CD) 
 static mat4   g_disc_start; /* world matrix of the disc in the tray (launch)       */
 static int    g_detail = 1;  /* 0: skip expensive effects (far cases)               */
 /* effect switches (all on; the bench mode turns them off one at a time) */
-static int    g_fx_vignette = 1, g_fx_refl = 1, g_fx_glass = 1, g_fx_sides = 1, g_fx_text = 1;
+static int    g_fx_refl = 1, g_fx_glass = 1, g_fx_sides = 1, g_fx_text = 1;
+static int    g_fx_shadows = 1, g_fx_bg = 1;   /* bench switches: dashboard shadows, background layers */
+static float  g_bg_dim = 0.45f;                /* scrim opacity baked into backgrounds (setting bg_dim) */
 static GLuint g_vig_tex, g_spot_tex;   /* baked full-screen vignette / spotlight masks */
 static int    g_dash_profile_dirty = 1; /* dashboard: avatar + play statistics to reload */
 
@@ -1279,6 +1281,7 @@ static void draw_shape(float x, float y, float w, float h, float radius, float s
 static void draw_shadow_ex(float x, float y, float w, float h, float radius, float blur, float dy, float a, int cut)
 {
    const float c[4] = { 0, 0, 0, a };
+   if (!g_fx_shadows) return;
    const float k = g_ui_scale;
    glUniform4f(u2_rect, (w + 2 * blur) * k, (h + 2 * blur) * k, radius * k, 0.0f);
    glUniform4f(u2_aux0, blur * k, cut ? 1.0f : 0.0f, dy * k, 0.0f);
@@ -1404,6 +1407,37 @@ static char         bg_done_path[512];
 static int          bg_done_failed;   /* the request bg_done_path could not be decoded */
 static int          bg_quit;
 
+/* The legibility scrim (FS_2D mode 8) baked into a decoded background, so drawing it
+ * costs one opaque pass instead of two blended ones. The scrim is separable:
+ * kept = (1 - left(u)) * (1 - bottom(v)) * (1 - top(v)) * (1 - dim). Backgrounds are
+ * 16:9 and drawn cover-fit, so image space ~ screen space. */
+static float sstep(float e0, float e1, float x) { float t = (x - e0) / (e1 - e0); t = t < 0 ? 0 : (t > 1 ? 1 : t); return t * t * (3 - 2 * t); }
+static void bake_scrim(SDL_Surface *c, float dim)
+{
+   int x, y;
+   unsigned short *fx = malloc(sizeof(unsigned short) * c->w);
+   if (!fx) return;
+   for (x = 0; x < c->w; x++)
+   {
+      float l = 1.0f - sstep(0.0f, 0.64f, (x + 0.5f) / c->w);
+      l = 0.70f * l * (0.55f + 0.45f * l);
+      fx[x] = (unsigned short)((1.0f - l) * 256.0f);
+   }
+   for (y = 0; y < c->h; y++)
+   {
+      float v = (y + 0.5f) / c->h;
+      float fy = (1.0f - 0.60f * sstep(0.62f, 1.0f, v)) * (1.0f - 0.45f * (1.0f - sstep(0.0f, 0.24f, v))) * (1.0f - dim);
+      unsigned k = (unsigned)(fy * 256.0f);
+      unsigned char *p = (unsigned char *)c->pixels + y * c->pitch;
+      for (x = 0; x < c->w; x++, p += 4)
+      {
+         unsigned m = (fx[x] * k) >> 8;
+         p[0] = (unsigned char)((p[0] * m) >> 8); p[1] = (unsigned char)((p[1] * m) >> 8); p[2] = (unsigned char)((p[2] * m) >> 8);
+      }
+   }
+   free(fx);
+}
+
 static int bg_worker(void *unused)
 {
    (void)unused;
@@ -1418,6 +1452,7 @@ static int bg_worker(void *unused)
       SDL_UnlockMutex(bg_mx);
       s = path[0] ? IMG_Load(path) : NULL;
       if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
+      if (c) bake_scrim(c, g_bg_dim);
       SDL_LockMutex(bg_mx);
       if (bg_done) SDL_FreeSurface(bg_done);
       bg_done = c;
@@ -1795,14 +1830,22 @@ static void hints_draw(int set, float y, float alpha)
  * game's cover (gen, palette copied when the layer is made). The next layer crossfades
  * over the current one in 0.6 s; a layer pushed meanwhile waits (only the newest), so a
  * crossfade is never cut short. */
-typedef struct { GLuint tex; int w, h; int gen; float a[3], acc[3]; } bgtex_t;
+typedef struct { GLuint tex; int w, h; int gen; float a[3], acc[3]; GLuint gfbo, gtex; } bgtex_t;
+#define GEN_W 640    /* generated backgrounds render at 640x360 and are scaled up: */
+#define GEN_H 360    /* smooth gradients, a tenth of the pixels of a 1080p pass */
 static bgtex_t bg_cur, bg_next, bg_pending;
 static float   bg_mix = 1.0f;          /* 0 -> showing cur, 1 -> next done */
 static char    bg_shown[512];          /* key of the background we want: path or "gen:<i>" */
 static int     bg_game = -1;           /* game of the last request (fallback when its image fails) */
 
 static int  bg_empty(const bgtex_t *l) { return !l->tex && !l->gen; }
-static void bg_clear(bgtex_t *l) { if (l->tex) glDeleteTextures(1, &l->tex); memset(l, 0, sizeof(*l)); }
+static void bg_clear(bgtex_t *l)
+{
+   if (l->tex) glDeleteTextures(1, &l->tex);
+   if (l->gtex) glDeleteTextures(1, &l->gtex);
+   if (l->gfbo) glDeleteFramebuffers(1, &l->gfbo);
+   memset(l, 0, sizeof(*l));
+}
 
 static void bg_push(bgtex_t l)
 {
@@ -1855,11 +1898,14 @@ static void bg_poll_upload(void)
    bg_push(l);
 }
 
-/* draw a layer: images "cover"-fitted with a slow drift; generated ones from their palette */
-static void bg_draw(const bgtex_t *b, float alpha, double t)
+/* draw a layer: images "cover"-fitted with a slow drift (scrim already baked in);
+ * generated ones from their palette, rendered with the scrim into a small FBO */
+static void bg_draw(bgtex_t *b, float alpha, double t)
 {
    const float c[4] = { 1, 1, 1, alpha };
-   if (alpha <= 0.001f) return;
+   int opaque = alpha >= 0.999f;
+   if (alpha <= 0.001f || !g_fx_bg) return;
+   if (opaque) glDisable(GL_BLEND);
    if (b->tex)
    {
       float sx = (float)W / b->w, sy = (float)H / b->h, sc, w, h;
@@ -1869,8 +1915,23 @@ static void bg_draw(const bgtex_t *b, float alpha, double t)
    }
    else if (b->gen)
    {
+      const float one[4] = { 1, 1, 1, 1 };
       float a[3], acc[3], base[3];
       int k;
+      if (!b->gfbo)
+      {
+         glGenTextures(1, &b->gtex);
+         glBindTexture(GL_TEXTURE_2D, b->gtex);
+         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GEN_W, GEN_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+         glGenFramebuffers(1, &b->gfbo);
+         glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, b->gtex, 0);
+         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) logf_("bg: generated FBO incomplete");
+      }
       memcpy(a, b->a, sizeof(a)); memcpy(acc, b->acc, sizeof(acc));
       for (k = 0; k < 3; k++)
       {  /* A a bit more saturated around its mean; base = A darkened */
@@ -1879,13 +1940,24 @@ static void bg_draw(const bgtex_t *b, float alpha, double t)
          base[k] = a[k] * 0.22f + 0.015f;
       }
       for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
+      glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
+      glViewport(0, 0, GEN_W, GEN_H);
+      glDisable(GL_BLEND);
       glUniform4f(u2_rect, (float)(0.80 + 0.06 * sin(t * 0.314)), (float)(0.20 + 0.06 * cos(t * 0.271)),
                            (float)(0.22 + 0.06 * cos(t * 0.231)), (float)(0.88 + 0.05 * sin(t * 0.293)));
       glUniform4f(u2_aux0, base[0], base[1], base[2], 0);
       glUniform4f(u2_aux1, a[0], a[1], a[2], 0);
       glUniform4f(u2_aux2, acc[0], acc[1], acc[2], 0);
-      draw_2d(0, 0, 0, W, H, c, 7);
+      draw_2d(0, 0, 0, W, H, one, 7);
+      glEnable(GL_BLEND);
+      glUniform4f(u2_aux0, g_bg_dim, 0, 0, 0);
+      draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glViewport(0, 0, g_dw, g_dh);
+      if (opaque) glDisable(GL_BLEND);
+      draw_2d(b->gtex, 0, H, W, -H, c, 0);   /* FBO rows are bottom-up */
    }
+   if (opaque) glEnable(GL_BLEND);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2778,13 +2850,10 @@ int main(int argc, char **argv)
              * legibility overlay (left side, top and bottom bands) in one pass */
             float e = bg_mix * bg_mix * (3 - 2 * bg_mix);
             const float ov[4] = { 1, 1, 1, 1 };
-            bg_draw(&bg_cur, 1.0f, t);
+            (void)ov;
+            g_bg_dim = settings_get_int("bg_dim", 45, 0, 90) / 100.0f;
+            bg_draw(&bg_cur, 1.0f, t);   /* opaque: the scrim is baked into both kinds of layer */
             if (!bg_empty(&bg_next)) bg_draw(&bg_next, e, t);
-            if (g_fx_vignette)
-            {
-               glUniform4f(u2_aux0, settings_get_int("bg_dim", 45, 0, 90) / 100.0f, 0, 0, 0);
-               draw_2d(0, 0, 0, W, H, ov, 8);
-            }
          }
          if (g_fx_text && !covered)
          {  /* dashboard UI: dimmed under the panel, gone in the attract scene, fading out
@@ -2963,7 +3032,7 @@ int main(int argc, char **argv)
       log_tick();
       {  /* bench: <home>/bench present -> measure with one effect off at a time */
          static int bench = -1, step; static double bt, bframes;
-         static const char *names[] = { "all", "no-vignette", "no-reflection", "no-glass", "no-side-cases", "no-text", "bare" };
+         static const char *names[] = { "all", "no-shadows", "no-side-tiles", "no-ui", "clear-only" };
          if (bench < 0)
          {
             char bp[300]; snprintf(bp, sizeof(bp), "%s/bench", g_home);
@@ -2974,11 +3043,13 @@ int main(int argc, char **argv)
          {
             if (step >= 0) logf_("bench %-14s %.1f fps", names[step], bframes / 2.5);
             step++;
-            if (step >= (int)(sizeof(names) / sizeof(names[0]))) { bench = 2; g_fx_vignette = g_fx_refl = g_fx_glass = g_fx_sides = g_fx_text = 1; logf_("bench: done"); }
+            if (step >= (int)(sizeof(names) / sizeof(names[0])))
+            { bench = 2; g_fx_shadows = g_fx_sides = g_fx_text = g_fx_bg = 1; logf_("bench: done"); }
             else
             {
-               g_fx_vignette = step != 1 && step != 6; g_fx_refl = step != 2 && step != 6; g_fx_glass = step != 3 && step != 6;
-               g_fx_sides = step != 4 && step != 6;    g_fx_text = step != 5 && step != 6;
+               /* each step turns one more thing off: shadows, side tiles, the dashboard UI
+                * (text, tabs, tiles), then the background (clear + help bar only) */
+               g_fx_shadows = step < 1; g_fx_sides = step < 2; g_fx_text = step < 3; g_fx_bg = step < 4;
                bt = t + 2.5; bframes = 0;
             }
          }
