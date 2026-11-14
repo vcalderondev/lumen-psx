@@ -67,7 +67,7 @@ typedef struct {
    char content[512], cover[512], bg[512];
    int platform;
    /* runtime */
-   GLuint tex, back_tex;
+   GLuint tex, back_tex, spine_tex;
    int tex_state;              /* 0 none, 1 loaded, -1 failed/placeholder */
    float col[3];               /* average cover colour */
    spring x, z, ry, sc, al;
@@ -194,7 +194,7 @@ static void build_platform_index(void)
 /* ------------------------------------------------------------------------ */
 /* GL resources                                                              */
 static GLuint g_prog_box, g_prog_2d, g_vbo_quad, g_vao_quad;
-static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light;
+static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam;
 static GLint  u2_mvp, u2_tex, u2_color, u2_mode;
 static GLuint g_white;
 static TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
@@ -206,23 +206,43 @@ static const char *VS_BOX =
    "out vec2 v_uv; out vec3 v_n; out vec3 v_w;\n"
    "void main(){ v_uv=uv; v_n=mat3(model)*nrm; v_w=(model*vec4(pos,1.0)).xyz; gl_Position=mvp*vec4(pos,1.0); }\n";
 
-/* mode 0: lit cover face, 1: lit flat colour (edges), 2: floor reflection */
+/* modes: 0 lit texture (insert, back card), 1 lit flat colour (tray plastic),
+ *        2 floor reflection, 3 black spine with printed title, 4 clear glass lid */
 static const char *FS_BOX =
    "#version 300 es\n"
    "precision mediump float;\n"
    "in vec2 v_uv; in vec3 v_n; in vec3 v_w;\n"
-   "uniform sampler2D tex; uniform vec3 tint; uniform float alpha; uniform int mode; uniform vec3 light;\n"
+   "uniform sampler2D tex; uniform vec3 tint; uniform float alpha; uniform int mode;\n"
+   "uniform vec3 light; uniform vec3 cam;\n"
    "out vec4 frag;\n"
    "void main(){\n"
-   "  vec3 base = (mode==1) ? tint : texture(tex, v_uv).rgb * tint;\n"
-   "  if (mode==2) { float f = v_uv.y; frag = vec4(base, alpha * f * f * 0.22); return; }\n"
    "  vec3 n = normalize(v_n);\n"
    "  vec3 l = normalize(light);\n"
-   "  vec3 v = normalize(vec3(0.0, 0.35, 4.2) - v_w);\n"
-   "  float diff = 0.55 + 0.45 * max(dot(n, l), 0.0);\n"
-   "  float spec = pow(max(dot(reflect(-l, n), v), 0.0), 28.0) * 0.30;\n"
-   "  float sheen = smoothstep(0.85, 1.0, 1.0 - abs(v_uv.x + v_uv.y * 0.35 - 0.55 - n.x * 0.6)) * 0.10;\n"
-   "  frag = vec4(base * diff + vec3(spec + sheen), alpha);\n"
+   "  vec3 v = normalize(cam - v_w);\n"
+   "  float ndl = max(dot(n, l), 0.0);\n"
+   "  if (mode==2) { vec3 c = texture(tex, v_uv).rgb * tint; float f = smoothstep(0.62, 1.0, v_uv.y);\n"
+   "                 frag = vec4(c, alpha * f * f * 0.20); return; }\n"
+   "  if (mode==4) {\n"
+   "    float ndv = clamp(abs(dot(n, v)), 0.0, 1.0);\n"
+   "    float fres = 0.04 + 0.96 * pow(1.0 - ndv, 4.0);\n"
+   "    vec3 r = reflect(-v, n);\n"
+   "    float band = smoothstep(0.45, 0.95, r.y) * 0.45;\n"
+   "    float d = v_uv.x - (1.0 - v_uv.y) * 0.55 - 0.18 + r.x * 0.9;\n"
+   "    float streak = exp(-d * d * 60.0) * 0.30 + exp(-(d - 0.16) * (d - 0.16) * 260.0) * 0.12;\n"
+   "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 70.0) * 0.7;\n"
+   "    vec2 e = min(v_uv, 1.0 - v_uv);\n"
+   "    float rim = 1.0 - smoothstep(0.0, 0.016, min(e.x, e.y));\n"
+   "    float hinge = 1.0 - step(0.088, v_uv.x);\n"
+   "    float ridges = smoothstep(0.009, 0.0, abs(v_uv.x - 0.020)) + smoothstep(0.009, 0.0, abs(v_uv.x - 0.072));\n"
+   "    float a = 0.035 + fres * 0.45 + band * 0.35 + streak + spec + rim * 0.40 + ridges * 0.40 + hinge * 0.08;\n"
+   "    frag = vec4(vec3(0.93, 0.96, 1.0), clamp(a, 0.0, 0.92) * alpha); return; }\n"
+   "  vec3 base;\n"
+   "  if (mode==1) base = tint;\n"
+   "  else if (mode==3) { float t = texture(tex, vec2(1.0 - v_uv.y, v_uv.x)).a; base = mix(vec3(0.030, 0.030, 0.036), vec3(0.90), t); }\n"
+   "  else base = texture(tex, v_uv).rgb * tint;\n"
+   "  float diff = 0.50 + 0.50 * ndl;\n"
+   "  float spec = pow(max(dot(reflect(-l, n), v), 0.0), (mode==0) ? 18.0 : 40.0) * ((mode==0) ? 0.10 : 0.35);\n"
+   "  frag = vec4(base * diff + vec3(spec), alpha);\n"
    "}\n";
 
 static const char *VS_2D =
@@ -240,6 +260,7 @@ static const char *FS_2D =
    "  if (mode==1) { vec2 d = abs(v_uv - 0.5) * 2.0; float r = length(max(d - vec2(0.82, 0.0), 0.0)) ;\n"
    "                 float a = 1.0 - smoothstep(0.96, 1.0, max(d.y, r)); frag = vec4(color.rgb, color.a * a); return; }\n"
    "  if (mode==2) { float d = length((v_uv - 0.5) * vec2(1.6, 1.0)); frag = vec4(0.0,0.0,0.0, color.a * smoothstep(0.35, 0.95, d)); return; }\n"
+   "  if (mode==3) { float d = length((v_uv - 0.5) * 2.0); frag = vec4(color.rgb, color.a * pow(clamp(1.0 - d, 0.0, 1.0), 2.2)); return; }\n"
    "  frag = t * color;\n"
    "}\n";
 
@@ -286,6 +307,7 @@ static void gl_setup(void)
    u_alpha = glGetUniformLocation(g_prog_box, "alpha");
    u_mode = glGetUniformLocation(g_prog_box, "mode");
    u_light = glGetUniformLocation(g_prog_box, "light");
+   u_cam = glGetUniformLocation(g_prog_box, "cam");
    g_prog_2d = link_prog(VS_2D, FS_2D);
    u2_mvp = glGetUniformLocation(g_prog_2d, "mvp");
    u2_tex = glGetUniformLocation(g_prog_2d, "tex");
@@ -385,6 +407,30 @@ static GLuint card_tex(const game_t *g, int back)
    return t;
 }
 
+/* Spine print: the title in white on a transparent strip (sampled rotated). */
+static GLuint spine_tex(const game_t *g)
+{
+   SDL_Color white = { 255, 255, 255, 255 };
+   SDL_Surface *strip, *ts;
+   SDL_Rect r; GLuint t;
+   if (!g_font_small) return 0;
+   strip = SDL_CreateRGBSurface(0, 512, 48, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+   if (!strip) return 0;
+   SDL_FillRect(strip, NULL, SDL_MapRGBA(strip->format, 0, 0, 0, 0));
+   ts = TTF_RenderUTF8_Blended(g_font_small, g->title, white);
+   if (ts)
+   {
+      SDL_SetSurfaceBlendMode(ts, SDL_BLENDMODE_NONE);
+      r.w = ts->w > 470 ? 470 : ts->w; r.h = ts->h > 46 ? 46 : ts->h;
+      r.x = 24; r.y = (48 - r.h) / 2;
+      SDL_BlitSurface(ts, NULL, strip, &r);
+      SDL_FreeSurface(ts);
+   }
+   t = surface_to_tex(strip, 1, NULL);
+   SDL_FreeSurface(strip);
+   return t;
+}
+
 static void game_load_tex(game_t *g)
 {
    SDL_Surface *s;
@@ -406,13 +452,15 @@ static void game_load_tex(game_t *g)
       g->tex_state = -1;
    }
    g->back_tex = card_tex(g, 1);
+   g->spine_tex = spine_tex(g);
 }
 
 static void game_free_tex(game_t *g)
 {
    if (g->tex) glDeleteTextures(1, &g->tex);
    if (g->back_tex) glDeleteTextures(1, &g->back_tex);
-   g->tex = g->back_tex = 0;
+   if (g->spine_tex) glDeleteTextures(1, &g->spine_tex);
+   g->tex = g->back_tex = g->spine_tex = 0;
    g->tex_state = 0;
 }
 
@@ -432,41 +480,52 @@ static void draw_quad_box(mat4 model, GLuint tex, const float tint[3], float alp
    glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
-#define CASE_D 0.11f   /* jewel case thickness */
-#define SPINE  0.10f
+/* PS1 jewel case, height 1.0: 142 x 125 x 10 mm -> width 1.136, depth 0.08.
+ * Square paper insert on the right, hinge strip on the left, black tray, glass lid. */
+#define CASE_W  1.136f
+#define CASE_D  0.080f
+#define HINGE   0.105f
+#define INSET_Z 0.012f
+
+static void case_part(mat4 base, float x, float y, float z, float ry, float rx, float sx, float sy,
+                      GLuint tex, const float tint[3], float alpha, int mode)
+{
+   mat4 m = m4_mul(base, m4_mul(m4_translate(x, y, z), m4_mul(m4_rot_y(ry), m4_mul(m4_rot_x(rx), m4_scale(sx, sy, 1)))));
+   draw_quad_box(m, tex, tint, alpha, mode);
+}
 
 static void draw_case(const game_t *g, mat4 base, float alpha, float flip)
 {
    static const float one[3] = { 1, 1, 1 };
-   float edge[3], spine[3];
-   mat4 m;
-   edge[0] = g->col[0] * 0.55f + 0.05f; edge[1] = g->col[1] * 0.55f + 0.05f; edge[2] = g->col[2] * 0.55f + 0.06f;
-   spine[0] = g->col[0] * 0.75f; spine[1] = g->col[1] * 0.75f; spine[2] = g->col[2] * 0.75f;
-   base = m4_mul(base, m4_rot_y(flip * (float)M_PI));
-   /* front */
-   m = m4_mul(base, m4_translate(0, 0, CASE_D * 0.5f));
-   draw_quad_box(m, g->tex, one, alpha, 0);
-   /* back */
-   m = m4_mul(base, m4_mul(m4_translate(0, 0, -CASE_D * 0.5f), m4_rot_y((float)M_PI)));
-   draw_quad_box(m, g->back_tex, one, alpha, 0);
-   /* spine (left, -X) */
-   m = m4_mul(base, m4_mul(m4_translate(-0.5f, 0, 0), m4_mul(m4_rot_y(-(float)M_PI / 2), m4_scale(CASE_D, 1, 1))));
-   draw_quad_box(m, 0, spine, alpha, 1);
-   /* right edge */
-   m = m4_mul(base, m4_mul(m4_translate(0.5f, 0, 0), m4_mul(m4_rot_y((float)M_PI / 2), m4_scale(CASE_D, 1, 1))));
-   draw_quad_box(m, 0, edge, alpha, 1);
-   /* top */
-   m = m4_mul(base, m4_mul(m4_translate(0, 0.5f, 0), m4_mul(m4_rot_x(-(float)M_PI / 2), m4_scale(1, CASE_D, 1))));
-   draw_quad_box(m, 0, edge, alpha, 1);
+   static const float tray[3] = { 0.045f, 0.045f, 0.052f };
+   static const float edge[3] = { 0.16f, 0.17f, 0.19f };
+   const float hw = CASE_W * 0.5f, hd = CASE_D * 0.5f, PI = (float)M_PI;
+   const float ins_l = -hw + HINGE, ins_r = hw - 0.018f, ins_w = ins_r - ins_l;
+   base = m4_mul(base, m4_rot_y(flip * PI));
+
+   /* opaque: back card, tray edges, spine, insert, hinge strip */
+   case_part(base, 0, 0, -hd, PI, 0, CASE_W, 1.0f, g->back_tex, one, alpha, 0);
+   case_part(base, hw, 0, 0, PI / 2, 0, CASE_D, 1.0f, 0, edge, alpha, 1);
+   case_part(base, 0, 0.5f, 0, 0, -PI / 2, CASE_W, CASE_D, 0, edge, alpha, 1);
+   case_part(base, 0, -0.5f, 0, 0, PI / 2, CASE_W, CASE_D, 0, edge, alpha, 1);
+   case_part(base, -hw, 0, 0, -PI / 2, 0, CASE_D, 1.0f, g->spine_tex, one, alpha, 3);
+   case_part(base, (ins_l + ins_r) * 0.5f, 0, hd - INSET_Z, 0, 0, ins_w, 0.972f, g->tex, one, alpha, 0);
+   case_part(base, -hw + HINGE * 0.5f, 0, hd - INSET_Z - 0.002f, 0, 0, HINGE, 1.0f, 0, tray, alpha, 1);
+
+   /* transparent: glass lid (no depth writes so the insert stays visible) */
+   glDepthMask(GL_FALSE);
+   case_part(base, 0, 0, hd, 0, 0, CASE_W, 1.0f, 0, one, alpha, 4);
+   glDepthMask(GL_TRUE);
 }
 
-/* Mirror the front face about the floor plane under the case (y = -0.5*scale). */
+/* Mirror the insert about the floor plane under the case (y = -0.5*scale). */
 static void draw_reflection(const game_t *g, mat4 base, float alpha)
 {
    static const float one[3] = { 1, 1, 1 };
+   const float hw = CASE_W * 0.5f, ins_l = -hw + HINGE, ins_r = hw - 0.018f;
    float floor_y = -0.5f * g->sc.x - 0.01f;
    mat4 m = m4_mul(m4_translate(0, 2.0f * floor_y, 0), m4_mul(m4_scale(1, -1, 1), base));
-   m = m4_mul(m, m4_translate(0, 0, CASE_D * 0.5f));
+   m = m4_mul(m, m4_mul(m4_translate((ins_l + ins_r) * 0.5f, 0, CASE_D * 0.5f), m4_scale(ins_r - ins_l, 0.972f, 1)));
    draw_quad_box(m, g->tex, one, alpha, 2);
 }
 
@@ -545,6 +604,137 @@ static void bg_request(const char *path)
    SDL_UnlockMutex(bg_mx);
 }
 
+/* ------------------------------------------------------------------------ */
+/* input: game controllers + raw joysticks mapped to logical actions         */
+enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_START, IN_SELECT, IN_COUNT };
+static int           in_down[IN_COUNT];     /* current state                  */
+static int           in_pressed[IN_COUNT];  /* edge this frame                */
+static SDL_JoystickID in_ctrl_ids[8];       /* joysticks opened as controllers */
+static int           in_nctrl;
+
+static void in_set(int b, int down)
+{
+   if (b < 0) return;
+   if (down && !in_down[b]) in_pressed[b] = 1;
+   in_down[b] = down;
+}
+
+static int in_is_ctrl(SDL_JoystickID id)
+{
+   int i;
+   for (i = 0; i < in_nctrl; i++) if (in_ctrl_ids[i] == id) return 1;
+   return 0;
+}
+
+static void in_open(int index)
+{
+   char guid[64];
+   SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(index), guid, sizeof(guid));
+   if (SDL_IsGameController(index))
+   {
+      SDL_GameController *c = SDL_GameControllerOpen(index);
+      if (c && in_nctrl < 8)
+      {
+         in_ctrl_ids[in_nctrl++] = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c));
+         logf_("controller %d: %s (guid %s)", index, SDL_GameControllerName(c), guid);
+         return;
+      }
+   }
+   if (SDL_JoystickOpen(index))
+      logf_("joystick %d (raw): %s (guid %s)", index, SDL_JoystickNameForIndex(index), guid);
+   else
+      logf_("joystick %d failed: %s", index, SDL_GetError());
+}
+
+/* Raw button layout of the PlayStation Classic pad (and most PS-style pads):
+ * 0 triangle, 1 circle, 2 cross, 3 square, 4 L2, 5 R2, 6 L1, 7 R1, 8 select, 9 start */
+static int in_raw_button(int b)
+{
+   switch (b)
+   {
+   case 1: case 2: return IN_PLAY;
+   case 6: return IN_L1;
+   case 7: return IN_R1;
+   case 8: return IN_SELECT;
+   case 9: return IN_START;
+   }
+   return -1;
+}
+
+static void in_axis(int axis, int value)
+{
+   int neg = value < -16000, pos = value > 16000;
+   if (axis == 0) { in_set(IN_LEFT, neg); in_set(IN_RIGHT, pos); }
+   if (axis == 1) { in_set(IN_UP, neg); in_set(IN_DOWN, pos); }
+}
+
+static void in_event(const SDL_Event *e)
+{
+   switch (e->type)
+   {
+   case SDL_JOYDEVICEADDED:
+      if (!SDL_IsGameController(e->jdevice.which)) in_open(e->jdevice.which);
+      break;
+   case SDL_CONTROLLERDEVICEADDED:
+      in_open(e->cdevice.which);
+      break;
+   case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP:
+   {
+      int d = e->type == SDL_CONTROLLERBUTTONDOWN, b = -1;
+      switch (e->cbutton.button)
+      {
+      case SDL_CONTROLLER_BUTTON_DPAD_LEFT: b = IN_LEFT; break;
+      case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: b = IN_RIGHT; break;
+      case SDL_CONTROLLER_BUTTON_DPAD_UP: b = IN_UP; break;
+      case SDL_CONTROLLER_BUTTON_DPAD_DOWN: b = IN_DOWN; break;
+      case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: b = IN_L1; break;
+      case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: b = IN_R1; break;
+      case SDL_CONTROLLER_BUTTON_A: case SDL_CONTROLLER_BUTTON_B: b = IN_PLAY; break;
+      case SDL_CONTROLLER_BUTTON_START: b = IN_START; break;
+      case SDL_CONTROLLER_BUTTON_BACK: b = IN_SELECT; break;
+      }
+      in_set(b, d);
+      break;
+   }
+   case SDL_CONTROLLERAXISMOTION:
+      if (e->caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) in_axis(0, e->caxis.value);
+      if (e->caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) in_axis(1, e->caxis.value);
+      break;
+   case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP:
+      if (!in_is_ctrl(e->jbutton.which))
+         in_set(in_raw_button(e->jbutton.button), e->type == SDL_JOYBUTTONDOWN);
+      break;
+   case SDL_JOYAXISMOTION:
+      if (!in_is_ctrl(e->jaxis.which)) in_axis(e->jaxis.axis, e->jaxis.value);
+      break;
+   case SDL_JOYHATMOTION:
+      if (!in_is_ctrl(e->jhat.which))
+      {
+         in_set(IN_LEFT, (e->jhat.value & SDL_HAT_LEFT) != 0);
+         in_set(IN_RIGHT, (e->jhat.value & SDL_HAT_RIGHT) != 0);
+         in_set(IN_UP, (e->jhat.value & SDL_HAT_UP) != 0);
+         in_set(IN_DOWN, (e->jhat.value & SDL_HAT_DOWN) != 0);
+      }
+      break;
+   case SDL_KEYDOWN: case SDL_KEYUP:
+   {
+      int d = e->type == SDL_KEYDOWN, b = -1;
+      if (e->key.repeat) break;
+      switch (e->key.keysym.sym)
+      {
+      case SDLK_LEFT: b = IN_LEFT; break;
+      case SDLK_RIGHT: b = IN_RIGHT; break;
+      case SDLK_UP: case SDLK_PAGEUP: b = IN_L1; break;
+      case SDLK_DOWN: case SDLK_PAGEDOWN: b = IN_R1; break;
+      case SDLK_RETURN: b = IN_PLAY; break;
+      case SDLK_ESCAPE: b = IN_SELECT; in_set(IN_START, d); break;
+      }
+      in_set(b, d);
+      break;
+   }
+   }
+}
+
 typedef struct { GLuint tex; int w, h; } bgtex_t;
 static bgtex_t bg_cur, bg_next;
 static float   bg_mix = 1.0f;          /* 0 -> showing cur, 1 -> next done */
@@ -611,7 +801,11 @@ int main(int argc, char **argv)
 
    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0)
    { logf_("SDL_Init: %s", SDL_GetError()); return 1; }
-   SDL_GameControllerAddMappingsFromFile(padb);
+   logf_("controller mappings: %d from %s", SDL_GameControllerAddMappingsFromFile(padb), padb);
+   SDL_JoystickEventState(SDL_ENABLE);
+   SDL_GameControllerEventState(SDL_ENABLE);
+   logf_("joysticks at start: %d", SDL_NumJoysticks());
+   for (i = 0; i < SDL_NumJoysticks(); i++) in_open(i);
    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
    TTF_Init();
 
@@ -656,7 +850,7 @@ int main(int argc, char **argv)
    }
 
    g_proj = m4_perspective(38.0f * (float)M_PI / 180.0f, (float)W / H, 0.1f, 50.0f);
-   g_view = m4_translate(0, -0.35f, -4.2f);
+   g_view = m4_translate(0, 0.22f, -4.7f);
    g_vp = m4_mul(g_proj, g_view);
    g_ortho = m4_ortho(0, W, H, 0);
 
@@ -685,61 +879,24 @@ int main(int argc, char **argv)
       if (dt > 0.05f) dt = 0.05f;
       last = t;
 
+      memset(in_pressed, 0, sizeof(in_pressed));
       while (SDL_PollEvent(&e))
       {
-         switch (e.type)
-         {
-         case SDL_QUIT: running = 0; break;
-         case SDL_CONTROLLERDEVICEADDED:
-            if (!pad) { pad = SDL_GameControllerOpen(e.cdevice.which); logf_("pad: %s", pad ? SDL_GameControllerName(pad) : "?"); }
-            break;
-         case SDL_KEYDOWN:
-            if (e.key.repeat) break;
-            if (e.key.keysym.sym == SDLK_LEFT) { move = -1; held_dir = -1; held_next = t + 0.32; }
-            if (e.key.keysym.sym == SDLK_RIGHT) { move = 1; held_dir = 1; held_next = t + 0.32; }
-            if (e.key.keysym.sym == SDLK_UP || e.key.keysym.sym == SDLK_PAGEUP) plat_move = -1;
-            if (e.key.keysym.sym == SDLK_DOWN || e.key.keysym.sym == SDLK_PAGEDOWN) plat_move = 1;
-            if (e.key.keysym.sym == SDLK_RETURN) play = 1;
-            if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
-            break;
-         case SDL_KEYUP:
-            if (e.key.keysym.sym == SDLK_LEFT || e.key.keysym.sym == SDLK_RIGHT) held_dir = 0;
-            break;
-         case SDL_CONTROLLERBUTTONDOWN:
-            switch (e.cbutton.button)
-            {
-            case SDL_CONTROLLER_BUTTON_DPAD_LEFT: move = -1; held_dir = -1; held_next = t + 0.32; break;
-            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: move = 1; held_dir = 1; held_next = t + 0.32; break;
-            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: plat_move = -1; break;
-            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: plat_move = 1; break;
-            case SDL_CONTROLLER_BUTTON_A: case SDL_CONTROLLER_BUTTON_B: play = 1; break;
-            case SDL_CONTROLLER_BUTTON_START: start_down = 1; if (!select_down) play = 1; break;
-            case SDL_CONTROLLER_BUTTON_BACK: select_down = 1; break;
-            }
-            if (start_down && select_down) running = 0;
-            break;
-         case SDL_CONTROLLERBUTTONUP:
-            if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) start_down = 0;
-            if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) select_down = 0;
-            if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) held_dir = 0;
-            break;
-         case SDL_CONTROLLERAXISMOTION:
-            if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX)
-            {
-               int d = e.caxis.value < -16000 ? -1 : (e.caxis.value > 16000 ? 1 : 0);
-               if (d && d != held_dir) { move = d; held_next = t + 0.32; }
-               held_dir = d;
-            }
-            if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY)
-            {
-               static int ydir;
-               int d = e.caxis.value < -16000 ? -1 : (e.caxis.value > 16000 ? 1 : 0);
-               if (d && d != ydir) plat_move = d;
-               ydir = d;
-            }
-            break;
-         }
+         if (e.type == SDL_QUIT) running = 0;
+         else in_event(&e);
       }
+      /* logical actions -> UI */
+      if (in_down[IN_SELECT] && in_down[IN_START]) running = 0;
+      else
+      {
+         if (in_pressed[IN_PLAY] || (in_pressed[IN_START] && !in_down[IN_SELECT])) play = 1;
+         if (in_pressed[IN_L1] || in_pressed[IN_UP]) plat_move = -1;
+         if (in_pressed[IN_R1] || in_pressed[IN_DOWN]) plat_move = 1;
+         if (in_pressed[IN_LEFT]) { move = -1; held_next = t + 0.32; }
+         if (in_pressed[IN_RIGHT]) { move = 1; held_next = t + 0.32; }
+      }
+      held_dir = in_down[IN_LEFT] ? -1 : (in_down[IN_RIGHT] ? 1 : 0);
+      (void)start_down; (void)select_down; (void)pad;
       if (play_t >= 0) { move = plat_move = play = 0; }
       if (!move && held_dir && t >= held_next) { move = held_dir; held_next = t + 0.085; }
 
@@ -817,10 +974,10 @@ int main(int argc, char **argv)
             if (o > n / 2) o -= n;
             if (o < -n / 2) o += n;
             a = abs(o);
-            tx = o == 0 ? 0.0f : (o > 0 ? 1 : -1) * (0.95f + (a - 1) * 0.52f);
+            tx = o == 0 ? 0.0f : (o > 0 ? 1 : -1) * (1.08f + (a - 1) * 0.50f);
             tz = o == 0 ? 0.55f + zoom * 1.4f : -0.35f - a * 0.22f;
             tr = o == 0 ? 0.0f : -(o > 0 ? 1 : -1) * 1.0f;
-            ts = o == 0 ? 1.18f : 1.0f;
+            ts = o == 0 ? 1.10f : 0.92f;
             ta = a > VISIBLE ? 0.0f : 1.0f - a * 0.14f;
             spring_step(&g->x, tx, 140, 15, dt);
             spring_step(&g->z, tz, 140, 15, dt);
@@ -857,14 +1014,17 @@ int main(int argc, char **argv)
          }
          {
             const float vig[4] = { 0, 0, 0, 0.55f };
+            float spot[4] = { 0.55f + bg[0].x, 0.55f + bg[1].x, 0.62f + bg[2].x, 0.10f * (1.0f - fade) };
             draw_2d(0, 0, 0, W, H, vig, 2);
+            draw_2d(0, W * 0.5f - 420, 300 - 300, 840, 600, spot, 3);
          }
 
          glUseProgram(g_prog_box);
          glUniform1i(u_tex, 0);
          {
-            const float light[3] = { -0.5f, 0.7f, 1.0f };
+            const float light[3] = { -0.5f, 0.7f, 1.0f }, cam[3] = { 0.0f, -0.22f, 4.7f };
             glUniform3fv(u_light, 1, light);
+            glUniform3fv(u_cam, 1, cam);
          }
          /* reflections first (no depth), then cases back-to-front with depth */
          glDisable(GL_DEPTH_TEST);
@@ -946,8 +1106,8 @@ int main(int argc, char **argv)
                label_set(&l_title, g_font_title, cg->title);
                snprintf(s, sizeof(s), "%s%s%s", cg->year, cg->year[0] && cg->publisher[0] ? "  \xC2\xB7  " : "", cg->publisher);
                label_set(&l_sub, g_font_sub, s);
-               draw_2d(l_title.tex, (W - l_title.w) * 0.5f, 560 + info_y.x, l_title.w, l_title.h, c1, 0);
-               draw_2d(l_sub.tex, (W - l_sub.w) * 0.5f, 604 + info_y.x * 0.7f, l_sub.w, l_sub.h, c2, 0);
+               draw_2d(l_title.tex, (W - l_title.w) * 0.5f, 588 + info_y.x, l_title.w, l_title.h, c1, 0);
+               draw_2d(l_sub.tex, (W - l_sub.w) * 0.5f, 630 + info_y.x * 0.7f, l_sub.w, l_sub.h, c2, 0);
             }
             else
             {
@@ -956,7 +1116,7 @@ int main(int argc, char **argv)
             }
             {
                const float hc[4] = { 0.43f, 0.42f, 0.52f, 1 - fade };
-               draw_2d(l_help.tex, (W - l_help.w) * 0.5f, 662, l_help.w, l_help.h, hc, 0);
+               draw_2d(l_help.tex, (W - l_help.w) * 0.5f, 676, l_help.w, l_help.h, hc, 0);
             }
             if (fade > 0.001f)
             {
