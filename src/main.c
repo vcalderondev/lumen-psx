@@ -1095,6 +1095,7 @@ static void case_part(mat4 base, float x, float y, float z, float ry, float rx, 
 
 static GLuint g_disc_tex;   /* art for the disc being launched (0 = generic CD) */
 static mat4   g_disc_start; /* world matrix of the disc in the tray (launch)       */
+
 static int    g_detail = 1;  /* 0: skip expensive effects (far cases)               */
 /* effect switches (all on; the bench mode turns them off one at a time) */
 static int    g_fx_refl = 1, g_fx_glass = 1, g_fx_sides = 1, g_fx_text = 1;
@@ -1327,6 +1328,87 @@ void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4]
    glUniform1i(u2_mode, mode);
    glBindTexture(GL_TEXTURE_2D, tex ? tex : g_white);
    glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
+/* The box shader and its states are only used by the launch animation, so the driver
+ * compiled them on the first launch frame: the sim stalled 560 ms on Play, and again
+ * 210 ms when the disc first showed (the animation jumped 0.6 s and 0.26 s ahead).
+ * PowerVR also builds a variant per blend / depth state. So every launch draw is issued
+ * once at startup, behind the boot splash, with the same programs, states and kinds of
+ * texture (mipmapped RGBA, like covers, spines, backs and disc art), invisible (alpha 0,
+ * a few pixels) before the first frame clears the screen. */
+static void launch_warmup(void)
+{
+   static const float one[3] = { 1, 1, 1 };
+   static game_t wg;
+   double t0 = now_s();
+   GLuint wtexs[2] = { 0, 0 }, wtex, keep_disc = g_disc_tex;
+   const float light[3] = { -0.5f, 0.7f, 1.0f }, cam[3] = { 0.0f, -0.22f, 4.7f };
+   mat4 base = m4_mul(m4_translate(0, 0, 0), m4_scale(0.004f, 0.004f, 0.004f));
+   int p, k, x, done_kind[3] = { 0, 0, 0 };
+   for (x = 0; x < 2; x++)
+   {  /* power-of-two and not (covers are any size): some drivers specialise on it */
+      SDL_Surface *ws = SDL_CreateRGBSurface(0, x ? 10 : 8, x ? 6 : 8, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+      if (ws) { SDL_FillRect(ws, NULL, SDL_MapRGBA(ws->format, 128, 128, 128, 255)); wtexs[x] = surface_to_tex(ws, 1, NULL); SDL_FreeSurface(ws); }
+   }
+   memset(&wg, 0, sizeof(wg));
+   wg.sc.x = 1.0f; wg.al.x = 1.0f;
+   glViewport(0, 0, g_dw, g_dh);
+   g_vp = m4_mul(g_proj, g_view);
+   glEnable(GL_BLEND);
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   glUseProgram(g_prog_box);
+   glUniform1i(u_tex, 0);
+   glUniform3fv(u_light, 1, light);
+   glUniform3fv(u_cam, 1, cam);
+   glEnable(GL_DEPTH_TEST);
+   glDepthFunc(GL_LEQUAL);
+   for (p = 0; p < g_nplat * 2; p++)
+   {
+      const platform_t *gp = &g_plat[p % g_nplat];
+      if (done_kind[gp->kind] & (1 << (p / g_nplat))) continue;
+      done_kind[gp->kind] |= 1 << (p / g_nplat);
+      wtex = wtexs[p / g_nplat];
+      wg.tex = wg.spine_tex = wtex;
+      for (k = 0; k < 4; k++)
+      {  /* back card or not, disc art or the generic CD */
+         wg.back_tex = (k & 1) ? wtex : 0;
+         g_disc_tex = (k & 2) ? wtex : 0;
+         g_detail = 1;
+         glDisable(GL_DEPTH_TEST);   /* reflection pass */
+         glUniform1f(u_refl, -0.5f);
+         draw_media(&wg, gp, base, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f);
+         glUniform1f(u_refl, 100.0f);
+         glEnable(GL_DEPTH_TEST);
+         draw_media(&wg, gp, base, 0.0f, 1.0f, gp->kind == KIND_DISC ? 1.0f : 0.0f, 0.0f, 0.0f, 1.0f);
+         if (gp->kind == KIND_DISC)
+         {
+            glDisable(GL_DEPTH_TEST);
+            draw_flying_disc(0.0f, 0.0f, 0.0f);
+            glEnable(GL_DEPTH_TEST);
+         }
+      }
+      if (gp->kind == KIND_ARCADE)
+      {  /* coin plate, slot and coin */
+         draw_quad_box(base, 0, one, 0.0f, 1);
+         draw_quad_box(base, 0, one, 0.0f, 9);
+      }
+   }
+   glDisable(GL_DEPTH_TEST);
+   /* 2D: the flash + fade quad (premultiplied blend) */
+   glUseProgram(g_prog_2d);
+   glUniform1i(u2_tex, 0);
+   {
+      const float clear_[4] = { 0, 0, 0, 0 };
+      glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+      draw_2d(0, 0, 0, 1, 1, clear_, 0);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   }
+   glFinish();
+   g_disc_tex = keep_disc;
+   g_disc_start = m4_identity();
+   glDeleteTextures(2, wtexs);
+   logf_("launch warm-up: %.0f ms", (now_s() - t0) * 1000.0);
 }
 
 /* glass rounded rectangle (mode 5): the shader needs the size in pixels for its distance field */
@@ -1571,6 +1653,76 @@ static void bg_request(const char *path)
    bg_req_new = 1;
    SDL_CondSignal(bg_cv);
    SDL_UnlockMutex(bg_mx);
+}
+
+/* ------------------------------------------------------------------------ */
+/* disc art for the launch: decoded on a worker once the selection settles,   */
+/* uploaded on the main thread (decoding the 512 px PNG at Play stalled the    */
+/* first launch frame)                                                         */
+static SDL_mutex   *dc_mx;
+static SDL_cond    *dc_cv;
+static char         dc_req[512];       /* path requested (guarded by dc_mx)  */
+static int          dc_req_new, dc_quit;
+static SDL_Surface *dc_done;           /* decoded surface ready to upload    */
+static char         dc_done_path[512];
+static int          dc_done_new;
+static char         g_disc_want[512];  /* main thread: art asked for          */
+static char         g_disc_path[512];  /* main thread: art held in g_disc_tex */
+
+static int disc_worker(void *unused)
+{
+   (void)unused;
+   SDL_LockMutex(dc_mx);
+   while (!dc_quit)
+   {
+      char path[512]; SDL_Surface *s, *c = NULL;
+      while (!dc_req_new && !dc_quit) SDL_CondWait(dc_cv, dc_mx);
+      if (dc_quit) break;
+      snprintf(path, sizeof(path), "%s", dc_req);
+      dc_req_new = 0;
+      SDL_UnlockMutex(dc_mx);
+      s = IMG_Load(path);
+      if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
+      if (!c) logf_("disc art failed: %s", path);
+      SDL_LockMutex(dc_mx);
+      if (dc_done) SDL_FreeSurface(dc_done);
+      dc_done = c; dc_done_new = 1;
+      snprintf(dc_done_path, sizeof(dc_done_path), "%s", path);
+   }
+   SDL_UnlockMutex(dc_mx);
+   return 0;
+}
+
+/* ask for the disc art of a game ("" = none: the generic CD) */
+static void disc_want(const char *path)
+{
+   if (!strcmp(path, g_disc_want)) return;
+   snprintf(g_disc_want, sizeof(g_disc_want), "%s", path);
+   if (strcmp(g_disc_path, g_disc_want) && g_disc_tex)
+   {  /* never show another game's disc while the new one decodes */
+      glDeleteTextures(1, &g_disc_tex); g_disc_tex = 0; g_disc_path[0] = 0;
+   }
+   if (!path[0] || !strcmp(g_disc_path, path)) return;
+   SDL_LockMutex(dc_mx);
+   snprintf(dc_req, sizeof(dc_req), "%s", path);
+   dc_req_new = 1;
+   SDL_CondSignal(dc_cv);
+   SDL_UnlockMutex(dc_mx);
+}
+
+static void disc_poll_upload(void)
+{
+   SDL_Surface *s = NULL; char path[512] = "";
+   SDL_LockMutex(dc_mx);
+   if (dc_done_new) { s = dc_done; dc_done = NULL; dc_done_new = 0; snprintf(path, sizeof(path), "%s", dc_done_path); }
+   SDL_UnlockMutex(dc_mx);
+   if (s && !strcmp(path, g_disc_want))
+   {
+      if (g_disc_tex) glDeleteTextures(1, &g_disc_tex);
+      g_disc_tex = surface_to_tex(s, 1, NULL);
+      snprintf(g_disc_path, sizeof(g_disc_path), "%s", path);
+   }
+   if (s) SDL_FreeSurface(s);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2764,6 +2916,9 @@ int main(int argc, char **argv)
    double b_draw = 0, b_swap = 0;   /* bench: time issuing frames / blocked in the swap */
    SDL_GameController *pad = NULL;
    double t0 = now_s(), last, fps_t, info_t = 0, play_t = -1;
+   float play_pt = 0.0f;   /* launch clock: the sum of the (clamped, <= 50 ms) frame times since
+                            * Play, so a slow frame never skips part of the animation (it was
+                            * t - play_t: a 560 ms stall on the first frame jumped 0.6 s ahead) */
    int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0;
    int held_dir = 0; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
@@ -2874,6 +3029,9 @@ int main(int argc, char **argv)
    cv_mx = SDL_CreateMutex();
    cv_cv = SDL_CreateCond();
    SDL_CreateThread(cover_worker, "covers", NULL);
+   dc_mx = SDL_CreateMutex();
+   dc_cv = SDL_CreateCond();
+   SDL_CreateThread(disc_worker, "disc", NULL);
 
    g_font_title = open_font(fonts_semi, 34);
    g_font_sub   = open_font(fonts_reg, 21);
@@ -2950,6 +3108,7 @@ int main(int argc, char **argv)
       g->x.x = 6.0f + (i % 8) * 0.6f; g->z.x = -3.0f; g->ry.x = -1.2f; g->sc.x = 1.0f; g->al.x = 0.0f;
    }
 
+   launch_warmup();
    last = fps_t = now_s();
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
@@ -3088,13 +3247,12 @@ int main(int argc, char **argv)
          /* the 3D media of the game comes out of the dashboard towards the camera */
          pg->x.x = -1.6f; pg->x.v = 0; pg->z.x = -1.4f; pg->z.v = 0; pg->ry.x = 0.7f; pg->ry.v = 0;
          pg->sc.x = 0.9f; pg->al.x = 0.0f; pg->al.v = 0;
-         if (g_disc_tex) { glDeleteTextures(1, &g_disc_tex); g_disc_tex = 0; }
-         if (pg->disc[0])
-         {
-            SDL_Surface *ds = IMG_Load(pg->disc);
-            if (ds) { g_disc_tex = surface_to_tex(ds, 1, NULL); SDL_FreeSurface(ds); }
-         }
+         disc_want(pg->disc);   /* normally decoded already (selection settled) */
+         play_pt = 0.0f;
       }
+      /* disc art of the settled selection, ready before Play */
+      if (n && pl->kind == KIND_DISC && play_t < 0 && t - sel_t > 0.4) disc_want(g_games[pl->first + sel].disc);
+      disc_poll_upload();
 
       /* background: once the selection has settled, the game's image (decoded on the
        * worker) or a background generated from its cover colours */
@@ -3192,11 +3350,14 @@ int main(int argc, char **argv)
          float zoom = 0.0f, open = 0.0f, lift = 0.0f, fly = 0.0f, spin = 0.0f, flash = 0.0f, launching = 0.0f;
          float drop = 0.0f, tilt = 0.0f, shake = 0.0f, led = 0.0f, slot = 0.0f, lit = 1.0f;
          float coin_x = 0.0f, coin_spin = 0.0f, coin_in = 0.0f, credit = 0.0f, insert = 0.0f;
-         int covered;
+         int covered, blackout;
+         float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
+         float pdt = 0.0f;   /* launch clock step this frame */
+         if (play_t >= 0 && t > play_t) { pdt = dt; play_pt += pdt; }
          if (play_t >= 0)
          {
-            float pt = (float)(t - play_t), u, end = 2.8f, fl_t = 2.35f;
+            float pt = play_pt, u, end = 2.8f, fl_t = 2.35f;
 #define SMOOTH(x) ((x) * (x) * (3 - 2 * (x)))
             launching = 1.0f;
             zoom = SMOOTH(clampf(pt / 0.5f, 0, 1));
@@ -3237,7 +3398,7 @@ int main(int argc, char **argv)
                   if (pt < 1.05f) disc_spin = 0.0f;
                   w = pt < 1.05f ? 0.0f : pt < 1.45f ? 7.0f * (pt - 1.05f) / 0.40f :
                       pt < 1.95f ? 7.0f : lerpf(7.0f, 1.8f, clampf((pt - 1.95f) / 0.35f, 0, 1));
-                  disc_spin += w * dt;
+                  disc_spin += w * pdt;
                   spin = disc_spin;
                }
             }
@@ -3252,6 +3413,10 @@ int main(int argc, char **argv)
             if (pl && pl->kind == KIND_ARCADE) lit = 1.0f + 0.04f * sinf((float)t * 3.0f);
          }
          g_vp = m4_mul(g_proj, m4_mul(m4_translate(shake * 0.03f, shake * 0.02f, 0), g_view));
+         launch_ui = play_t >= 0 ? 1.0f - clampf(play_pt / 0.35f, 0.0f, 1.0f) : 1.0f;
+         /* the launch has faded to black: nothing under the black is drawn (it was three
+          * full-screen layers, art + the 3D media + the black quad, for the last 0.15 s) */
+         blackout = play_t >= 0 && fade >= 0.999f;
 
          for (i = 0; i < n; i++)
          {
@@ -3291,7 +3456,8 @@ int main(int argc, char **argv)
          /* ---- render ---- */
          t_upd = now_s();
          glViewport(0, 0, g_dw, g_dh);
-         glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
+         if (blackout) glClearColor(0, 0, 0, 1);
+         else glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
          glClearDepthf(1.0f);
          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
          glEnable(GL_BLEND);
@@ -3299,7 +3465,7 @@ int main(int argc, char **argv)
 
          glUseProgram(g_prog_2d);
          glUniform1i(u2_tex, 0);
-         covered = (panel_active() && panel_amount() > 0.995f) || welcome_amount() > 0.995f;   /* a full-screen section is open */
+         covered = (panel_active() && panel_amount() > 0.995f) || welcome_amount() > 0.995f || blackout;   /* a full-screen section is open */
          if (!covered)
          {  /* full-screen art (current layer, next one crossfading over it), then the
              * legibility overlay (left side, top and bottom bands) in one pass */
@@ -3314,8 +3480,7 @@ int main(int argc, char **argv)
          {  /* dashboard UI: dimmed under the panel, gone in the attract scene, fading out
              * as the launch starts (the 3D media is drawn over it) */
             const float pa = panel_amount();
-            const float la = play_t >= 0 ? 1.0f - clampf((float)(t - play_t) / 0.35f, 0.0f, 1.0f) : 1.0f;
-            const float ua = (1 - fade) * (1 - 0.6f * pa) * (1 - att.amount) * la;
+            const float ua = (1 - fade) * (1 - 0.6f * pa) * (1 - att.amount) * launch_ui;
             dash_draw(pl, sel_plat, n, sel, dpos.x, sel_t, t, ua, info_a.x, info_y.x);
          }
 
@@ -3330,7 +3495,7 @@ int main(int argc, char **argv)
          glEnable(GL_DEPTH_TEST);
          glDepthFunc(GL_LEQUAL);
          /* 3D only while launching: the selected game's case / cartridge / marquee */
-         for (i = 0; i >= 0 && n && play_t >= 0; i--)
+         for (i = 0; i >= 0 && n && play_t >= 0 && !blackout; i--)
          {
             int s;
             for (s = -1; s <= 1; s += 2)
@@ -3366,7 +3531,7 @@ int main(int argc, char **argv)
                      tx_ = tilt;
                   }
                }
-               if (o == 0 && g_fx_refl)
+               if (o == 0 && g_fx_refl && g->al.x * (1.0f - fade) * (1.0f - zoom) > 0.004f)
                {
                   /* true reflection: the whole case mirrored about the floor, same motion */
                   float floor_y = -0.5f * gp->h * g->sc.x - 0.01f;
@@ -3386,13 +3551,13 @@ int main(int argc, char **argv)
                g_detail = 1;
             }
          }
-         if (play_t >= 0 && anim == ANIM_OPEN_CASE_DISC && fly > 0.0f)
+         if (play_t >= 0 && anim == ANIM_OPEN_CASE_DISC && fly > 0.0f && !blackout)
          {
             glDisable(GL_DEPTH_TEST);
             draw_flying_disc(fly, spin, 1.0f);
             glEnable(GL_DEPTH_TEST);
          }
-         if (play_t >= 0 && anim == ANIM_INSERT_COIN && pl)
+         if (play_t >= 0 && anim == ANIM_INSERT_COIN && pl && !blackout)
          {
             static const float one[3] = { 1, 1, 1 }, slotc[3] = { 0.02f, 0.02f, 0.025f }, plate[3] = { 0.30f, 0.30f, 0.34f };
             float sy = -0.5f * pl->h * 1.10f - 0.42f;
@@ -3435,7 +3600,7 @@ int main(int argc, char **argv)
                static float h_mix = 1.0f;
                int want = welcome_active() ? (welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
                           panel_active() ? panel_hint_set() : (attract_active() ? HINTS_ATTRACT : HINTS_CAROUSEL);
-               const float ha = (1 - fade) * (1 - att.amount);
+               const float ha = (1 - fade) * (1 - att.amount) * launch_ui;
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
                g_hint_cx = W * 0.5f;
@@ -3470,15 +3635,17 @@ int main(int argc, char **argv)
                welcome_draw(t);
                hints_draw(hs, 672, welcome_amount());
             }
-            if (flash > 0.001f)
-            {
-               const float white[4] = { 1, 1, 1, flash * 0.85f };
-               draw_2d(0, 0, 0, W, H, white, 0);
+            if ((flash > 0.001f || fade > 0.001f) && !blackout)
+            {  /* the white flash under the fade to black, in one full-screen pass:
+                * premultiplied, dst * (1 - w) * (1 - f) + w * (1 - f) */
+               const float w = flash * 0.85f, k = w * (1 - fade);
+               const float over[4] = { k, k, k, 1 - (1 - w) * (1 - fade) };
+               glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+               draw_2d(0, 0, 0, W, H, over, 0);
+               glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             }
             if (fade > 0.001f)
             {
-               const float black[4] = { 0, 0, 0, fade };
-               draw_2d(0, 0, 0, W, H, black, 0);
                if (play_t >= 0)
                {
                   const float st[4] = { 0.93f, 0.92f, 0.97f, fade };
@@ -3506,7 +3673,7 @@ int main(int argc, char **argv)
       {  /* launch trace: one line per frame (pt, frame time, CPU issuing, swap, cost) */
          double fpx = g_cost_px_opaque + g_cost_px_blend, fh = g_cost_px_heavy;
          logf_("launch frame: pt %.3f dt %.1f ms, update %.1f ms, draw %.1f ms, swap %.1f ms, %.2f Mpx (heavy %.2f)",
-               t - play_t, dt * 1000.0, (t_upd - t) * 1000.0, (t_pre - t_upd) * 1000.0, (now_s() - t_pre) * 1000.0,
+               play_pt, dt * 1000.0, (t_upd - t) * 1000.0, (t_pre - t_upd) * 1000.0, (now_s() - t_pre) * 1000.0,
                (fpx - lp_px) / 1e6, (fh - lp_heavy) / 1e6);
       }
       log_tick();
@@ -3608,6 +3775,7 @@ int main(int argc, char **argv)
    }
    SDL_LockMutex(bg_mx); bg_quit = 1; SDL_CondSignal(bg_cv); SDL_UnlockMutex(bg_mx);
    SDL_LockMutex(cv_mx); cv_quit = 1; SDL_CondSignal(cv_cv); SDL_UnlockMutex(cv_mx);
+   SDL_LockMutex(dc_mx); dc_quit = 1; SDL_CondSignal(dc_cv); SDL_UnlockMutex(dc_mx);
    logf_("exit %d", exit_code);
    SDL_GL_DeleteContext(ctx);
    SDL_DestroyWindow(win);
