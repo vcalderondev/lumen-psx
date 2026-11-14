@@ -711,6 +711,42 @@ static void case_part(mat4 base, float x, float y, float z, float ry, float rx, 
 static GLuint g_disc_tex;   /* art for the disc being launched (0 = generic CD) */
 static mat4   g_disc_start; /* world matrix of the disc in the tray (launch)       */
 static int    g_detail = 1;  /* 0: skip expensive effects (far cases)               */
+/* effect switches (all on; the bench mode turns them off one at a time) */
+static int    g_fx_vignette = 1, g_fx_refl = 1, g_fx_glass = 1, g_fx_sides = 1, g_fx_text = 1;
+static GLuint g_vig_tex, g_spot_tex;   /* baked full-screen vignette / spotlight masks */
+
+static float smooth01(float e0, float e1, float x) { float t = clampf((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); }
+static void make_fx_textures(void)
+{
+   enum { TW = 320, TH = 180 };
+   static unsigned char vig[TW * TH * 4], spot[TW * TH * 4];
+   int x, y;
+   for (y = 0; y < TH; y++)
+      for (x = 0; x < TW; x++)
+      {
+         float u = (x + 0.5f) / TW, v = (y + 0.5f) / TH, dx, dy, d, a;
+         unsigned char *pv = vig + (y * TW + x) * 4, *ps = spot + (y * TW + x) * 4;
+         dx = (u - 0.5f) * 1.6f; dy = v - 0.5f; d = sqrtf(dx * dx + dy * dy);
+         pv[0] = pv[1] = pv[2] = 0; pv[3] = (unsigned char)(255 * 0.55f * smooth01(0.35f, 0.95f, d));
+         dx = (u - 0.5f) / 0.328f; dy = (v - 0.4167f) / 0.4167f; d = sqrtf(dx * dx + dy * dy);
+         a = powf(clampf(1.0f - d, 0, 1), 2.2f);
+         ps[0] = ps[1] = ps[2] = 255; ps[3] = (unsigned char)(255 * a);
+      }
+   glGenTextures(1, &g_vig_tex);
+   glBindTexture(GL_TEXTURE_2D, g_vig_tex);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TW, TH, 0, GL_RGBA, GL_UNSIGNED_BYTE, vig);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   glGenTextures(1, &g_spot_tex);
+   glBindTexture(GL_TEXTURE_2D, g_spot_tex);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TW, TH, 0, GL_RGBA, GL_UNSIGNED_BYTE, spot);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
 
 /* open: 0 closed .. 1 lid fully open; lift/fly/spin drive the disc (launch only) */
 static void draw_case(const game_t *g, mat4 base, float alpha, float open, float lift, float fly, float spin)
@@ -750,7 +786,7 @@ static void draw_case(const game_t *g, mat4 base, float alpha, float open, float
    case_part(lid, ins_c, 0, hd - INSET_Z, 0, 0, ins_w, 0.972f, g->tex, one, alpha, 0);
    if (open > 0.0f)
       case_part(lid, ins_c, 0, hd - INSET_Z - 0.001f, PI, 0, ins_w, 0.972f, 0, paper, alpha, 1);
-   if (g_detail)
+   if (g_detail && g_fx_glass)
    {
       glDepthMask(GL_FALSE);
       case_part(lid, 0, 0, hd, 0, 0, CASE_W, 1.0f, 0, one, alpha, 4);
@@ -965,11 +1001,12 @@ static void bg_request(const char *path)
 
 /* ------------------------------------------------------------------------ */
 /* input: game controllers + raw joysticks mapped to logical actions         */
-enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_START, IN_SELECT, IN_COUNT };
+enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_BACK, IN_START, IN_SELECT, IN_COUNT };
 static int           in_down[IN_COUNT];     /* current state                  */
 static int           in_pressed[IN_COUNT];  /* edge this frame                */
 static SDL_JoystickID in_ctrl_ids[8];       /* joysticks opened as controllers */
 static int           in_nctrl;
+int                  g_want_settings;   /* set when Select is tapped alone; consumed by the settings panel */
 
 static void in_set(int b, int down)
 {
@@ -1011,7 +1048,8 @@ static int in_raw_button(int b)
 {
    switch (b)
    {
-   case 1: case 2: return IN_PLAY;
+   case 2: return IN_PLAY;
+   case 1: return IN_BACK;
    case 6: return IN_L1;
    case 7: return IN_R1;
    case 8: return IN_SELECT;
@@ -1048,7 +1086,8 @@ static void in_event(const SDL_Event *e)
       case SDL_CONTROLLER_BUTTON_DPAD_DOWN: b = IN_DOWN; break;
       case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: b = IN_L1; break;
       case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: b = IN_R1; break;
-      case SDL_CONTROLLER_BUTTON_A: case SDL_CONTROLLER_BUTTON_B: b = IN_PLAY; break;
+      case SDL_CONTROLLER_BUTTON_A: b = IN_PLAY; break;
+      case SDL_CONTROLLER_BUTTON_B: b = IN_BACK; break;
       case SDL_CONTROLLER_BUTTON_START: b = IN_START; break;
       case SDL_CONTROLLER_BUTTON_BACK: b = IN_SELECT; break;
       }
@@ -1100,9 +1139,9 @@ static void in_event(const SDL_Event *e)
 /* help bar: button icons ($home/icons/<name>.png, optional) + labels        */
 typedef struct { const char *icons[3]; const char *fallback_key; const char *text_key; } hint_t;
 static const hint_t g_hints[] = {
-   { { "cross", "circle", NULL }, "btn.cross_circle", "hint.play" },
+   { { "cross", NULL, NULL },     "btn.cross_circle", "hint.play" },
    { { "l1", "r1", NULL },        "btn.l1_r1",        "hint.platform" },
-   { { "select", "start", NULL }, "btn.select_start", "hint.exit" },
+   { { "select", NULL, NULL },    "btn.select_start", "hint.settings" },
 };
 #define NHINTS ((int)(sizeof(g_hints) / sizeof(g_hints[0])))
 typedef struct { GLuint icon[3]; int iw[3], ih[3], have_icons; GLuint fb, txt; int fbw, fbh, tw, th; } hint_gl_t;
@@ -1270,8 +1309,11 @@ int main(int argc, char **argv)
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
-   SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-   SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
+   {
+      int ms = settings_get_int("msaa", 4, 0, 4);
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, ms > 0);
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, ms);
+   }
    win = SDL_CreateWindow("lumen", 0, 0, W, H, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
    ctx = win ? SDL_GL_CreateContext(win) : NULL;
    if (!ctx)
@@ -1294,6 +1336,7 @@ int main(int argc, char **argv)
    SDL_ShowCursor(SDL_DISABLE);
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
    gl_setup();
+   make_fx_textures();
    bg_mx = SDL_CreateMutex();
    bg_cv = SDL_CreateCond();
    SDL_CreateThread(bg_worker, "bg", NULL);
@@ -1367,6 +1410,16 @@ int main(int argc, char **argv)
          else in_event(&e);
       }
       /* logical actions -> UI */
+      {  /* Select tapped alone (pressed and released without Start) opens the settings */
+         static int sel_was_down, sel_combo;
+         if (in_down[IN_SELECT] && in_down[IN_START]) sel_combo = 1;
+         if (sel_was_down && !in_down[IN_SELECT])
+         {
+            if (!sel_combo && play_t < 0) { g_want_settings = 1; logf_("settings requested (Select)"); }
+            sel_combo = 0;
+         }
+         sel_was_down = in_down[IN_SELECT];
+      }
       if (in_down[IN_SELECT] && in_down[IN_START]) running = 0;
       else
       {
@@ -1511,7 +1564,16 @@ int main(int argc, char **argv)
                u = clampf((pt - 0.45f) / 0.65f, 0, 1); open = SMOOTH(u);
                u = clampf((pt - 1.05f) / 0.35f, 0, 1); lift = SMOOTH(u);
                fly = clampf((pt - 1.40f) / 0.75f, 0, 1);
-               spin = pt > 1.05f ? (pt - 1.05f) * (pt - 1.05f) * 9.0f : 0.0f;
+               {  /* angular velocity: ramps up out of the tray, cruises while flying,
+                   * eases to a calm spin once centred (fast spins strobe at 60 Hz) */
+                  static float disc_spin;
+                  float w;
+                  if (pt < 1.05f) disc_spin = 0.0f;
+                  w = pt < 1.05f ? 0.0f : pt < 1.45f ? 7.0f * (pt - 1.05f) / 0.40f :
+                      pt < 1.95f ? 7.0f : lerpf(7.0f, 1.8f, clampf((pt - 1.95f) / 0.35f, 0, 1));
+                  disc_spin += w * dt;
+                  spin = disc_spin;
+               }
             }
             flash = clampf(1.0f - fabsf(pt - fl_t) / 0.22f, 0, 1);
             fade = clampf((pt - fl_t) / 0.30f, 0, 1);
@@ -1573,10 +1635,13 @@ int main(int argc, char **argv)
             bg_draw(&bg_next, ba * e, t);
          }
          {
-            const float vig[4] = { 0, 0, 0, 0.55f };
+            const float vig[4] = { 1, 1, 1, 1 };
             float spot[4] = { 0.55f + bg[0].x, 0.55f + bg[1].x, 0.62f + bg[2].x, 0.10f * (1.0f - fade) };
-            (void)vig;
-            draw_2d(0, 0, 0, W, H, spot, 4);
+            if (g_fx_vignette)
+            {  /* baked masks: two texture fetches instead of per-pixel maths */
+               draw_2d(g_vig_tex, 0, 0, W, H, vig, 0);
+               draw_2d(g_spot_tex, 0, 0, W, H, spot, 0);
+            }
          }
 
          glUseProgram(g_prog_box);
@@ -1600,6 +1665,7 @@ int main(int argc, char **argv)
                float bob = 0.0f, sway = 0.0f, op = 0.0f, ty = 0.0f, tx_ = 0.0f;
                const platform_t *gp;
                if (i == 0 && s == 1) continue;
+               if (!g_fx_sides && o != 0) continue;
                idx = ((sel + o) % n + n) % n;
                g = &g_games[pl->first + idx];
                if (g->al.x < 0.01f || !g->tex) continue;
@@ -1624,7 +1690,7 @@ int main(int argc, char **argv)
                      tx_ = tilt;
                   }
                }
-               if (o == 0)
+               if (o == 0 && g_fx_refl)
                {
                   /* true reflection: the whole case mirrored about the floor, same motion */
                   float floor_y = -0.5f * gp->h * g->sc.x - 0.01f;
@@ -1670,6 +1736,7 @@ int main(int argc, char **argv)
 
          /* ---- 2D overlay ---- */
          glUseProgram(g_prog_2d);
+         if (g_fx_text)
          {
             const float txt[4] = { 0.93f, 0.92f, 0.97f, 1 - fade };
             const float dim[4] = { 0.55f, 0.54f, 0.64f, 1 - fade };
@@ -1772,6 +1839,29 @@ int main(int argc, char **argv)
 
       SDL_GL_SwapWindow(win);
       frames++;
+      {  /* bench: <home>/bench present -> measure with one effect off at a time */
+         static int bench = -1, step; static double bt, bframes;
+         static const char *names[] = { "all", "no-vignette", "no-reflection", "no-glass", "no-side-cases", "no-text", "bare" };
+         if (bench < 0)
+         {
+            char bp[300]; snprintf(bp, sizeof(bp), "%s/bench", g_home);
+            bench = file_exists(bp) ? 1 : 0;
+            if (bench) { remove(bp); bt = t + 3.0; step = -1; logf_("bench: start (MSAA %d)", settings_get_int("msaa", 4, 0, 4)); }
+         }
+         if (bench == 1 && t >= bt)
+         {
+            if (step >= 0) logf_("bench %-14s %.1f fps", names[step], bframes / 2.5);
+            step++;
+            if (step >= (int)(sizeof(names) / sizeof(names[0]))) { bench = 2; g_fx_vignette = g_fx_refl = g_fx_glass = g_fx_sides = g_fx_text = 1; logf_("bench: done"); }
+            else
+            {
+               g_fx_vignette = step != 1 && step != 6; g_fx_refl = step != 2 && step != 6; g_fx_glass = step != 3 && step != 6;
+               g_fx_sides = step != 4 && step != 6;    g_fx_text = step != 5 && step != 6;
+               bt = t + 2.5; bframes = 0;
+            }
+         }
+         if (bench == 1 && step >= 0) bframes += 1;
+      }
       if (t - fps_t >= 5.0)
       {
          logf_("fps %.1f, rss %ld kB", frames / (t - fps_t), rss_kb());
