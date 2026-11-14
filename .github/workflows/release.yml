@@ -42,7 +42,7 @@ jobs:
           gh release download "$PSC_PLATFORM" -R vcalderondev/psc-platform -D "$RUNNER_TEMP/platform"
           (cd "$RUNNER_TEMP/platform" && sha256sum -c SHA256SUMS)
       # the toolchain action of the SAME pinned psc-platform release
-      - uses: vcalderondev/psc-platform/.github/actions/toolchain@v2.0.0
+      - uses: vcalderondev/psc-platform/.github/actions/toolchain@v2.1.0
         with:
           sysroot-token: ${{ secrets.PSC_SYSROOT_TOKEN }}
       - name: Build Lumen
