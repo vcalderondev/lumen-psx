@@ -74,28 +74,26 @@ enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_REN
  * next boot (settings display / scanout). The compositor is not a choice: boot.sh runs
  * the newest PSC compositor installed in <home>/compositor/ (RetroArch 1.22 needs it)
  * and falls back to Sony's only if it does not start; "In use" shows which one runs. */
-static const char *const k_comp_id[] = { "stock", "weston6", "weston16" };
-static const char *const k_comp_key[] = { "display.comp_stock", "display.comp_w6", "display.comp_w16" };
+static const char *const k_comp_id[] = { "stock", "weston16" };
+static const char *const k_comp_key[] = { "display.comp_stock", "display.comp_w16" };
 static int comp_available(int i)
 {
    char p[400];
    if (i == 0) return 1;
-   snprintf(p, sizeof(p), "%s/compositor/psc-weston-%s.tar.gz", g_home, i == 1 ? "6" : "16");
-   if (access(p, R_OK) == 0) return 1;
-   if (i == 1) { snprintf(p, sizeof(p), "%s/compositor/psc-weston.tar.gz", g_home); return access(p, R_OK) == 0; }
-   return 0;
+   snprintf(p, sizeof(p), "%s/compositor/psc-weston-16.tar.gz", g_home);
+   return access(p, R_OK) == 0;
 }
-/* the compositor boot.sh will start: the newest installed */
+/* the compositor boot.sh will start: Lumen's when installed */
 static int comp_setting(void)
 {
-   return comp_available(2) ? 2 : (comp_available(1) ? 1 : 0);
+   return comp_available(1) ? 1 : 0;
 }
 /* what is running now: boot.sh exports LUMEN_COMPOSITOR and LUMEN_DISPLAY */
 static int comp_in_use(void)
 {
    const char *c = getenv("LUMEN_COMPOSITOR");
    int i;
-   for (i = 0; c && i < 3; i++) if (!strcmp(c, k_comp_id[i])) return i;
+   for (i = 0; c && i < 2; i++) if (!strcmp(c, k_comp_id[i])) return i;
    return 0;
 }
 static int out_1080(void) { return !strcmp(settings_get("display", "720p"), "1080p"); }

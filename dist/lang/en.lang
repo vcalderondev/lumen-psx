@@ -157,7 +157,6 @@ hint.dont_show = Don't show again
 section.display = Display
 display.output = Output resolution
 display.comp_stock = Sony · Weston 1.11
-display.comp_w6 = Weston 6.0.1 · Wayland 1.26
 display.comp_w16 = Weston 16.0.2 · Wayland 1.26
 display.scanout = Direct scanout
 display.scanout_stock = Only with Lumen's compositors

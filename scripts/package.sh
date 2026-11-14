@@ -4,7 +4,7 @@
 #   scripts/package.sh <version> <platform dir> <output dir>
 #
 # <platform dir> holds the psc-platform release assets pinned in platform.lock:
-#   psc-weston-6.tar.gz psc-weston-16.tar.gz psc-retroarch.tar.gz
+#   psc-weston-16.tar.gz psc-retroarch.tar.gz
 #   pcsx_rearmed_libretro.so versions.txt
 # out/lumen and out/lumen-buttons must be built (build.sh).
 #
@@ -18,7 +18,7 @@ set -e
 VER=$1; PF=$2; OUTD=$3
 [ -n "$VER" ] && [ -d "$PF" ] && [ -n "$OUTD" ] || { echo "usage: $0 <version> <platform dir> <output dir>"; exit 2; }
 cd "$(dirname "$0")/.."
-for f in out/lumen out/lumen-buttons "$PF/psc-weston-6.tar.gz" "$PF/psc-retroarch.tar.gz" "$PF/pcsx_rearmed_libretro.so"; do
+for f in out/lumen out/lumen-buttons "$PF/psc-weston-16.tar.gz" "$PF/psc-retroarch.tar.gz" "$PF/pcsx_rearmed_libretro.so"; do
   [ -f "$f" ] || { echo "missing $f"; exit 1; }
 done
 ST="$(mktemp -d)"; L="$ST/lumen"
@@ -32,7 +32,7 @@ cp dist/lang/*.lang "$L/lang/"
 cp assets/splash.png assets/splash-1080.png "$L/assets/"
 for d in icons glyphs fonts; do mkdir -p "$L/assets/$d"; cp assets/$d/* "$L/assets/$d/"; done
 # platform: compositor packages, RetroArch, cores
-cp "$PF"/psc-weston-*.tar.gz "$L/compositor/"
+cp "$PF/psc-weston-16.tar.gz" "$L/compositor/"
 T="$(mktemp -d)"; tar xzf "$PF/psc-retroarch.tar.gz" -C "$T"
 cp "$T/bin/retroarch" "$L/retroarch/retroarch"; chmod 755 "$L/retroarch/retroarch"
 cp -R "$T/share/retroarch/autoconfig/udev" "$L/retroarch/autoconfig/"
