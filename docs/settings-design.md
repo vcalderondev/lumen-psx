@@ -31,7 +31,7 @@ Features (user request):
   profile names typed by the user, and numbers.
 - Nothing in this repository may name or refer to the third-party loader/firmware the
   console boots from. Paths of the RetroArch installation, its config and its existing
-  save folders are only known by `lumen.conf` (workspace `integrations/psc-boot/lumen.conf`,
+  save folders are only known by `lumen.conf` (`psc/lumen.conf`,
   outside the repo). The repo never hard-codes them.
 - Commits: plain subject/body, no attribution trailers of any kind. Do not push.
   Commit only the files of your step (other sessions may have unrelated uncommitted
@@ -941,7 +941,7 @@ Creates: `src/profiles.c/.h`, `src/launch.c/.h`.
 Edits: `src/main.c` (profile chip, back-card text, launch via `launch_write`), `src/panel.c`
 (Profile page, keyboard + confirm wiring), `scripts/run.sh` (8.1, 8.2, 8.4; v1 fallback),
 `build.sh`, `README.md` (profiles, USB layout `/lumen/profiles/`), workspace
-`integrations/psc-boot/lumen.conf` (8.3: `LUMEN_MAIN_SAVES`, `LUMEN_MAIN_STATES`,
+`psc/lumen.conf` (8.3: `LUMEN_MAIN_SAVES`, `LUMEN_MAIN_STATES`,
 `LUMEN_CORE_OPT_DIR`, append `LUMEN_RA_EXTRA`).
 
 Accept:

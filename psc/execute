@@ -1,0 +1,4 @@
+#!/bin/sh
+# Boot hand-off: the console's USB loader runs this file; start Lumen instead.
+# Original file kept next to it as execute.eris (restore with tools/rollback-lumen-boot.sh).
+exec sh /media/lumen/boot.sh

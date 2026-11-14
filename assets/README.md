@@ -5,7 +5,8 @@ Everything visual that Lumen ships lives here and is installed to
 
 | Path | What |
 |---|---|
-| `splash.png` | 1280x720 boot screen |
+| `splash.png` | 1280x720 boot screen, shown by the Eris loader before Lumen starts (`tools/install-lumen-boot.sh` copies it to the loader theme): plain black until the Lumen PSX mark is designed |
+| `splash-1080.png` | the same boot screen at 1920x1080, for 1080p output |
 | `icons/<name>.png` | previous pixel-art controller icons (kept as an alternative style), pixel art authored on a 36 px grid and exported x4 (`tools/make-icons.py`); names: cross, circle, triangle, square, dpad, l1, r1, l2, r2, select, start |
 | `glyphs/<name>.png` | dashboard glyphs (PS5-style): flat white on transparent at 2x (64 px), tinted in the shader (`tools/make-glyphs.py`); buttons: cross, circle, triangle, square, dpad, l1, r1, l2, r2, select, start; status: pad, network, clock; top: info, gallery, settings; media badges: disc, cartridge, coin |
 | `fonts/{regular,medium,semibold,bold}.ttf` | UI font: Outfit (SIL Open Font License, `fonts/OFL.txt`, github.com/Outfitio/Outfit-Fonts); without them the system Liberation Sans is used |
