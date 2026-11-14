@@ -3,7 +3,7 @@
  * SDL2 2.0.4 + OpenGL ES 3.0 on Weston/Wayland, Cortex-A35, 1 GB RAM.
  *
  * Prototype scope:
- *   - scans /media/games/<n>/Game.ini (PSC/BleemSync layout) for PlayStation games
+ *   - one library per declared system under /media/games/<system>/ (see docs/systems.md)
  *   - 3D jewel-case carousel with spring physics, idle float, lighting,
  *     floor reflections, ambient colour from the selected cover
  *   - platform pills (only platforms that have games)
@@ -167,6 +167,7 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "system", "show_name", v, sizeof(v), "1"); pl->show_name = atoi(v);
    decl_get(ini, "library", "layout", pl->layout, sizeof(pl->layout), "files");
    decl_get(ini, "library", "paths", pl->paths, sizeof(pl->paths), "");
+   if (!pl->paths[0]) snprintf(pl->paths, sizeof(pl->paths), "%s/games/%s", g_root, pl->id);  /* convention */
    decl_get(ini, "library", "extensions", pl->exts, sizeof(pl->exts), "");
    decl_get(ini, "launch", "core", pl->core, sizeof(pl->core), "");
    decl_get(ini, "media", "kind", v, sizeof(v), "disc");
@@ -216,7 +217,7 @@ static void load_systems(void)
    if (!g_nplat)  /* built-in default: PlayStation library in the PSC layout */
    {
       char def[400];
-      snprintf(def, sizeof(def), "[system]\nid=psx\nname=PlayStation\n[library]\nlayout=psc\npaths=%s/games\n"
+      snprintf(def, sizeof(def), "[system]\nid=psx\nname=PlayStation\n[library]\nlayout=psc\npaths=%s/games/psx\n"
                "extensions=cue,pbp,chd,m3u\n[launch]\ncore=pcsx_rearmed_libretro.so\n[media]\nkind=disc\n", g_root);
       platform_from_decl(&g_plat[0], def);
       g_nplat = 1;
@@ -1130,7 +1131,7 @@ static void hints_load(const char *home, TTF_Font *font)
          char path[400]; SDL_Surface *sf;
          snprintf(path, sizeof(path), "%s/icons/%s.png", home, g_hints[i].icons[k]);
          sf = IMG_Load(path);
-         if (sf) { h->iw[k] = sf->w; h->ih[k] = sf->h; h->icon[k] = surface_to_tex(sf, 0, NULL); SDL_FreeSurface(sf); }
+         if (sf) { h->iw[k] = sf->w; h->ih[k] = sf->h; h->icon[k] = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
          if (!h->icon[k]) have = 0;
       }
       if (!have)
@@ -1142,7 +1143,9 @@ static void hints_load(const char *home, TTF_Font *font)
 /* draw the hints centred on y; returns nothing, icons scaled to icon_h */
 static void hints_draw(float y, float alpha)
 {
-   const float icon_h = 28.0f, gap_icon = 6.0f, gap_txt = 10.0f, gap_hint = 42.0f;
+   /* icons are pixel art authored at 36 px (exported x4): draw them at exactly 36 px,
+    * on whole pixels, so every art pixel lands on one screen pixel */
+   const float icon_h = 36.0f, gap_icon = 6.0f, gap_txt = 10.0f, gap_hint = 42.0f;
    const float ic[4] = { 1, 1, 1, alpha }, tc[4] = { 0.62f, 0.61f, 0.72f, alpha };
    float total = 0, x;
    int i, k;
@@ -1153,19 +1156,20 @@ static void hints_draw(float y, float alpha)
       else for (k = 0; k < 3 && h->icon[k]; k++) total += icon_h * h->iw[k] / (float)h->ih[k] + gap_icon;
       total += gap_txt + h->tw + (i < NHINTS - 1 ? gap_hint : 0);
    }
-   x = (W - total) * 0.5f;
+   x = floorf((W - total) * 0.5f);
+   y = floorf(y);
    for (i = 0; i < NHINTS; i++)
    {
       hint_gl_t *h = &g_hint_gl[i];
       if (h->fb) { draw_2d(h->fb, x, y - h->fbh * 0.5f, h->fbw, h->fbh, tc, 0); x += h->fbw; }
       else for (k = 0; k < 3 && h->icon[k]; k++)
       {
-         float w = icon_h * h->iw[k] / (float)h->ih[k];
+         float w = floorf(icon_h * h->iw[k] / (float)h->ih[k] + 0.5f);
          draw_2d(h->icon[k], x, y - icon_h * 0.5f, w, icon_h, ic, 0);
          x += w + gap_icon;
       }
       x += gap_txt;
-      draw_2d(h->txt, x, y - h->th * 0.5f, h->tw, h->th, tc, 0);
+      draw_2d(h->txt, x, floorf(y - h->th * 0.5f), h->tw, h->th, tc, 0);
       x += h->tw + gap_hint;
    }
 }

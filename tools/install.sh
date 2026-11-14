@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install Lumen onto the console's USB stick as /lumen (MD5-verified, no ._ files, ejects).
 #   tools/install.sh [--cores DIR]          binary + run.sh + data (+ libretro cores from DIR)
-#   tools/install.sh --bg <game dir> <img>  per-game background -> /games/<dir>/background.<ext>
+#   tools/install.sh --bg <system>/<game dir> <img>  per-game background -> /games/<system>/<dir>/background.<ext>
 # USB mount point: $LUMEN_USB (default /Volumes/SONY)
 set -e
 cd "$(dirname "$0")/.."

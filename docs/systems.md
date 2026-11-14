@@ -1,6 +1,7 @@
 # System declarations
 
-Every system Lumen shows is described by one file, `<home>/systems/<id>.ini`.
+Every system Lumen shows is described by one file, `<home>/systems/<id>.ini`,
+and its games live in `<root>/games/<id>/` (e.g. `/media/games/psx/`, `/media/games/snes/`).
 Lumen ships no per-system logic: adding a system means adding a file. Assets the
 declaration refers to (logos, shells, sounds) live next to it in
 `<home>/systems/<id>/`.
@@ -15,8 +16,8 @@ logo      = logo.png            ; <home>/systems/<id>/logo.png, white on transpa
 order     = 10                  ; position of the tab
 
 [library]
-layout     = psc                ; psc: /games/<n>/Game.ini folders | files: one file per game
-paths      = /media/games       ; ';'-separated
+layout     = psc                ; psc: <path>/<n>/Game.ini folders | files: one file per game
+paths      = /media/games/psx   ; ';'-separated; default: <root>/games/<id>
 extensions = cue,pbp,chd,m3u    ; for layout = files (and multi-disc detection)
 
 [launch]

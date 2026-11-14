@@ -27,7 +27,7 @@ against the console's own libraries) exposed as `psc-env` + `psc-check`:
 
 ```sh
 tools/install.sh --cores <dir with *_libretro.so>   # -> USB:/lumen
-tools/install.sh --bg 22 re3.jpg                    # optional per-game background
+tools/install.sh --bg psx/22 re3.jpg                # optional per-game background
 ```
 
 USB layout:
@@ -42,7 +42,10 @@ USB layout:
 /lumen/fonts/{regular,bold}.ttf   optional, defaults to the system Liberation Sans
 /lumen/cores/*.so             libretro cores (PlayStation: pcsx_rearmed_libretro.so)
 /lumen/state.txt, logs/       last selection, logs
-/games/<n>/Game.ini, <disc>.cue, <disc>.png, background.jpg
+/lumen/systems/<id>.ini       one declaration per system (docs/systems.md)
+/games/<id>/...               one library per system, e.g.
+/games/psx/<n>/Game.ini, <disc>.cue, <disc>.png, disc.png, background.jpg
+/games/snes/<name>.sfc, <name>.png, <name>-cart.png, <name>-background.jpg
 ```
 
 At power-on the console's USB loader must hand control to `/lumen/boot.sh`
