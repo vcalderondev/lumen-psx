@@ -4,14 +4,20 @@
  * The console's front buttons are a gpio-keys input device:
  *   POWER = KEY_SLEEP (142, wake source), RESET = KEY_PLAYPAUSE (164), OPEN = KEY_EJECTCD (161)
  *
- * POWER is handled by the system power manager, which suspends the console
- * after a handshake: it creates <power>/prepare_suspend and waits for the app
- * in front to answer with <power>/apps_okay. This daemon answers it (after a
- * sync), so POWER suspends/resumes the console in the menu and in games.
+ * POWER does what Settings > POWER button says (power_button in settings.ini, read
+ * again whenever the file changes):
+ *  - off (default): this daemon powers the console off (power.sh off: the game saves
+ *    and quits, Lumen closes, the USB stick is unmounted). Sony's power manager is told
+ *    to ignore POWER (<power>/disable = 2).
+ *  - suspend: Sony's power manager suspends to RAM after a handshake: it creates
+ *    <power>/prepare_suspend and waits for <power>/apps_okay. Before answering, this
+ *    daemon runs power.sh suspend (sync, pause every process on the USB stick: a task
+ *    waiting on the exFAT/FUSE stick cannot be frozen); when <power>/resume_count
+ *    changes (the console woke up) it runs power.sh resume.
  * RESET quits a running RetroArch, which returns the session to Lumen.
  * OPEN is logged (reserved for disc swapping).
  *
- * Usage: lumen-buttons [--log file] [--power-dir /data/power]
+ * Usage: lumen-buttons [--log file] [--power-dir /data/power] [--home /media/lumen]
  *
  * Demo watcher (attract mode, docs/settings-design.md 8.7):
  *   lumen-buttons --demo-watch <seconds> --pid <pid> [--log file]
@@ -33,6 +39,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -313,16 +320,77 @@ static int demo_watch(int seconds, pid_t pid)
    }
 }
 
+/* ---- POWER mode (settings.ini power_button: off | suspend) */
+static const char *g_home = "/media/lumen";
+static time_t g_set_mtime = (time_t)-1;
+static int g_suspend_mode = -1;
+static int read_power_mode(void)
+{
+   char path[300], line[160];
+   int suspend = 0;
+   FILE *f;
+   snprintf(path, sizeof(path), "%s/settings.ini", g_home);
+   if (!(f = fopen(path, "r"))) return 0;
+   while (fgets(line, sizeof(line), f))
+      if (!strncmp(line, "power_button=", 13)) suspend = !strncmp(line + 13, "suspend", 7);
+   fclose(f);
+   return suspend;
+}
+/* re-read on change; tell Sony's power manager whether POWER is its (1) or ours (2) */
+static void power_mode_update(const char *power_dir)
+{
+   char path[300];
+   struct stat st;
+   int m;
+   snprintf(path, sizeof(path), "%s/settings.ini", g_home);
+   if (stat(path, &st) != 0) st.st_mtime = 0;
+   if (st.st_mtime == g_set_mtime && g_suspend_mode >= 0) return;
+   g_set_mtime = st.st_mtime;
+   m = read_power_mode();
+   if (m != g_suspend_mode)
+   {
+      int f;
+      g_suspend_mode = m;
+      snprintf(path, sizeof(path), "%s/disable", power_dir);
+      if ((f = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644)) >= 0)
+      { if (write(f, m ? "1\n" : "2\n", 2) < 0) {} close(f); }
+      logf_("power button: %s", m ? "suspend (Sony's power manager)" : "power off");
+   }
+}
+static int run_power(const char *action, int wait)
+{
+   pid_t p = fork();
+   if (p == 0)
+   {
+      execl("/bin/sh", "sh", "/tmp/lumen-power.sh", action, (char *)NULL);
+      _exit(127);
+   }
+   if (p > 0 && wait) { int st; waitpid(p, &st, 0); return WIFEXITED(st) ? WEXITSTATUS(st) : -1; }
+   return p > 0 ? 0 : -1;
+}
+static long read_long(const char *path)
+{
+   char b[32] = { 0 };
+   int f = open(path, O_RDONLY);
+   if (f < 0) return -1;
+   if (read(f, b, sizeof(b) - 1) < 0) b[0] = 0;
+   close(f);
+   return atol(b);
+}
+
 int main(int argc, char **argv)
 {
    const char *log_path = NULL, *power_dir = "/data/power";
-   char dev[64], prep[200], okay[200];
-   int i, fd, acked = 0, demo_seconds = -1, demo_pid = 0;
+   char dev[64], prep[200], okay[200], rcount[200];
+   int i, fd, acked = 0, paused = 0, powering_off = 0, demo_seconds = -1, demo_pid = 0;
+   long resume0 = -1;
+   time_t paused_at = 0;
 
    for (i = 1; i < argc; i++)
    {
       if (!strcmp(argv[i], "--log") && i + 1 < argc) log_path = argv[++i];
       else if (!strcmp(argv[i], "--power-dir") && i + 1 < argc) power_dir = argv[++i];
+      else if (!strcmp(argv[i], "--home") && i + 1 < argc) g_home = argv[++i];
       else if (!strcmp(argv[i], "--demo-watch") && i + 1 < argc) demo_seconds = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--pid") && i + 1 < argc) demo_pid = atoi(argv[++i]);
    }
@@ -336,6 +404,8 @@ int main(int argc, char **argv)
    }
    snprintf(prep, sizeof(prep), "%s/prepare_suspend", power_dir);
    snprintf(okay, sizeof(okay), "%s/apps_okay", power_dir);
+   snprintf(rcount, sizeof(rcount), "%s/resume_count", power_dir);
+   signal(SIGCHLD, SIG_IGN);   /* power.sh off runs detached */
 
    fd = open_buttons(dev, sizeof(dev));
    if (fd < 0) { logf_("gpio-keys not found: %s", strerror(errno)); return 1; }
@@ -349,21 +419,36 @@ int main(int argc, char **argv)
       int r = poll(&pfd, 1, 150);
       log_tick();
 
-      /* power handshake: answer once per suspend request */
+      power_mode_update(power_dir);
+      /* suspend handshake: answer once per request, after pausing the USB users */
       if (exists(prep))
       {
          if (!acked)
          {
             int f;
-            sync();
+            logf_("power: suspend requested: pausing the session");
+            log_sync(1);
+            resume0 = read_long(rcount);
+            signal(SIGCHLD, SIG_DFL); run_power("suspend", 1); signal(SIGCHLD, SIG_IGN);
+            paused = 1; paused_at = time(NULL);
             f = open(okay, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (f >= 0) close(f);
             acked = 1;
-            logf_("power: suspend requested -> apps_okay");
-            log_sync(1);   /* the console may power off right after this */
          }
       }
-      else if (acked) { acked = 0; logf_("power: resumed"); }
+      else if (acked) acked = 0;
+      /* woke up (resume_count moved), or the suspend never happened (60 s) */
+      if (paused)
+      {
+         long rc = read_long(rcount);
+         int woke = rc >= 0 && resume0 >= 0 && rc != resume0;
+         if (woke || time(NULL) - paused_at > 60)
+         {
+            paused = 0;
+            run_power("resume", 0);
+            logf_("power: %s (resume_count %ld -> %ld)", woke ? "resumed" : "no suspend after 60 s, resuming", resume0, rc);
+         }
+      }
 
       if (r > 0 && (pfd.revents & POLLIN))
       {
@@ -378,7 +463,16 @@ int main(int argc, char **argv)
                if (ra) kill(ra, SIGTERM);
             }
             else if (ev.code == KEY_EJECTCD) logf_("open pressed");
-            else if (ev.code == KEY_SLEEP) logf_("power pressed");
+            else if (ev.code == KEY_SLEEP)
+            {
+               logf_("power pressed%s", g_suspend_mode ? "" : ": powering off");
+               if (!g_suspend_mode && !powering_off)
+               {
+                  powering_off = 1;   /* once: further presses are ignored */
+                  log_sync(1);
+                  run_power("off", 0);
+               }
+            }
             else logf_("key %d pressed", ev.code);
          }
       }

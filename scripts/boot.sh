@@ -206,6 +206,10 @@ case "${STARTED}" in psc) export LUMEN_COMPOSITOR="weston${PW_VER}" ;; *) export
 # RESET quits a running game. Only hand POWER to the system if the daemon runs.
 rm -f /data/power/prepare_suspend /data/power/apps_okay
 BUTTONS_PID=""
+# POWER button actions (power.sh, run by lumen-buttons): copied to RAM, since "off"
+# unmounts the stick; the session shells and USB writers are recorded for it
+cp "${LUMEN_HOME}/power.sh" /tmp/lumen-power.sh 2>/dev/null
+echo $$ > /tmp/lumen-session.pids; : > /tmp/lumen-usb-writers.pids
 if [ -x "${LUMEN_HOME}/lumen-buttons" ] || chmod +x "${LUMEN_HOME}/lumen-buttons" 2>/dev/null; then
   "${LUMEN_HOME}/lumen-buttons" --log "${LOG}/buttons.log" > /tmp/lumen-buttons.out 2>&1 &
   BUTTONS_PID=$!
@@ -227,9 +231,11 @@ fi
 dmesg > "${LOG}/kernel.log" 2>/dev/null
 ( while IFS= read -r kl; do printf '%s\n' "$kl" >> "${LOG}/kernel.log"; sync; done < /proc/kmsg ) &
 KLOG_PID=$!
+echo "${KLOG_PID}" >> /tmp/lumen-usb-writers.pids
 # Sony's power manager (power_manage: POWER -> prepare_suspend / apps_okay -> suspend to
 # RAM) logs to /tmp/power.log: copied to the USB line by line, for the POWER button
 ( tail -f /tmp/power.log 2>/dev/null | while IFS= read -r pl; do printf '%s %s\n' "$(date +%T)" "$pl" >> "${LOG}/power.log"; sync; done ) &
+echo $! >> /tmp/lumen-usb-writers.pids
 
 # 2. Lumen session
 # the one-shot marker only guards the window until a frame is on screen: Lumen writes
