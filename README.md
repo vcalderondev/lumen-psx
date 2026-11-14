@@ -34,6 +34,8 @@ USB layout:
 
 ```
 /lumen/lumen                  frontend binary
+/lumen/boot.sh                boot entry: takes over the display, runs a session,
+                              falls back to the stock Sony menu when it ends
 /lumen/run.sh                 session loop (frontend <-> RetroArch)
 /lumen/lumen.conf             optional: RETROARCH=..., run_retroarch() override
 /lumen/gamecontrollerdb.txt   controller mappings
@@ -43,7 +45,9 @@ USB layout:
 /games/<n>/Game.ini, <disc>.cue, <disc>.png, background.jpg
 ```
 
-Start a session with `/lumen/run.sh`.
+At power-on the console's USB loader must hand control to `/lumen/boot.sh`
+(it never returns; the loader reboots when it does). `run.sh` alone starts a
+session from an already running system.
 
 ## Controls
 
@@ -52,12 +56,13 @@ Start a session with `/lumen/run.sh`.
 | D-pad left/right (hold to scroll) | browse |
 | L1 / R1 | previous / next platform |
 | Circle, Cross, Start | play |
-| Select, then Start | exit |
+| Select, then Start | leave Lumen (opens the stock Sony menu) |
 
 ## Layout
 
 ```
 src/main.c, src/gl.h          frontend
+scripts/boot.sh               boot entry
 scripts/run.sh                session loop
 dist/                         data files installed next to the binary
 third_party/include/SDL2      SDL_image 2.0.1 / SDL_ttf 2.0.14 headers (zlib licence)

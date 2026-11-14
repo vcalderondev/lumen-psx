@@ -720,6 +720,8 @@ static void in_event(const SDL_Event *e)
    {
       int d = e->type == SDL_KEYDOWN, b = -1;
       if (e->key.repeat) break;
+      if (d) logf_("key: sym 0x%x scancode %d (%s)", (unsigned)e->key.keysym.sym,
+                   (int)e->key.keysym.scancode, SDL_GetKeyName(e->key.keysym.sym));
       switch (e->key.keysym.sym)
       {
       case SDLK_LEFT: b = IN_LEFT; break;
