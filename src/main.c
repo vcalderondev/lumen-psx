@@ -1344,6 +1344,35 @@ static void draw_text(const label_t *l, float x, float y, const float c[4])
    draw_2d(l->tex, floorf(x), floorf(y), l->w, l->h, c, 0);
 }
 
+/* The focused tile's shadow, baked once: same falloff as FS_2D mode 10 for a 220 px
+ * tile (radius 14, blur 22), drawn as a plain texture (a blurred shape needs no
+ * resolution, and the SDF shader cost ~2 ms a frame at 1080p). */
+static GLuint g_tile_shadow;
+static void make_tile_shadow(void)
+{
+   enum { N = 132 };
+   static unsigned char px[N * N * 4];
+   const float full = 264.0f, hs = 110.0f, r = 14.0f, blur = 22.0f;
+   int x, y;
+   for (y = 0; y < N; y++)
+      for (x = 0; x < N; x++)
+      {
+         float qx = fabsf((x + 0.5f) / N * full - full * 0.5f) - (hs - r), qy = fabsf((y + 0.5f) / N * full - full * 0.5f) - (hs - r);
+         float ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0, in = qx > qy ? qx : qy;
+         float d = sqrtf(ox * ox + oy * oy) + (in < 0 ? in : 0) - r;
+         float k = 1.0f - smooth01(-blur * 0.35f, blur, d);
+         unsigned char *p = px + (y * N + x) * 4;
+         p[0] = p[1] = p[2] = 255; p[3] = (unsigned char)(255.0f * k * k + 0.5f);
+      }
+   glGenTextures(1, &g_tile_shadow);
+   glBindTexture(GL_TEXTURE_2D, g_tile_shadow);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, N, N, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
 /* textured rounded tile (mode 6), the texture (tw x th) cover-fitted into w x h;
  * sheen < -1 = none */
 static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, float h, float radius,
@@ -2322,7 +2351,12 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          g = &g_games[pl->first + idx];
          /* only the focused tile casts a shadow: the others sit on dimmed art where it
           * barely shows, and seven blurred quads cost ~5 ms a frame on the console */
-         if (idx == sel) draw_shadow(x, TILE_Y, sz, sz, 14, 22, 10, 0.60f * ta);
+         if (idx == sel && g_fx_shadows)
+         {
+            const float sc_[4] = { 0, 0, 0, 0.60f * ta };
+            float b = 22.0f * sz / 220.0f;
+            draw_2d(g_tile_shadow, x - b, TILE_Y - b + 10, sz + 2 * b, sz + 2 * b, sc_, 0);
+         }
          if (g->tex)
          {
             const float c[4] = { 1, 1, 1, ta };
@@ -2599,6 +2633,7 @@ int main(int argc, char **argv)
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
    gl_setup();
    make_fx_textures();
+   make_tile_shadow();
    bg_mx = SDL_CreateMutex();
    bg_cv = SDL_CreateCond();
    SDL_CreateThread(bg_worker, "bg", NULL);
