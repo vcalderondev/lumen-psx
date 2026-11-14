@@ -207,7 +207,7 @@ run_retroarch() {  # core content logfile
 
 ( while true; do sleep 3; sync; done ) &
 SYNCER=$!
-echo $$ >> /tmp/lumen-session.pids; echo "${SYNCER}" >> /tmp/lumen-usb-writers.pids
+echo "${SYNCER}" >> /tmp/lumen-usb-writers.pids
 echo "lumen session $(date)" > "${LOG}/session.log"
 # profiles deleted in the frontend whose background removal did not finish
 rm -rf "${LUMEN_HOME}"/profiles/.trash-* 2>/dev/null

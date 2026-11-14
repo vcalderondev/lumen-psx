@@ -190,6 +190,3 @@ welcome.p4.l1 = Esquerda e direita escolhem o jogo; L1 e R1 mudam de página
 welcome.p4.l2 = L2 e R2 mudam de consola
 welcome.p4.l3 = Cruz joga; Select abre as definições
 welcome.p4.l4 = Num jogo, Reset volta ao Lumen; Select + Start sai para o menu da Sony
-power.button = Botão POWER
-power.off = Desligar
-power.suspend = Suspender
