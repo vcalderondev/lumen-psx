@@ -207,12 +207,23 @@ run_retroarch() {  # core content logfile
 
 ( while true; do sleep 3; sync; done ) &
 SYNCER=$!
+echo "${SYNCER}" >> /tmp/lumen-usb-writers.pids
 echo "lumen session $(date)" > "${LOG}/session.log"
 # profiles deleted in the frontend whose background removal did not finish
 rm -rf "${LUMEN_HOME}"/profiles/.trash-* 2>/dev/null
 
 ARGS=""
+# POWER (power.sh suspend) closes the game and the frontend and stops the compositor;
+# /tmp/lumen-suspending stays until power.sh resume has started it again
+suspend_wait() {
+  [ -f /tmp/lumen-suspending ] || return 1
+  slog "suspended: waiting for the resume"
+  while [ -f /tmp/lumen-suspending ]; do sleep 0.5; done
+  slog "resumed"
+  return 0
+}
 while true; do
+  suspend_wait
   rm -f /tmp/lumen-launch
   # ARGS is a single word or empty (--attract / --focus-demo)
   # keep the previous frontend log (benchmarks run before a game would be lost)
@@ -222,7 +233,9 @@ while true; do
   rc=$?
   ARGS=""
   slog "lumen exit=${rc}"
-  case "${rc}" in 10|11) ;; *) break ;; esac
+  # RESET in the dashboard (lumen-buttons): start the frontend again
+  if [ -f /tmp/lumen-restart ]; then rm -f /tmp/lumen-restart; slog "dashboard restarted (RESET)"; continue; fi
+  case "${rc}" in 10|11) ;; *) suspend_wait && continue; break ;; esac
   lumen_parse_launch /tmp/lumen-launch || { slog "launch request missing or invalid"; break; }
   # the exit code wins over the file
   if [ "${rc}" = "11" ]; then L_MODE=demo; else L_MODE=normal; fi

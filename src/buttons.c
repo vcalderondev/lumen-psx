@@ -4,9 +4,13 @@
  * The console's front buttons are a gpio-keys input device:
  *   POWER = KEY_SLEEP (142, wake source), RESET = KEY_PLAYPAUSE (164), OPEN = KEY_EJECTCD (161)
  *
- * POWER is ignored during a Lumen session (boot.sh sets <power>/disable = 2): Sony's
- * suspend to RAM could not resume a session running from the exFAT stick under a GL
- * compositor, and the PSC has no software power-off. Presses are only logged.
+ * POWER is Sony's: its power manager (power_manage) suspends the console to RAM (red
+ * LED; the PSC has no software power-off: a halted console stays orange until it is
+ * unplugged) after a handshake: it creates <power>/prepare_suspend and waits for
+ * <power>/apps_okay. Before answering, this daemon runs power.sh suspend (sync, pause
+ * every process on the USB stick: a task waiting on the exFAT/FUSE stick cannot be
+ * frozen, the suspend would hang); when <power>/resume_count changes (the console woke
+ * up) it runs power.sh resume.
  * RESET quits a running RetroArch, which returns the session to Lumen.
  * OPEN is logged (reserved for disc swapping).
  *
@@ -32,6 +36,9 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -122,6 +129,7 @@ static pid_t find_proc(const char *name)
    return pid;
 }
 
+static int exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
 
 /* ------------------------------------------------------------------------ */
 /* demo watcher                                                              */
@@ -312,11 +320,93 @@ static int demo_watch(int seconds, pid_t pid)
    }
 }
 
+static int run_power(const char *action, int wait)
+{
+   pid_t p = fork();
+   if (p == 0)
+   {
+      execl("/bin/sh", "sh", "/tmp/lumen-power.sh", action, (char *)NULL);
+      _exit(127);
+   }
+   if (p > 0 && wait) { int st; waitpid(p, &st, 0); return WIFEXITED(st) ? WEXITSTATUS(st) : -1; }
+   return p > 0 ? 0 : -1;
+}
+static long read_long(const char *path)
+{
+   char b[32] = { 0 };
+   int f = open(path, O_RDONLY);
+   if (f < 0) return -1;
+   if (read(f, b, sizeof(b) - 1) < 0) b[0] = 0;
+   close(f);
+   return atol(b);
+}
+
+static const char *g_home = "/media/lumen";
+
+/* ---- RetroArch network commands (retroarch.cfg: network_cmd_enable, port 55355) */
+static void ra_cmd(const char *cmd)
+{
+   struct sockaddr_in a;
+   int s = socket(AF_INET, SOCK_DGRAM, 0);
+   if (s < 0) return;
+   memset(&a, 0, sizeof(a));
+   a.sin_family = AF_INET; a.sin_port = htons(55355); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+   if (sendto(s, cmd, strlen(cmd), 0, (struct sockaddr *)&a, sizeof(a)) < 0) logf_("ra_cmd %s: %s", cmd, strerror(errno));
+   close(s);
+}
+/* discs of the running game: an .m3u playlist lists one per line (1 for anything else) */
+static int game_discs(void)
+{
+   char line[700], content[600] = "";
+   int n = 0, ln = 0;
+   FILE *f = fopen("/tmp/lumen-launch", "r");
+   size_t l;
+   if (!f) return 1;
+   while (fgets(line, sizeof(line), f))
+   {
+      line[strcspn(line, "\r\n")] = 0; ln++;
+      if (!strncmp(line, "content=", 8)) snprintf(content, sizeof(content), "%s", line + 8);
+      else if (ln == 2 && !content[0] && !strchr(line, '=')) snprintf(content, sizeof(content), "%s", line);
+   }
+   fclose(f);
+   l = strlen(content);
+   if (l < 4 || strcasecmp(content + l - 4, ".m3u")) return 1;
+   if (!(f = fopen(content, "r"))) return 1;
+   while (fgets(line, sizeof(line), f)) if (line[0] && line[0] != '#' && line[0] != '\r' && line[0] != '\n') n++;
+   fclose(f);
+   return n > 1 ? n : 1;
+}
+/* OPEN in a game: pause it and ask (lumen --dialog), then act on the answer */
+static void open_in_game(void)
+{
+   char cmd[700];
+   int discs = game_discs(), rc;
+   ra_cmd("PAUSE_TOGGLE");
+   snprintf(cmd, sizeof(cmd), "SDL_VIDEODRIVER=wayland XDG_RUNTIME_DIR=/run/user/0 %s/lumen --home %s --dialog %s"
+            " --log /tmp/lumen-dialog.log", g_home, g_home, discs > 1 ? "disc" : "game");
+   signal(SIGCHLD, SIG_DFL);
+   rc = system(cmd);
+   signal(SIGCHLD, SIG_IGN);
+   rc = WIFEXITED(rc) ? WEXITSTATUS(rc) : 0;
+   logf_("open: discs %d, answer %d (%s)", discs, rc, rc == 1 ? "change disc" : rc == 2 ? "exit" : "continue");
+   if (rc == 1)
+   {
+      ra_cmd("DISK_EJECT_TOGGLE"); usleep(300000);
+      ra_cmd("DISK_NEXT"); usleep(300000);
+      ra_cmd("DISK_EJECT_TOGGLE"); usleep(200000);
+      ra_cmd("PAUSE_TOGGLE");
+   }
+   else if (rc == 2) { ra_cmd("PAUSE_TOGGLE"); usleep(100000); ra_cmd("QUIT"); }
+   else ra_cmd("PAUSE_TOGGLE");
+}
+
 int main(int argc, char **argv)
 {
    const char *log_path = NULL, *power_dir = "/data/power";
-   char dev[64];
-   int i, fd, demo_seconds = -1, demo_pid = 0;
+   char dev[64], prep[200], okay[200], rcount[200];
+   int i, fd, acked = 0, paused = 0, demo_seconds = -1, demo_pid = 0;
+   long resume0 = -1;
+   time_t paused_at = 0;
 
    for (i = 1; i < argc; i++)
    {
@@ -325,7 +415,6 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--demo-watch") && i + 1 < argc) demo_seconds = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--pid") && i + 1 < argc) demo_pid = atoi(argv[++i]);
    }
-   (void)power_dir;   /* accepted for compatibility: POWER is not handled */
    g_log = log_path ? fopen(log_path, "a") : NULL;
    if (!g_log) g_log = stderr;
    atexit(log_sync_atexit);
@@ -334,9 +423,14 @@ int main(int argc, char **argv)
       if (demo_seconds < 1 || demo_pid <= 1) { logf_("demo-watch: invalid seconds/pid"); return 3; }
       return demo_watch(demo_seconds, (pid_t)demo_pid);
    }
+   snprintf(prep, sizeof(prep), "%s/prepare_suspend", power_dir);
+   snprintf(okay, sizeof(okay), "%s/apps_okay", power_dir);
+   snprintf(rcount, sizeof(rcount), "%s/resume_count", power_dir);
+   signal(SIGCHLD, SIG_IGN);   /* power.sh resume runs detached */
+
    fd = open_buttons(dev, sizeof(dev));
    if (fd < 0) { logf_("gpio-keys not found: %s", strerror(errno)); return 1; }
-   logf_("watching %s", dev);
+   logf_("watching %s, power handshake in %s", dev, power_dir);
    /* ready marker for boot.sh */
    printf("ready\n"); fflush(stdout);
 
@@ -346,6 +440,36 @@ int main(int argc, char **argv)
       int r = poll(&pfd, 1, 150);
       log_tick();
 
+      /* suspend handshake: answer once per request, after pausing the USB users */
+      if (exists(prep))
+      {
+         if (!acked)
+         {
+            int f;
+            logf_("power: suspend requested: pausing the session");
+            log_sync(1);
+            resume0 = read_long(rcount);
+            signal(SIGCHLD, SIG_DFL); run_power("suspend", 1); signal(SIGCHLD, SIG_IGN);
+            paused = 1; paused_at = time(NULL);
+            f = open(okay, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (f >= 0) close(f);
+            acked = 1;
+         }
+      }
+      else if (acked) acked = 0;
+      /* woke up (resume_count moved), or the suspend never happened (60 s) */
+      if (paused)
+      {
+         long rc = read_long(rcount);
+         int woke = rc >= 0 && resume0 >= 0 && rc != resume0;
+         if (woke || time(NULL) - paused_at > 60)
+         {
+            paused = 0;
+            run_power("resume", 0);
+            logf_("power: %s (resume_count %ld -> %ld)", woke ? "resumed" : "no suspend after 60 s, resuming", resume0, rc);
+         }
+      }
+
       if (r > 0 && (pfd.revents & POLLIN))
       {
          struct input_event ev;
@@ -353,12 +477,18 @@ int main(int argc, char **argv)
          {
             if (ev.type != EV_KEY || ev.value != 1) continue;
             if (ev.code == KEY_PLAYPAUSE)
-            {
-               pid_t ra = find_proc("retroarch");
-               logf_("reset pressed%s", ra ? ": quitting RetroArch" : "");
-               if (ra) kill(ra, SIGTERM);
+            {  /* RESET: restart the game, or the dashboard */
+               pid_t ra = find_proc("retroarch"), lu = find_proc("lumen");
+               logf_("reset pressed: %s", ra ? "resetting the game" : "restarting the dashboard");
+               if (ra) ra_cmd("RESET");
+               else if (lu) { int f = open("/tmp/lumen-restart", O_WRONLY | O_CREAT, 0644); if (f >= 0) close(f); kill(lu, SIGTERM); }
             }
-            else if (ev.code == KEY_EJECTCD) logf_("open pressed");
+            else if (ev.code == KEY_EJECTCD)
+            {  /* OPEN: in a game, pause and ask (change disc / exit / continue) */
+               pid_t ra = find_proc("retroarch");
+               logf_("open pressed%s", ra ? "" : " (dashboard: nothing)");
+               if (ra && !find_proc("lumen")) open_in_game();
+            }
             else if (ev.code == KEY_SLEEP) logf_("power pressed");
             else logf_("key %d pressed", ev.code);
          }

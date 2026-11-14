@@ -2555,6 +2555,66 @@ static void test_shots(double ts)
       }
 }
 
+/* ---- in-game dialog (lumen --dialog disc|game, run by lumen-buttons on OPEN while
+ * RetroArch is paused): a fullscreen card over the game. Exit code = the answer:
+ * 0 continue, 1 change disc, 2 exit the game. Circle / Triangle = continue. */
+static int run_dialog(SDL_Window *win, const char *kind)
+{
+   static const char *const k_disc[] = { "dialog.change_disc", "dialog.exit", "dialog.continue" };
+   static const char *const k_game[] = { "dialog.exit", "dialog.continue" };
+   static const int a_disc[] = { 1, 2, 0 }, a_game[] = { 2, 0 };
+   int disc = !strcmp(kind, "disc"), n = disc ? 3 : 2, sel = n - 1, answer = -1, i;
+   const char *const *keys = disc ? k_disc : k_game;
+   const int *ans = disc ? a_disc : a_game;
+   label_t title = { 0 }, note = { 0 }, opt[3];
+   double t0 = now_s();
+   memset(opt, 0, sizeof(opt));
+   logf_("dialog %s", kind);
+   while (answer < 0)
+   {
+      SDL_Event e;
+      ui_nav_t nv;
+      double t = now_s();
+      memset(in_pressed, 0, sizeof(in_pressed));
+      while (SDL_PollEvent(&e)) { if (e.type == SDL_QUIT) answer = 0; else in_event(&e); }
+      nav_fill(&nv, t);
+      if (t - t0 > 0.25)   /* ignore the press that is still held from the game */
+      {
+         if (nv.up) sel = (sel + n - 1) % n;
+         if (nv.down) sel = (sel + 1) % n;
+         if (nv.confirm) answer = ans[sel];
+         else if (nv.back || nv.options) answer = 0;
+      }
+      glViewport(0, 0, g_dw, g_dh);
+      glClearColor(0.016f, 0.024f, 0.031f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glDisable(GL_DEPTH_TEST);
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      gl_use_2d();
+      {
+         const float card[4] = { 1, 1, 1, 0.06f }, hi[4] = { 0.23f, 0.51f, 0.96f, 0.95f };
+         const float c1[4] = { 0.98f, 0.98f, 0.99f, 1 }, c2[4] = { 0.72f, 0.74f, 0.80f, 1 };
+         float cw = 560, ch = 150 + n * 64, cx = (W - cw) * 0.5f, cy = (H - ch) * 0.5f, y;
+         draw_round_rect(cx, cy, cw, ch, 22, card, 0.10f);
+         label_set(&title, g_font_title, tr("dialog.title"));
+         if (title.tex) draw_2d(title.tex, cx + 40, cy + 34, title.w, title.h, c1, 0);
+         label_set(&note, g_font_small, tr(disc ? "dialog.note_disc" : "dialog.note"));
+         if (note.tex) draw_2d(note.tex, cx + 40, cy + 34 + (title.h ? title.h : 40) + 6, note.w, note.h, c2, 0);
+         y = cy + 130;
+         for (i = 0; i < n; i++, y += 64)
+         {
+            if (i == sel) draw_round_rect(cx + 28, y - 8, cw - 56, 52, 26, hi, 0.0f);
+            label_set(&opt[i], g_font_name, tr(keys[i]));
+            if (opt[i].tex) draw_2d(opt[i].tex, cx + 56, y + (36 - opt[i].h) * 0.5f, opt[i].w, opt[i].h, c1, 0);
+         }
+      }
+      SDL_GL_SwapWindow(win);
+   }
+   logf_("dialog answer %d", answer);
+   return answer;
+}
+
 int main(int argc, char **argv)
 {
    char font_b[300], font_r[300], font_m[300], font_sb[300], font_b_old[300], font_r_old[300], padb[300];
@@ -2563,7 +2623,7 @@ int main(int argc, char **argv)
    /* Outfit ships four weights (assets/README.md); medium / semibold fall back to bold */
    const char *fonts_med[]  = { font_m, font_b, font_b_old, "/usr/share/fonts/ttf/LiberationSans-Bold.ttf", NULL };
    const char *fonts_semi[] = { font_sb, font_b, font_b_old, "/usr/share/fonts/ttf/LiberationSans-Bold.ttf", NULL };
-   const char *log_path = NULL;
+   const char *log_path = NULL, *dialog = NULL;
    int start_attract = 0, focus_demo = 0, home_plat = 0, home_sel = 0, att_prev = 0;
    double last_activity = 0;
    attract_out_t att;
@@ -2586,6 +2646,7 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--home") && i + 1 < argc) snprintf(g_home, sizeof(g_home), "%s", argv[++i]);
       else if (!strcmp(argv[i], "--attract")) start_attract = 1;
       else if (!strcmp(argv[i], "--focus-demo")) focus_demo = 1;
+      else if (!strcmp(argv[i], "--dialog") && i + 1 < argc) dialog = argv[++i];
    }
    snprintf(g_core_dir, sizeof(g_core_dir), "%s/cores", g_home);
    snprintf(g_state, sizeof(g_state), "%s/state.txt", g_home);
@@ -2689,6 +2750,11 @@ int main(int argc, char **argv)
    g_font_hero  = open_font(fonts_semi, 50);
    g_font_tab   = open_font(fonts_med, 19);
    g_font_name  = open_font(fonts_med, 21);
+   if (dialog)   /* in-game dialog: no library, no music */
+   {
+      g_ortho = m4_ortho(0, W, H, 0);
+      return run_dialog(win, dialog);
+   }
 
    load_systems();
    scan_all();
