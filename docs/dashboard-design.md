@@ -107,4 +107,4 @@ the cover colours (computed when the cover is decoded, worker thread):
   `<home>/profiles/<profile>/playlog.tsv` after every normal session; src/stats.c
   aggregates it per profile (time played; "last played" only with a synced clock).
 - Avatar: `<home>/profiles/<id>/avatar.png`, else initials on the profile colour.
-- MSAA default is now 0 (`msaa` setting still honoured).
+- MSAA default 2x (`msaa` setting, 0..4; the log line "MSAA samples" shows what the driver gave).

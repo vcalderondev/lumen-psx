@@ -17,17 +17,20 @@
 
 /* ------------------------------------------------------------------------ */
 /* geometry and colours                                                      */
-#define PW      520.0f
-#define PH      672.0f
-#define PX0     (W - 24.0f - PW)
-#define PY0     24.0f
-#define ROW_H   52.0f
-#define ROWS_Y  124.0f       /* first row, relative to the panel top */
-#define PAD     32.0f
+/* a full-screen section (opaque backdrop drawn by main.c under the help bar): the
+ * content is a centred column inside the TV-safe area */
+#define PW      860.0f
+#define PH      596.0f
+#define PX0     ((W - PW) * 0.5f)
+#define PY0     44.0f
+#define ROW_H   58.0f
+#define ROWS_Y  132.0f       /* first row, relative to the section top */
+#define PAD     28.0f
+#define SLIDE_OFF 560.0f     /* s_slide when closed: drives the open/close motion */
 #define MAX_ROWS 20
 
-static const float C_TXT[3] = { 0.93f, 0.92f, 0.97f };
-static const float C_DIM[3] = { 0.55f, 0.54f, 0.64f };
+static const float C_TXT[3] = { 0.96f, 0.96f, 0.98f };
+static const float C_DIM[3] = { 0.62f, 0.63f, 0.70f };
 static const float C_ACC[3] = { 0.36f, 0.55f, 1.00f };
 static const float C_RED[3] = { 1.00f, 0.42f, 0.42f };
 
@@ -856,7 +859,7 @@ void panel_init(void)
    }
    label_set(&s_lt, g_font_sub, "\xE2\x80\xB9");   /* ‹ */
    label_set(&s_gt, g_font_sub, "\xE2\x80\xBA");   /* › */
-   s_slide.x = PW + 40.0f;
+   s_slide.x = SLIDE_OFF;
    s_page = P_ROOT;
 }
 
@@ -864,12 +867,12 @@ void panel_open(void)
 {
    if (s_open) return;
    s_open = 1;
-   if (s_slide.x > 540.0f) { s_slide.x = PW + 40.0f; s_slide.v = 0; }
+   if (s_slide.x > SLIDE_OFF - 20.0f) { s_slide.x = SLIDE_OFF; s_slide.v = 0; }
    page_enter(P_ROOT, 0);
    logf_("panel: open");
 }
 
-int panel_active(void) { return s_open || s_slide.x <= 540.0f; }
+int panel_active(void) { return s_open || s_slide.x <= SLIDE_OFF - 20.0f; }
 
 float panel_amount(void) { return clampf(s_fade.x, 0.0f, 1.0f); }
 
@@ -902,9 +905,9 @@ void panel_update(const ui_nav_t *nav, double t, float dt)
    }
    else if (s_modal != M_NONE) s_modal = M_NONE;
 
-   spring_step(&s_slide, s_open ? 0.0f : PW + 40.0f, 170, 18, dt);
+   spring_step(&s_slide, s_open ? 0.0f : SLIDE_OFF, 170, 18, dt);
    spring_step(&s_fade, s_open ? 1.0f : 0.0f, 90, 14, dt);
-   if (!s_open && s_slide.x > 540.0f && s_fade.x < 0.003f && s_modal_drawn == M_NONE) return;   /* fully closed */
+   if (!s_open && s_slide.x > SLIDE_OFF - 20.0f && s_fade.x < 0.003f && s_modal_drawn == M_NONE) return;   /* fully closed */
 
    page_build();
    if (s_sel >= s_nrows || (s_sel >= 0 && !row_selectable(s_sel))) s_sel = first_selectable();
@@ -954,16 +957,16 @@ static float draw_swatch(int color, float xr, float y, float a)
 
 void panel_draw(double t)
 {
-   float a = panel_amount(), px = PX0 + s_slide.x, py = PY0;
+   /* the section rises 0..34 px into place while it fades in */
+   float a = panel_amount(), px = PX0, py = PY0 + s_slide.x * 0.06f;
    float ca, cx, top, bottom, c[4], f[4];
    int i;
-   if (s_slide.x > PW + 30.0f && a < 0.003f && s_modal_drawn == M_NONE) return;
+   if (s_slide.x > SLIDE_OFF - 10.0f && a < 0.003f && s_modal_drawn == M_NONE) return;
    gl_use_2d();
    ca = a * clampf(s_pa.x, 0.0f, 1.0f);
    cx = px + s_px.x;
-
-   col(f, (const float[3]){ 0.10f, 0.10f, 0.14f }, 0.78f * a);
-   draw_round_rect(px, py, PW, PH, 22, f, 0.12f * a);
+   col(f, (const float[3]){ 1, 1, 1 }, 0.08f * a);   /* hairline under the header */
+   draw_2d(0, px + PAD, py + ROWS_Y - 14, PW - 2 * PAD, 1, f, 0);
 
    label_set(&s_title, g_font_title, tr("panel.title"));
    col(c, C_TXT, a);
@@ -1004,6 +1007,11 @@ void panel_draw(double t)
       label_set(&s_rl[i], g_font_sub, r->label);
       label_set(&s_rv[i], g_font_sub, r->value);
       if (y + ROW_H < top || y > bottom) continue;
+      if (i + 1 < s_nrows)
+      {  /* row separator */
+         col(f, (const float[3]){ 1, 1, 1 }, 0.05f * ca);
+         draw_2d(0, cx + PAD, floorf(y + ROW_H), PW - 2 * PAD, 1, f, 0);
+      }
       col(c, C_TXT, la);
       draw_label(&s_rl[i], cx + PAD, y + (ROW_H - s_rl[i].h) * 0.5f, c);
       if (r->type == R_CHOICE)
