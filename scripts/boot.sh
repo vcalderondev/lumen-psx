@@ -191,7 +191,12 @@ if [ "${COMPOSITOR}" != stock ]; then
       echo "psc compositor ${v}: the last attempt showed no picture, skipped from now on"
     rm -f "${PW_MARK}"; sync
   fi
-  for v in 16 6; do
+  # Weston 6 first: proven with games and with RetroArch exiting (it also offers the
+  # xdg-shell RetroArch 1.22 needs). Weston 16 brought the whole console down when a
+  # game exited (2026-11-14, atomic KMS): it runs first only with compositor=weston16
+  # (a test switch, set by hand), otherwise only if Weston 6 does not start.
+  order="6 16"; [ "${COMPOSITOR}" = weston16 ] && order="16 6"
+  for v in ${order}; do
     [ -n "${STARTED}" ] && break
     tar=$(pw_tar "${v}") || continue
     [ -f "${LUMEN_HOME}/compositor/.failed-${v}" ] && { echo "psc compositor ${v}: skipped (.failed-${v})"; continue; }
@@ -230,6 +235,13 @@ else
   echo 2 > /data/power/disable        # no daemon: keep POWER ignored
   echo "buttons daemon not running"
 fi
+
+# kernel messages to the USB, one write per line (the stick is exFAT over FUSE: a file's
+# size is only committed when it is closed, so a long-open log would be lost if the
+# kernel dies; each >> opens and closes it). Driver oopses before a crash land here.
+: > "${LOG}/kernel.log"
+( dmesg -w 2>/dev/null | while IFS= read -r kl; do printf '%s\n' "$kl" >> "${LOG}/kernel.log"; done ) &
+KLOG_PID=$!
 
 # 2. Lumen session
 # the one-shot marker only guards the window until a frame is on screen: Lumen writes
