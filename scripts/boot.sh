@@ -38,14 +38,13 @@ LUMEN_WESTON=""
 # is installed; compositor=stock in settings.ini keeps Sony's Weston 1.11. It is
 # unpacked to RAM and overlaid on /usr (overlayfs: nothing on the eMMC changes, gone
 # at power-off). Measured on the console: 24 -> 45 fps for a 1080p dashboard.
-# package per compositor setting: weston16 -> psc-weston-16, weston6 (default) ->
-# psc-weston-6 (psc-weston.tar.gz from earlier installs); stock -> Sony's Weston 1.11
-PW_VER=6
-case "$(sed -n 's/^compositor=//p' "${LUMEN_HOME}/settings.ini" 2>/dev/null | tr -d '\r' | tail -1)" in
-  weston16) PW_VER=16 ;;
-esac
-PW_TAR="${LUMEN_HOME}/compositor/psc-weston-${PW_VER}.tar.gz"
-[ -f "${PW_TAR}" ] || { [ "${PW_VER}" = 6 ] && PW_TAR="${LUMEN_HOME}/compositor/psc-weston.tar.gz"; }
+# the newest PSC compositor installed: psc-weston-16, else psc-weston-6 (or the
+# psc-weston.tar.gz name of earlier installs). Not a user choice (RetroArch 1.22 needs
+# it); compositor=stock in settings.ini is only an emergency switch, set by hand.
+PW_VER=16
+PW_TAR="${LUMEN_HOME}/compositor/psc-weston-16.tar.gz"
+[ -f "${PW_TAR}" ] || { PW_VER=6; PW_TAR="${LUMEN_HOME}/compositor/psc-weston-6.tar.gz"; }
+[ -f "${PW_TAR}" ] || PW_TAR="${LUMEN_HOME}/compositor/psc-weston.tar.gz"
 PW_ON=""; PW_SAMPLER=""
 # One-shot guard: the marker is written before each attempt and removed when the
 # session ends. Still there at boot = the last attempt ended in a power-off (black

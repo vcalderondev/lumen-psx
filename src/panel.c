@@ -70,9 +70,10 @@ enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_REN
        ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500,
        ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_INFO = 900 };
 
-/* ---- Display page: output resolution and compositor, applied by boot.sh at the next
- * boot (settings display / compositor / scanout). The compositors are the ones whose
- * packages are installed in <home>/compositor/ (Sony's is always there). */
+/* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
+ * next boot (settings display / scanout). The compositor is not a choice: boot.sh runs
+ * the newest PSC compositor installed in <home>/compositor/ (RetroArch 1.22 needs it)
+ * and falls back to Sony's only if it does not start; "In use" shows which one runs. */
 static const char *const k_comp_id[] = { "stock", "weston6", "weston16" };
 static const char *const k_comp_key[] = { "display.comp_stock", "display.comp_w6", "display.comp_w16" };
 static int comp_available(int i)
@@ -84,13 +85,10 @@ static int comp_available(int i)
    if (i == 1) { snprintf(p, sizeof(p), "%s/compositor/psc-weston.tar.gz", g_home); return access(p, R_OK) == 0; }
    return 0;
 }
-/* the compositor setting as an index; unset = Weston 6 when installed (boot.sh's default) */
+/* the compositor boot.sh will start: the newest installed */
 static int comp_setting(void)
 {
-   const char *c = settings_get("compositor", "");
-   int i;
-   for (i = 0; i < 3; i++) if (!strcmp(c, k_comp_id[i]) && comp_available(i)) return i;
-   return comp_available(1) ? 1 : 0;
+   return comp_available(2) ? 2 : (comp_available(1) ? 1 : 0);
 }
 /* what is running now: boot.sh exports LUMEN_COMPOSITOR and LUMEN_DISPLAY */
 static int comp_in_use(void)
@@ -308,17 +306,13 @@ static void page_build(void)
    }
    case P_DISPLAY:
    {
-      int c = comp_setting(), hd = out_1080(), sc = settings_get_int("scanout", 1, 0, 1), k, lo = 1, hi = 1;
+      int hd = out_1080(), sc = settings_get_int("scanout", 1, 0, 1);
       if ((r = row_add(R_CHOICE, ID_DSP_OUTPUT, tr("display.output"), hd ? "1080p" : "720p")))
       { r->at_lo = !hd; r->at_hi = hd; }
-      for (k = c - 1; k >= 0; k--) if (comp_available(k)) lo = 0;
-      for (k = c + 1; k < 3; k++) if (comp_available(k)) hi = 0;
-      if ((r = row_add(R_CHOICE, ID_DSP_COMP, tr("display.compositor"), tr(k_comp_key[c]))))
-      { r->at_lo = lo; r->at_hi = hi; }
       if ((r = row_add(R_CHOICE, ID_DSP_SCANOUT, tr("display.scanout"), tr(sc ? "value.on" : "value.off"))))
       {
          r->at_lo = !sc; r->at_hi = sc;
-         if (c == 0) { r->enabled = 0; r->dim = 1; r->why = "display.scanout_stock"; }
+         if (comp_in_use() == 0) { r->enabled = 0; r->dim = 1; r->why = "display.scanout_stock"; }
       }
       snprintf(v, sizeof(v), "%s  \xC2\xB7  %s", out_in_use_1080() ? "1080p" : "720p", tr(k_comp_key[comp_in_use()]));
       row_add(R_INFO, ID_INFO, tr("display.in_use"), v);
@@ -590,10 +584,6 @@ static void row_change(const row_t *r, int dir)
    case ID_DSP_OUTPUT:
       settings_set("display", dir > 0 ? "1080p" : "720p");
       break;
-   case ID_DSP_COMP:
-      for (i = comp_setting() + dir; i >= 0 && i < 3; i += dir)
-         if (comp_available(i)) { settings_set("compositor", k_comp_id[i]); break; }
-      break;
    case ID_DSP_SCANOUT:
       settings_set_int("scanout", dir > 0);
       break;
@@ -630,8 +620,6 @@ static void row_cycle(const row_t *r)
    case ID_SS_AFTER:  settings_set_int("screensaver_minutes", k_minutes[0]); break;
    case ID_SS_LENGTH: settings_set_int("demo_seconds", k_seconds[0]); break;
    case ID_SND_VOLUME: settings_set_int("music_volume", 0); ui_sound_changed(); break;
-   case ID_DSP_COMP:   /* wrap to the first installed compositor (Sony's) */
-      settings_set("compositor", k_comp_id[0]); break;
    default: row_change(r, -1); break;   /* Sí/No, Original/Mejorado */
    }
 }
