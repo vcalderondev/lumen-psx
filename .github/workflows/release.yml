@@ -1,0 +1,70 @@
+# Release: build Lumen with the PSC toolchain, take the compositor (Wayland 1.26 +
+# Weston), RetroArch 1.22 and the cores from the psc-platform release pinned in
+# platform.lock, and publish the USB package with the changelog.
+# Push a tag vX.Y.Z equal to LUMEN_VERSION (src/version.h) with a CHANGELOG.md section.
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: existing tag to (re)build and publish
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lumen
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Version, changelog, platform pin
+        run: |
+          cd lumen
+          v=$(sed -n 's/.*LUMEN_VERSION "\(.*\)"/\1/p' src/version.h)
+          [ "v$v" = "$TAG" ] || { echo "::error::tag $TAG != LUMEN_VERSION $v (src/version.h)"; exit 1; }
+          scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md"
+          . ./platform.lock
+          echo "PSC_PLATFORM=$PSC_PLATFORM" >> "$GITHUB_ENV"
+      - name: psc-platform release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$PSC_PLATFORM" -R vcalderondev/psc-platform -D "$RUNNER_TEMP/platform"
+          (cd "$RUNNER_TEMP/platform" && sha256sum -c SHA256SUMS)
+      # the toolchain action of the SAME pinned psc-platform release
+      - uses: vcalderondev/psc-platform/.github/actions/toolchain@v1.0.0
+        with:
+          sysroot-token: ${{ secrets.PSC_SYSROOT_TOKEN }}
+      - name: Build Lumen
+        run: |
+          $PSC_TOOLCHAIN/psc sh lumen/build.sh
+          sudo chown -R "$(id -u)" lumen/out
+      - name: Package
+        run: |
+          z=$(lumen/scripts/package.sh "$TAG" "$RUNNER_TEMP/platform" "$RUNNER_TEMP/dist")
+          (cd "$RUNNER_TEMP/dist" && sha256sum *.zip > SHA256SUMS)
+          { cat "$RUNNER_TEMP/notes.md"; echo
+            echo "### Platform: psc-platform $PSC_PLATFORM"; echo '```'; cat "$RUNNER_TEMP/platform/versions.txt"; echo '```'
+            echo; echo "Install: unpack at the root of the USB stick, see README-INSTALL.txt in the zip."; } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd lumen
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP"/dist/* --clobber
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/body.md"
+          else
+            gh release create "$TAG" "$RUNNER_TEMP"/dist/* --title "Lumen PSX $TAG" --notes-file "$RUNNER_TEMP/body.md"
+          fi

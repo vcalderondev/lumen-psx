@@ -176,3 +176,13 @@ third_party/include/SDL2      SDL_image 2.0.1 / SDL_ttf 2.0.14 headers (zlib lic
 tools/install.sh              USB installer
 tools/check-lang.sh           checks the translation files against es.lang
 ```
+
+## Releases and license
+
+Tagged releases (`vX.Y.Z`, see `CHANGELOG.md`) are built by `.github/workflows/release.yml`:
+Lumen with the PSC toolchain, plus the compositor (Wayland 1.26 + Weston), RetroArch 1.22
+and the cores from the [psc-platform](https://github.com/vcalderondev/psc-platform)
+release pinned in `platform.lock`, packaged as the USB tree (`scripts/package.sh`).
+
+Lumen PSX is free software under the GNU GPL v3.0 or later (`LICENSE`). The Outfit font
+is under the SIL Open Font License (`assets/fonts/OFL.txt`).
