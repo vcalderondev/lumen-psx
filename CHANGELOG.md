@@ -9,9 +9,9 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 - The Lumen PSX logo (frontal LPSX, one colour per letter) at the top centre of the dashboard,
   entering letter by letter each time the dashboard appears; 720p and 1080p renders in
   `assets/brand/` (`tools/make-brand.py`), installed by the zip and `tools/install.sh`.
-- Startup splash: the boot screen (`assets/splash.png`) now shows the LPSX logo with dark
-  letters, and Lumen picks up that same frame and fills the letters with colour, voxel row
-  by voxel row from L to X, as it loads; then the splash dissolves into the dashboard.
+- Startup splash: the LPSX logo fades in with dark letters and fills them with colour, voxel
+  row by voxel row from L to X, as Lumen loads; then it dissolves into the dashboard. The boot
+  screen before it (`assets/splash.png`) stays black, so the logo shows only once.
 
 ## [0.5.0] - 2026-11-14
 
