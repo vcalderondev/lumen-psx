@@ -200,6 +200,23 @@ fi
 [ -n "${STARTED}" ] || { weston_stock; DISPLAY_MODE=720p; }
 export LUMEN_DISPLAY="${DISPLAY_MODE:-720p}"
 case "${STARTED}" in psc) export LUMEN_COMPOSITOR="weston${PW_VER}" ;; *) export LUMEN_COMPOSITOR=stock ;; esac
+# how to start the compositor again after a suspend (power.sh: the PowerVR / display
+# driver cannot suspend under a running GL compositor, so it is stopped first)
+{ echo '#!/bin/sh'
+  echo "export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
+  echo 'rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"'
+  case "${STARTED}" in
+    psc)
+      echo 'chvt 1 2>/dev/null'
+      [ -n "${WESTON_FORCE_RENDERER}" ] && echo 'export WESTON_FORCE_RENDERER=1'
+      [ -n "${WESTON_DISABLE_ATOMIC}" ] && echo 'export WESTON_DISABLE_ATOMIC=1'
+      echo "LIBSEAT_BACKEND=builtin /usr/bin/weston --backend=drm --shell=desktop --idle-time=0 --socket=wayland-0 --config=/tmp/lumen-weston.ini > ${LOG}/weston-psc.log 2>&1 &" ;;
+    stock1080)
+      echo "/usr/bin/weston-launch -u root -- --idle-time=4294967 --tty=1 --config=/tmp/lumen-weston.ini > ${LOG}/weston.log 2>&1 &" ;;
+    *) echo 'systemctl restart weston.service' ;;
+  esac
+  echo 'i=0; while [ $i -lt 100 ] && [ ! -S "${XDG_RUNTIME_DIR}/wayland-0" ]; do sleep 0.1; i=$((i + 1)); done; sleep 0.5'
+} > /tmp/lumen-weston-start.sh
 /usr/bin/wait_sdl
 
 # console buttons: POWER suspends (handshake with the system power manager),
