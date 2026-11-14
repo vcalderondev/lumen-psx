@@ -5,7 +5,7 @@ Each icon is drawn on a 36x36 logical pixel grid with hard edges (no
 anti-aliasing) and exported scaled x4 with nearest neighbour (144x144), so the
 frontend can show it at exactly 36 px with every art pixel on a screen pixel.
 
-Usage: python3 tools/make-icons.py [out_dir]   (default: dist/icons)
+Usage: python3 tools/make-icons.py [out_dir]   (default: assets/icons)
 Requires Pillow.
 """
 import math
@@ -207,7 +207,7 @@ ICONS = {
 
 
 def main():
-    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "dist", "icons")
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "assets", "icons")
     os.makedirs(out, exist_ok=True)
     for name, make in ICONS.items():
         im = make()
