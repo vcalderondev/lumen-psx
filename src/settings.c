@@ -26,6 +26,7 @@ static const char *const s_defaults[][2] = {
    { "demo_enabled", "1" },
    { "demo_seconds", "60" },
    { "attract_demo_delay", "20" },
+   { "show_stock_games", "0" },
 };
 #define NDEFAULTS ((int)(sizeof(s_defaults) / sizeof(s_defaults[0])))
 

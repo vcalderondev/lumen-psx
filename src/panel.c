@@ -53,14 +53,16 @@ static void draw_label(const label_t *l, float x, float y, const float c[4])
 
 /* ------------------------------------------------------------------------ */
 /* state                                                                     */
-enum { P_ROOT, P_LANGUAGE, P_PROFILE, P_SCREENSAVER, P_GRAPHICS, P_ABOUT, P_COUNT };
+/* root rows are the pages in this order (page_input() relies on it) */
+enum { P_ROOT, P_LANGUAGE, P_PROFILE, P_SCREENSAVER, P_GRAPHICS, P_LIBRARY, P_ABOUT, P_COUNT };
 static const char *const k_page_key[P_COUNT] = {
-   "panel.title", "section.language", "section.profile", "section.screensaver", "section.graphics", "section.about"
+   "panel.title", "section.language", "section.profile", "section.screensaver", "section.graphics",
+   "section.library", "section.about"
 };
 
 enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
-       ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400, ID_INFO = 900 };
+       ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400, ID_LIB_STOCK = 500, ID_INFO = 900 };
 
 typedef struct {
    int type, id, enabled, dim, check, enter, at_lo, at_hi;
@@ -201,6 +203,8 @@ static void page_build(void)
       if (r) r->enter = 1;
       r = row_add(R_ACTION, P_GRAPHICS, tr("section.graphics"), NULL);
       if (r) r->enter = 1;
+      r = row_add(R_ACTION, P_LIBRARY, tr("section.library"), NULL);
+      if (r) r->enter = 1;
       r = row_add(R_ACTION, P_ABOUT, tr("section.about"), NULL);
       if (r) r->enter = 1;
       break;
@@ -259,6 +263,14 @@ static void page_build(void)
       }
       snprintf(s_foot, sizeof(s_foot), "%s", tr(s_nrows ? "gfx.note" : "gfx.none"));
       break;
+   case P_LIBRARY:
+   {
+      int stock = settings_get_int("show_stock_games", 0, 0, 1);
+      if ((r = row_add(R_CHOICE, ID_LIB_STOCK, tr("lib.stock"), tr(stock ? "lib.visible" : "lib.hidden"))))
+      { r->at_lo = !stock; r->at_hi = stock; }
+      snprintf(s_foot, sizeof(s_foot), "%s", tr("lib.stock_note"));
+      break;
+   }
    case P_ABOUT:
       row_add(R_INFO, ID_INFO, tr("about.version"), LUMEN_VERSION);
       snprintf(num, sizeof(num), "%d", g_ngames);
@@ -470,6 +482,11 @@ static void row_change(const row_t *r, int dir)
       break;
    case ID_SS_DEMOS:
       settings_set_int("demo_enabled", dir > 0);
+      break;
+   case ID_LIB_STOCK:   /* the libraries are rescanned live by main.c */
+      settings_set_int("show_stock_games", dir > 0);
+      ui_library_changed();
+      logf_("panel: show_stock_games %d", dir > 0);
       break;
    case ID_SS_LENGTH:
       i = nearest(k_seconds, NELEM(k_seconds), settings_get_int("demo_seconds", 60, 20, 300)) + dir;

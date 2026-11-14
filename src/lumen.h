@@ -30,6 +30,7 @@ typedef struct {
 typedef struct {
    char id[32], name[48], logo[300], core[128];
    char layout[8], paths[512], exts[128], art[16], media_art[16], sound[300];
+   char meta[300];             /* layout = stock: metadata file next to the declaration */
    int order, show_name, kind, launch, idle_float;
    float aspect, w, h, color[3];
    /* [graphics]: per-core options and RetroArch overrides, "k=v, k=v" lists */
@@ -70,5 +71,6 @@ typedef struct { int up, down, left, right, confirm, back, erase, options, start
 /* UI callbacks implemented in main.c */
 void   ui_language_changed(void);   /* rebuild text baked into textures after i18n_set_language() */
 void   ui_cards_changed(void);      /* the active profile changed: regenerate the back of the cases */
+void   ui_library_changed(void);    /* a setting changed which systems are listed: rescan next frame */
 
 #endif

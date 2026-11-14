@@ -29,20 +29,55 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
-static FILE *g_log;
+/* The log is on the USB stick (exFAT through FUSE), where a file's size is only
+ * committed on close/fsync: every line is flushed, fsync runs at most once per second
+ * (log_tick() in the loops catches up), at once for error lines, and at exit. */
+static FILE  *g_log;
+static double g_log_synced = -10.0;
+static int    g_log_pending;
+
+static double log_clock(void)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+static void log_sync(int force)
+{
+   double t;
+   if (!g_log || g_log == stderr || !g_log_pending) return;
+   t = log_clock();
+   if (!force && t - g_log_synced < 1.0) return;
+   fsync(fileno(g_log));
+   g_log_synced = t; g_log_pending = 0;
+}
+
+static void log_tick(void) { log_sync(0); }
+static void log_sync_atexit(void) { if (g_log) fflush(g_log); log_sync(1); }
+
+static int log_is_error(const char *s)
+{
+   for (; *s; s++)
+      if (!strncasecmp(s, "error", 5) || !strncasecmp(s, "fail", 4)) return 1;
+   return 0;
+}
+
 static void logf_(const char *fmt, ...)
 {
-   va_list ap; time_t now = time(NULL); char ts[32];
+   va_list ap; time_t now = time(NULL); char ts[32], line[512];
    strftime(ts, sizeof(ts), "%H:%M:%S", localtime(&now));
-   fprintf(g_log, "%s ", ts);
-   va_start(ap, fmt); vfprintf(g_log, fmt, ap); va_end(ap);
-   fputc('\n', g_log); fflush(g_log);
+   va_start(ap, fmt); vsnprintf(line, sizeof(line), fmt, ap); va_end(ap);
+   fprintf(g_log, "%s %s\n", ts, line); fflush(g_log);
+   g_log_pending = 1;
+   log_sync(log_is_error(line));
 }
 
 /* /dev/input/eventN of the device named "gpio-keys" */
@@ -248,6 +283,7 @@ static int demo_watch(int seconds, pid_t pid)
       if (!proc_alive(pid)) { logf_("demo-watch: game ended by itself"); return 0; }
       if (now >= end) { stop_game(pid, "time is up"); return 2; }
       if (now >= rescan) { dw_scan(); rescan = now + 2.0; }
+      log_tick();
       for (i = 0; i < dw_n; i++) { pfd[i].fd = dw_dev[i].fd; pfd[i].events = POLLIN; pfd[i].revents = 0; }
       r = poll(pfd, dw_n, 100);
       if (r <= 0) { if (!dw_n) usleep(100000); continue; }
@@ -292,6 +328,7 @@ int main(int argc, char **argv)
    }
    g_log = log_path ? fopen(log_path, "a") : NULL;
    if (!g_log) g_log = stderr;
+   atexit(log_sync_atexit);
    if (demo_seconds >= 0)
    {
       if (demo_seconds < 1 || demo_pid <= 1) { logf_("demo-watch: invalid seconds/pid"); return 3; }
@@ -310,6 +347,7 @@ int main(int argc, char **argv)
    {
       struct pollfd pfd = { fd, POLLIN, 0 };
       int r = poll(&pfd, 1, 150);
+      log_tick();
 
       /* power handshake: answer once per suspend request */
       if (exists(prep))
@@ -322,6 +360,7 @@ int main(int argc, char **argv)
             if (f >= 0) close(f);
             acked = 1;
             logf_("power: suspend requested -> apps_okay");
+            log_sync(1);   /* the console may power off right after this */
          }
       }
       else if (acked) { acked = 0; logf_("power: resumed"); }
