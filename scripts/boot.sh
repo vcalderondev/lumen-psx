@@ -51,10 +51,17 @@ pw_tar() {  # version -> package path
   done
   return 1
 }
+# stop Weston politely first: Weston 16's libseat gives the VT back (text mode, keyboard)
+# only when it exits normally; a SIGKILL leaves it in graphics mode
+pw_stop_weston() {
+  killall -s TERM weston 2>/dev/null
+  i=0; while [ $i -lt 30 ] && pidof weston >/dev/null 2>&1; do sleep 0.1; i=$((i + 1)); done
+  killall -s KILL weston 2>/dev/null; sleep 0.5
+}
 psc_weston_off() {
   [ -n "${PW_ON}" ] || return 0
   [ -n "${PW_SAMPLER}" ] && kill "${PW_SAMPLER}" 2>/dev/null
-  killall -s KILL weston 2>/dev/null; sleep 1
+  pw_stop_weston
   if umount -l /usr; then rm -rf /tmp/pw_upper /tmp/pw_work; echo "psc compositor overlay removed"
   else echo "psc compositor: umount /usr failed"; fi
   PW_ON=""; LUMEN_WESTON=""
@@ -107,12 +114,15 @@ try_psc_weston() {  # version package
   v=$1
   echo "compositor psc weston ${v} (${DISPLAY_MODE:-720p}): overlay from RAM"
   printf '%s\n' "${v}" > "${PW_MARK}"; sync
-  systemctl stop weston.service; killall -s KILL weston 2>/dev/null
+  echo "  $(date +%T) stopping Sony's weston"
+  systemctl stop weston.service; pw_stop_weston
+  echo "  $(date +%T) unpacking"
   mkdir -p /tmp/pw_upper/usr /tmp/pw_work/usr
   if ! tar xzpf "$2" -C /tmp/pw_upper/usr ||
-     ! mount -t overlay overlay -o lowerdir=/usr,upperdir=/tmp/pw_upper/usr,workdir=/tmp/pw_work/usr /usr; then
+     ! { echo "  $(date +%T) mounting overlay"; mount -t overlay overlay -o lowerdir=/usr,upperdir=/tmp/pw_upper/usr,workdir=/tmp/pw_work/usr /usr; }; then
     echo "psc compositor ${v}: overlay failed"; rm -rf /tmp/pw_upper /tmp/pw_work; return 1
   fi
+  echo "  $(date +%T) starting weston ${v}"
   PW_ON=1
   # stock Weston's PAM session (weston-launch) owned /run/user/0; launched directly,
   # nothing creates it, and Weston refuses to start without it
@@ -124,13 +134,14 @@ try_psc_weston() {  # version package
     for kms in atomic legacy; do
       rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
       if [ "${kms}" = legacy ]; then export WESTON_DISABLE_ATOMIC=1; else unset WESTON_DISABLE_ATOMIC; fi
+      # --socket: Weston 16 picks wayland-1 by default; clients (SDL, RetroArch) look for wayland-0
       LIBSEAT_BACKEND=builtin /usr/bin/weston --backend=drm --shell=desktop --idle-time=0 \
-        --config=/tmp/lumen-weston.ini --debug > "${LOG}/weston-psc.log" 2>&1 &
+        --socket=wayland-0 --config=/tmp/lumen-weston.ini --debug > "${LOG}/weston-psc.log" 2>&1 &
       LUMEN_WESTON=$!
       if psc_weston_ready; then echo "weston 16: ${kms} KMS"; break; fi
       echo "weston 16 (${kms} KMS) did not come up: $(tail -4 "${LOG}/weston-psc.log" 2>/dev/null)"
       cp -f "${LOG}/weston-psc.log" "${LOG}/weston-psc-${kms}.log" 2>/dev/null
-      kill "${LUMEN_WESTON}" 2>/dev/null; killall -s KILL weston 2>/dev/null; sleep 1; LUMEN_WESTON=""
+      pw_stop_weston; LUMEN_WESTON=""
     done
     [ -n "${LUMEN_WESTON}" ] || { psc_weston_off; return 1; }
   else
