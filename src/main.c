@@ -12,8 +12,12 @@
  *     /tmp/lumen-launch (launch request v2, src/launch.c) for scripts/run.sh
  *   - Select+Start (or Escape) exits with code 0 (back to the Sony menu)
  *   - Triangle opens the settings panel (src/panel.c)
+ *   - after screensaver_minutes idle: attract scene (src/attract.c); a demo exits
+ *     with code 11 (mode=demo launch request)
  *
  * Usage: lumen [--root /media] [--home /media/lumen] [--log file]
+ *              [--attract]       start in the attract scene (after a demo ended by itself)
+ *              [--focus-demo]    select the game of /tmp/lumen-demo-game (a demo was interrupted)
  */
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
@@ -33,6 +37,7 @@
 #include "panel.h"
 #include "profiles.h"
 #include "launch.h"
+#include "attract.h"
 #include "version.h"
 
 #define TEX_WINDOW 6       /* covers kept on the GPU around the selection */
@@ -169,6 +174,10 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "graphics", "retroarch_enhanced", pl->gfx_ra_enh, sizeof(pl->gfx_ra_enh), v);
    decl_get(ini, "graphics", "retroarch_original", pl->gfx_ra_orig, sizeof(pl->gfx_ra_orig), "");
    pl->has_gfx = pl->gfx_enh[0] || pl->gfx_ra_enh[0];
+   decl_get(ini, "demo", "allowed", v, sizeof(v), "0");  pl->demo_allowed = atoi(v) != 0;
+   decl_get(ini, "demo", "seconds", v, sizeof(v), "0");  pl->demo_seconds = atoi(v);
+   if (pl->demo_seconds < 0) pl->demo_seconds = 0;
+   if (pl->demo_seconds > 600) pl->demo_seconds = 600;
 }
 
 static int cmp_order(const void *a, const void *b)
@@ -1309,10 +1318,10 @@ void ui_cards_changed(void)
       if (g_games[i].back_tex) { glDeleteTextures(1, &g_games[i].back_tex); g_games[i].back_tex = 0; }
 }
 
-/* "Preview now" in the screensaver page: the attract scene arrives with step 5 */
+/* "Preview now" in the screensaver page */
 void ui_start_attract(void)
 {
-   logf_("attract: preview requested (not available yet)");
+   attract_start(now_s());
 }
 
 /* draw one hint set centred on (g_hint_cx, y) */
@@ -1391,6 +1400,9 @@ int main(int argc, char **argv)
    const char *fonts_bold[] = { font_b, "/usr/share/fonts/ttf/LiberationSans-Bold.ttf", NULL };
    const char *fonts_reg[]  = { font_r, "/usr/share/fonts/ttf/LiberationSans-Regular.ttf", NULL };
    const char *log_path = NULL;
+   int start_attract = 0, focus_demo = 0, home_plat = 0, home_sel = 0, att_prev = 0;
+   double last_activity = 0;
+   attract_out_t att;
    SDL_Window *win; SDL_GLContext ctx;
    SDL_GameController *pad = NULL;
    double t0 = now_s(), last, fps_t, info_t = 0, play_t = -1;
@@ -1406,6 +1418,8 @@ int main(int argc, char **argv)
       if (!strcmp(argv[i], "--root") && i + 1 < argc) snprintf(g_root, sizeof(g_root), "%s", argv[++i]);
       else if (!strcmp(argv[i], "--log") && i + 1 < argc) log_path = argv[++i];
       else if (!strcmp(argv[i], "--home") && i + 1 < argc) snprintf(g_home, sizeof(g_home), "%s", argv[++i]);
+      else if (!strcmp(argv[i], "--attract")) start_attract = 1;
+      else if (!strcmp(argv[i], "--focus-demo")) focus_demo = 1;
    }
    snprintf(g_core_dir, sizeof(g_core_dir), "%s/cores", g_home);
    snprintf(g_state, sizeof(g_state), "%s/state.txt", g_home);
@@ -1498,6 +1512,29 @@ int main(int argc, char **argv)
       if (sel_plat < 0 || sel_plat >= g_nplat) sel_plat = 0;
       if (g_nplat && (sel < 0 || sel >= g_plat[sel_plat].count)) sel = 0;
    }
+   if (focus_demo)   /* a demo was interrupted by a button: select the demoed game */
+   {
+      FILE *f = fopen("/tmp/lumen-demo-game", "r");
+      char line[600], sys[64] = "", content[512] = "";
+      int p, k;
+      if (f)
+      {
+         while (fgets(line, sizeof(line), f))
+         {
+            line[strcspn(line, "\r\n")] = 0;
+            if (!strncmp(line, "system=", 7)) snprintf(sys, sizeof(sys), "%s", line + 7);
+            else if (!strncmp(line, "content=", 8)) snprintf(content, sizeof(content), "%s", line + 8);
+         }
+         fclose(f);
+      }
+      remove("/tmp/lumen-demo-game");
+      for (p = 0; p < g_nplat; p++)
+         if (!strcmp(g_plat[p].id, sys))
+            for (k = 0; k < g_plat[p].count; k++)
+               if (!strcmp(g_games[g_plat[p].first + k].content, content)) { sel_plat = p; sel = k; }
+      logf_("focus demo game: %s %s", sys, content);
+   }
+   home_plat = sel_plat; home_sel = sel;
 
    g_proj = m4_perspective(38.0f * (float)M_PI / 180.0f, (float)W / H, 0.1f, 50.0f);
    g_view = m4_translate(0, 0.22f, -4.7f);
@@ -1510,6 +1547,8 @@ int main(int argc, char **argv)
    label_set(&l_brand, g_font_small, "lumen");
    hints_load(g_home);
    panel_init();
+   attract_init(start_attract, g_home);
+   memset(&att, 0, sizeof(att));
 
    /* first frame positions: start off to the right so they fly in */
    for (i = 0; i < g_ngames; i++)
@@ -1525,7 +1564,7 @@ int main(int argc, char **argv)
    {
       SDL_Event e; double t = now_s(); float dt = (float)(t - last);
       platform_t *pl = g_nplat ? &g_plat[sel_plat] : NULL;
-      int n = pl ? pl->count : 0, move = 0, plat_move = 0, play = 0;
+      int n = pl ? pl->count : 0, move = 0, plat_move = 0, play = 0, att_swallow, restore = -1;
       if (dt > 0.05f) dt = 0.05f;
       last = t;
 
@@ -1535,10 +1574,17 @@ int main(int argc, char **argv)
          if (e.type == SDL_QUIT) running = 0;
          else in_event(&e);
       }
+      {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
+         int was = attract_active();
+         if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
+         attract_update(t, dt, !panel_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
+         att_swallow = was || attract_active() || att.amount > 0.02f;
+         if (att_swallow) g_want_settings = 0;
+      }
       /* logical actions -> UI */
       {  /* Select tapped alone (pressed and released without Start) opens the settings */
          static int sel_was_down, sel_combo;
-         if (in_down[IN_SELECT] && in_down[IN_START]) sel_combo = 1;
+         if (in_down[IN_SELECT] && (in_down[IN_START] || att_swallow)) sel_combo = 1;
          if (sel_was_down && !in_down[IN_SELECT])
          {
             if (!sel_combo && play_t < 0) { g_want_settings = 1; logf_("settings requested (Select)"); }
@@ -1546,7 +1592,7 @@ int main(int argc, char **argv)
          }
          sel_was_down = in_down[IN_SELECT];
       }
-      if (!panel_active() && in_down[IN_SELECT] && in_down[IN_START]) running = 0;
+      if (!panel_active() && !att_swallow && in_down[IN_SELECT] && in_down[IN_START]) running = 0;
       else
       {
          if (in_pressed[IN_PLAY] || (in_pressed[IN_START] && !in_down[IN_SELECT])) play = 1;
@@ -1561,8 +1607,8 @@ int main(int argc, char **argv)
          ui_nav_t nav;
          int was_open = panel_active();
          nav_fill(&nav, t);
-         if (!was_open) memset(&nav, 0, sizeof(nav));
-         if (!was_open && in_pressed[IN_OPTIONS] && play_t < 0) panel_open();
+         if (!was_open || att_swallow) memset(&nav, 0, sizeof(nav));
+         if (!was_open && in_pressed[IN_OPTIONS] && play_t < 0 && !att_swallow) panel_open();
          if (g_want_settings)   /* Select tapped: opens the panel; while open it acts like Triangle */
          {
             g_want_settings = 0;
@@ -1573,12 +1619,30 @@ int main(int argc, char **argv)
          if (was_open || panel_active()) { move = plat_move = play = 0; held_dir = 0; }
       }
       if (play_t >= 0) { move = plat_move = play = 0; }
+      if (att_swallow) { move = plat_move = play = 0; held_dir = 0; held_next = t + 0.32; }
       if (!move && held_dir && t >= held_next) { move = held_dir; held_next = t + 0.085; }
+      {  /* attract: auto-rotation; the user's selection is kept and restored on leave */
+         int now_att = attract_active();
+         if (now_att) { move = att.move; plat_move = att.plat_move; }
+         if (now_att && !att_prev) { home_plat = sel_plat; home_sel = sel; }
+         if (!now_att && att_prev && g_nplat)
+         {
+            restore = home_plat < g_nplat ? home_plat : 0;
+            if (restore == sel_plat)
+            {
+               if (n && sel != home_sel) { sel = home_sel < n ? home_sel : 0; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; }
+               restore = -1;
+            }
+            else plat_move = restore > sel_plat ? 1 : -1;
+         }
+         att_prev = now_att;
+         if (att.launch_demo && play_t < 0) { exit_code = 11; running = 0; }
+      }
 
       if (n && move) { sel = (sel + move + n) % n; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; }
       if (g_nplat > 1 && plat_move)
       {
-         int np = (sel_plat + plat_move + g_nplat) % g_nplat, k;
+         int np = restore >= 0 ? restore : (sel_plat + plat_move + g_nplat) % g_nplat, k;
          /* new platform boxes fly in from the side of travel */
          for (k = 0; k < g_plat[np].count; k++)
          {
@@ -1586,6 +1650,7 @@ int main(int argc, char **argv)
             g->x.x = plat_move * (5.0f + k * 0.4f); g->x.v = 0; g->z.x = -2.5f; g->ry.x = -plat_move * 1.2f; g->al.x = 0;
          }
          sel_plat = np; sel = 0; pl = &g_plat[sel_plat]; n = pl->count; sel_t = t;
+         if (restore >= 0 && home_sel < n) sel = home_sel;
          info_y.x = 18.0f; info_a.x = 0.0f; plat_x.v = plat_move * 900.0f;
       }
       if (n && play && play_t < 0)
@@ -1742,6 +1807,12 @@ int main(int argc, char **argv)
             ts = o == 0 ? 1.10f : 0.92f;
             ta = a > VISIBLE ? 0.0f : 1.0f - a * 0.14f;
             if (launching && o != 0) ta = 0.0f;
+            if (att.amount > 0.001f)
+            {
+               float adx, ady, adry;
+               attract_case_offset(o, t, &adx, &ady, &adry);
+               tx += adx; tr += adry;
+            }
             spring_step(&g->x, tx, 140, 15, dt);
             spring_step(&g->z, tz, 140, 15, dt);
             spring_step(&g->ry, tr, 120, 14, dt);
@@ -1753,8 +1824,10 @@ int main(int argc, char **argv)
          if (n)
          {
             game_t *cg = &g_games[pl->first + sel];
-            float base[3] = { 0.050f, 0.050f, 0.078f };
-            for (i = 0; i < 3; i++) spring_step(&bg[i], base[i] + cg->col[i] * 0.16f, 6, 5, dt);
+            float base[3] = { 0.050f, 0.050f, 0.078f }, want[3];
+            for (i = 0; i < 3; i++) want[i] = base[i] + cg->col[i] * 0.16f;
+            if (att.amount > 0.001f) attract_bg_target(want, t, want);
+            for (i = 0; i < 3; i++) spring_step(&bg[i], want[i], 6, 5, dt);
          }
          spring_step(&info_y, 0, 170, 17, dt);
          spring_step(&info_a, 1, 60, 12, dt);
@@ -1817,11 +1890,17 @@ int main(int argc, char **argv)
                   if (cw <= 0.0f || fabsf(cx / cw) > 1.25f) continue;
                }
                g_detail = abs(o) <= 1;
+               if (att.amount > 0.001f)
+               {
+                  float adx, ady, adry;
+                  attract_case_offset(o, t, &adx, &ady, &adry);
+                  bob += ady;
+               }
                if (o == 0)
                {
                   if (gp->idle_float)
                   {
-                     bob = sinf((float)t * 1.9f) * 0.035f;
+                     bob += sinf((float)t * 1.9f) * 0.035f;
                      sway = -0.17f + sinf((float)t * 1.9f + 0.6f) * 0.06f;
                   }
                   if (play_t >= 0)
@@ -1879,7 +1958,9 @@ int main(int argc, char **argv)
          glUseProgram(g_prog_2d);
          if (g_fx_text)
          {
-            const float pa = panel_amount(), ua = (1 - fade) * (1 - 0.6f * pa);   /* dimmed under the panel */
+            const float pa = panel_amount(), ba = (1 - fade) * (1 - 0.6f * pa);   /* dimmed under the panel */
+            const float ua = ba * (1 - att.amount);                              /* and gone in the attract scene */
+            const float brand[4] = { 0.93f, 0.92f, 0.97f, ba };
             const float txt[4] = { 0.93f, 0.92f, 0.97f, ua };
             const float dim[4] = { 0.55f, 0.54f, 0.64f, ua };
             const float pill_on[4] = { 0.93f, 0.93f, 0.99f, ua };
@@ -1889,7 +1970,12 @@ int main(int argc, char **argv)
             char s[256];
             game_t *cg = n ? &g_games[pl->first + sel] : NULL;
 
-            draw_2d(l_brand.tex, 36, 26, l_brand.w, l_brand.h, txt, 0);
+            if (att.dim > 0.003f)
+            {
+               const float dimq[4] = { 0, 0, 0, att.dim };
+               draw_2d(0, 0, 0, W, H, dimq, 0);
+            }
+            draw_2d(l_brand.tex, 36, 26, l_brand.w, l_brand.h, brand, 0);
             if (pl)
             {
                char cnt[16];
@@ -1957,12 +2043,13 @@ int main(int argc, char **argv)
                 * panel is open it is centred in the free space left of it */
                static int h_cur = HINTS_CAROUSEL, h_prev = -1;
                static float h_mix = 1.0f;
-               int want = panel_active() ? panel_hint_set() : HINTS_CAROUSEL;
+               int want = panel_active() ? panel_hint_set() : (attract_active() ? HINTS_ATTRACT : HINTS_CAROUSEL);
+               const float ha = (1 - fade) * (1 - att.amount);
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
                g_hint_cx = lerpf(W * 0.5f, (W - 24.0f - 520.0f) * 0.5f, pa);
-               if (h_prev >= 0 && h_mix < 1.0f) hints_draw(h_prev, 686, (1 - fade) * (1.0f - h_mix));
-               hints_draw(h_cur, 686, (1 - fade) * h_mix);
+               if (h_prev >= 0 && h_mix < 1.0f) hints_draw(h_prev, 686, ha * (1.0f - h_mix));
+               hints_draw(h_cur, 686, ha * h_mix);
             }
             if (play_t >= 0 && anim == ANIM_INSERT_CART && slot > 0.0f)
             {
@@ -1985,6 +2072,7 @@ int main(int argc, char **argv)
             panel_draw(t);
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);
+            attract_draw(t);
             if (flash > 0.001f)
             {
                const float white[4] = { 1, 1, 1, flash * 0.85f };
@@ -2037,23 +2125,27 @@ int main(int argc, char **argv)
       (void)info_t;
    }
 
-   /* persist settings and selection; hand the launch request to the launcher script */
+   /* persist settings and selection; hand the launch request to the launcher script.
+    * In the attract scene the selection saved is the user's, from before it started (10.5). */
    if (settings_dirty()) settings_save();
    {
       FILE *f = fopen(g_state, "w");
-      if (f) { fprintf(f, "%d %d\n", sel_plat, sel); fclose(f); }
+      if (f) { fprintf(f, "%d %d\n", att_prev ? home_plat : sel_plat, att_prev ? home_sel : sel); fclose(f); }
    }
-   if (exit_code == 10 && g_nplat)
+   if (exit_code == 11 && attract_demo_game() < 0) exit_code = 1;
+   if ((exit_code == 10 || exit_code == 11) && g_nplat)
    {
-      const platform_t *lp = &g_plat[sel_plat];
-      game_t *g = &g_games[lp->first + sel];
+      const int demo = exit_code == 11;
+      game_t *g = demo ? &g_games[attract_demo_game()] : &g_games[g_plat[sel_plat].first + sel];
+      const platform_t *lp = &g_plat[g->platform];
       char core[400];
       launch_req_t req;
       memset(&req, 0, sizeof(req));
       snprintf(core, sizeof(core), "%s/%s", g_core_dir, lp->core);
       req.core = core; req.content = g->content; req.system = lp->id; req.title = g->title;
       req.profile = profiles_active()->id;
-      req.demo = 0; req.demo_seconds = settings_get_int("demo_seconds", 60, 20, 300);
+      req.demo = demo;
+      req.demo_seconds = demo && lp->demo_seconds > 0 ? lp->demo_seconds : settings_get_int("demo_seconds", 60, 20, 300);
       if (lp->has_gfx)
       {
          char gkey[48];
@@ -2065,7 +2157,14 @@ int main(int argc, char **argv)
          req.opt_list = enh ? lp->gfx_enh : lp->gfx_orig;
          req.ra_list = enh ? lp->gfx_ra_enh : lp->gfx_ra_orig;
       }
-      if (launch_write("/tmp/lumen-launch", &req) == 0) logf_("launch request: %s (profile %s, graphics %s)", g->content, req.profile, req.graphics ? req.graphics : "-");
+      if (demo)
+      {  /* --focus-demo reads it back when a button interrupts the demo */
+         FILE *f = fopen("/tmp/lumen-demo-game", "w");
+         if (f) { fprintf(f, "system=%s\ncontent=%s\n", lp->id, g->content); fclose(f); }
+      }
+      if (launch_write("/tmp/lumen-launch", &req) == 0)
+         logf_("launch request: %s (%s %ds, profile %s, graphics %s)", g->content, demo ? "demo" : "normal",
+               req.demo_seconds, req.profile, req.graphics ? req.graphics : "-");
       else { logf_("launch request refused, not launching"); exit_code = 1; }
    }
    SDL_LockMutex(bg_mx); bg_quit = 1; SDL_CondSignal(bg_cv); SDL_UnlockMutex(bg_mx);

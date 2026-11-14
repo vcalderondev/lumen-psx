@@ -35,6 +35,8 @@ typedef struct {
    /* [graphics]: per-core options and RetroArch overrides, "k=v, k=v" lists */
    char gfx_core[48], gfx_enh[320], gfx_orig[320], gfx_ra_enh[160], gfx_ra_orig[160];
    int has_gfx;
+   /* [demo]: attract-mode demos allowed, per-system length (0 = settings demo_seconds) */
+   int demo_allowed, demo_seconds;
    /* runtime */
    int first, count;
    GLuint label, logo_tex;

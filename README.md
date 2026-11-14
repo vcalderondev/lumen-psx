@@ -102,6 +102,26 @@ picks the profile's save folders and writes them to `/tmp/lumen-ra-extra.cfg`, w
 path is exported as `LUMEN_RA_EXTRA`; the default `run_retroarch()` passes it with
 `--appendconfig`, and a `lumen.conf` override must append it to its config too.
 
+## Screensaver and game demos
+
+After `screensaver_minutes` without input (settings panel, Screensaver page; Never
+turns it off) the carousel dims into an attract scene, like an arcade cabinet: it
+rotates through the games and systems on its own, the ambient light cycles colour and
+a localized PRESS START blinks. Any button brings back the game that was selected
+before, without launching anything.
+
+With game demos on, after `attract_demo_delay` seconds of attract the frontend picks
+a game of a system that allows demos (`[demo] allowed = 1`, see docs/systems.md;
+shipped: PlayStation and Arcade) and exits with code **11** after writing a
+`mode=demo` launch request. `run.sh` runs it as an ephemeral session: saves and save
+states in `/tmp/lumen-demo` (removed afterwards), auto save/load states, history and
+play-time logs off, never the profile folders. `lumen-buttons --demo-watch <seconds>
+--pid <pid>` stops RetroArch when the demo time (`demo_seconds`, or the system's
+`[demo] seconds`) is over or a button is pressed; the frontend then comes back with
+`--attract` (the scene resumes) or `--focus-demo` (the carousel, with the demoed game
+selected). Without `lumen-buttons` the demo only ends by time. "Preview now" on the
+Screensaver page starts the scene at once.
+
 ## Controls
 
 | Input | Action |
@@ -135,6 +155,8 @@ src/i18n.c, src/settings.c    translation layer, settings store
 src/panel.c                   settings panel, on-screen keyboard, confirm dialog
 src/profiles.c                profiles (separate memory cards and save states)
 src/launch.c                  launch request v2 writer
+src/attract.c                 screensaver / attract scene, demo picker
+src/buttons.c                 lumen-buttons: console buttons daemon, demo watcher
 dist/lang/*.lang              UI translations
 scripts/boot.sh               boot entry
 scripts/run.sh                session loop
