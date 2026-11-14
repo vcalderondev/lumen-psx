@@ -147,6 +147,9 @@ try_psc_weston() {  # version package
       rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
       if [ "${kms}" = legacy ]; then export WESTON_DISABLE_ATOMIC=1; else unset WESTON_DISABLE_ATOMIC; fi
       # --socket: Weston 16 picks wayland-1 by default; clients (SDL, RetroArch) look for wayland-0
+      # planes=0 in settings.ini: everything through the GL renderer, no client buffer
+      # on a KMS plane (test switch for the crash after a fullscreen client exits)
+      if [ "$(setting planes)" = 0 ]; then export WESTON_FORCE_RENDERER=1; echo "weston 16: renderer only (planes=0)"; else unset WESTON_FORCE_RENDERER; fi
       LIBSEAT_BACKEND=builtin /usr/bin/weston --backend=drm --shell=desktop --idle-time=0 \
         --socket=wayland-0 --config=/tmp/lumen-weston.ini --debug > "${LOG}/weston-psc.log" 2>&1 &
       LUMEN_WESTON=$!
@@ -239,8 +242,10 @@ fi
 # kernel messages to the USB, one write per line (the stick is exFAT over FUSE: a file's
 # size is only committed when it is closed, so a long-open log would be lost if the
 # kernel dies; each >> opens and closes it). Driver oopses before a crash land here.
-: > "${LOG}/kernel.log"
-( dmesg -w 2>/dev/null | while IFS= read -r kl; do printf '%s\n' "$kl" >> "${LOG}/kernel.log"; done ) &
+# busybox dmesg has no -w: /proc/kmsg blocks until the next message (the ring buffer so
+# far goes first, from dmesg)
+dmesg > "${LOG}/kernel.log" 2>/dev/null
+( while IFS= read -r kl; do printf '%s\n' "$kl" >> "${LOG}/kernel.log"; sync; done < /proc/kmsg ) &
 KLOG_PID=$!
 
 # 2. Lumen session
