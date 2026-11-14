@@ -2596,6 +2596,20 @@ int main(int argc, char **argv)
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+   /* 24-bit colour, no alpha (setting gl_rgb, 565 to compare): SDL 2.0.4 asks for
+    * 3/3/2 bits by default and takes the smallest config, RGB565. That bands gradients,
+    * and Weston can only hand a fullscreen buffer straight to the display (no
+    * recomposition) when its format matches the output's XRGB8888. */
+   if (settings_get_int("gl_rgb", 888, 565, 888) != 565)
+   {
+      SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8); SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+      SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8); SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
+   }
+   else
+   {
+      SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 5); SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 6);
+      SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 5); SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
+   }
    {
       int ms = settings_get_int("msaa", 2, 0, 4);   /* 2x: edges of text, glyphs and the 3D launch */
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, ms > 0);
@@ -2622,7 +2636,11 @@ int main(int argc, char **argv)
    {
       GLint samples = 0;
       glGetIntegerv(GL_SAMPLES, &samples);
+      GLint cr = 0, cg = 0, cb = 0, ca = 0, cd = 0;
+      glGetIntegerv(GL_RED_BITS, &cr); glGetIntegerv(GL_GREEN_BITS, &cg); glGetIntegerv(GL_BLUE_BITS, &cb);
+      glGetIntegerv(GL_ALPHA_BITS, &ca); glGetIntegerv(GL_DEPTH_BITS, &cd);
       logf_("MSAA samples: %d", samples);
+      logf_("egl config: R%d G%d B%d A%d D%d", cr, cg, cb, ca, cd);
    }
    SDL_GL_SetSwapInterval(1);
    SDL_ShowCursor(SDL_DISABLE);
