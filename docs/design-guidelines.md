@@ -21,10 +21,12 @@ couch on a TV.
 3. **Readable from 3 m.** Nothing under 16 px; body 21 px; titles 50 px. Text over
    art always has a scrim or a text shadow.
 4. **Calm motion.** Springs, not linear tweens; nothing loops faster than every 6 s.
-5. **Cheap by construction.** Every effect must fit the frame budget (section 9);
+5. **Restrained colour.** Navy-black, white and one accent; saturation belongs to the
+   cover art only. Background art is graded down (section 4).
+6. **Cheap by construction.** Every effect must fit the frame budget (section 9);
    effects that need a blur or an extra full-screen pass are faked (pre-blurred
    mips, baked masks).
-6. **TV-safe.** Everything important inside the safe area (section 3).
+7. **TV-safe.** Everything important inside the safe area (section 3).
 
 ## 2. Tokens
 
@@ -103,7 +105,10 @@ or after resting 3 s on a game: the card slides in; any move hides it again).
 ```
 
 - **Background:** art cover-fitted, slow drift, darkened with `scrim.uniform` and a
-  bottom scrim (the row lives there) instead of the left one. No art: generated
+  bottom scrim (the row lives there) instead of the left one. Colour grade (same
+  shader pass): desaturate ~35 % and pull the shadows towards `#203549`, so the art
+  reads moody and never outshouts the covers. The covers are the only fully
+  saturated elements on screen; UI chrome stays white / navy / one accent. No art: generated
   gradient from the cover palette, biased to the navy palette.
 - **Status bar (y 40):** left clock (synced only) + network; centre one glyph per
   connected pad, numbered; right avatar + profile name (+ games played).
