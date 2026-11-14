@@ -1050,7 +1050,8 @@ static void bg_request(const char *path)
 
 /* ------------------------------------------------------------------------ */
 /* input: game controllers + raw joysticks mapped to logical actions         */
-enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_BACK, IN_START, IN_SELECT, IN_OPTIONS, IN_COUNT };
+/* IN_SQUARE acts as IN_BACK everywhere except the keyboard, where it erases */
+enum { IN_LEFT, IN_RIGHT, IN_UP, IN_DOWN, IN_L1, IN_R1, IN_PLAY, IN_BACK, IN_SQUARE, IN_START, IN_SELECT, IN_OPTIONS, IN_COUNT };
 static int           in_down[IN_COUNT];     /* current state                  */
 static int           in_pressed[IN_COUNT];  /* edge this frame                */
 static SDL_JoystickID in_ctrl_ids[8];       /* joysticks opened as controllers */
@@ -1099,7 +1100,7 @@ static int in_raw_button(int b)
    switch (b)
    {
    case 0: return IN_OPTIONS;
-   case 3: return IN_BACK;
+   case 3: return IN_SQUARE;
    case 2: return IN_PLAY;
    case 1: return IN_BACK;
    case 6: return IN_L1;
@@ -1143,7 +1144,8 @@ static void in_event(const SDL_Event *e)
       case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: b = IN_L1; break;
       case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: b = IN_R1; break;
       case SDL_CONTROLLER_BUTTON_A: b = IN_PLAY; break;
-      case SDL_CONTROLLER_BUTTON_B: case SDL_CONTROLLER_BUTTON_X: b = IN_BACK; break;
+      case SDL_CONTROLLER_BUTTON_B: b = IN_BACK; break;
+      case SDL_CONTROLLER_BUTTON_X: b = IN_SQUARE; break;
       case SDL_CONTROLLER_BUTTON_Y: b = IN_OPTIONS; break;
       case SDL_CONTROLLER_BUTTON_START: b = IN_START; break;
       case SDL_CONTROLLER_BUTTON_BACK: b = IN_SELECT; break;
@@ -1187,7 +1189,7 @@ static void in_event(const SDL_Event *e)
       case SDLK_PAGEDOWN: b = IN_R1; break;
       case SDLK_RETURN: b = IN_PLAY; break;
       case SDLK_TAB: case SDLK_F1: b = IN_OPTIONS; break;
-      case SDLK_BACKSPACE: b = IN_BACK; break;
+      case SDLK_BACKSPACE: b = IN_SQUARE; break;
       case SDLK_ESCAPE: b = IN_SELECT; in_set(IN_START, d); break;
       }
       in_set(b, d);
@@ -1212,7 +1214,8 @@ static void nav_fill(ui_nav_t *nv, double t)
       else if (in_down[dirs[k]] && t >= next[k]) { *out[k] = 1; next[k] = t + 0.085; }
    }
    nv->confirm = in_pressed[IN_PLAY];
-   nv->back = in_pressed[IN_BACK];
+   nv->back = in_pressed[IN_BACK] || in_pressed[IN_SQUARE];
+   nv->erase = in_pressed[IN_SQUARE];
    nv->options = in_pressed[IN_OPTIONS];
    nv->start = in_pressed[IN_START];
    nv->l1 = in_pressed[IN_L1];
@@ -1223,7 +1226,7 @@ static void nav_fill(ui_nav_t *nv, double t)
 /* help bar: one table per set (panel.h HINTS_*), button icons from
  * $home/icons/<name>.png (loaded once, shared), fallback text when one is missing */
 typedef struct { const char *icons[3]; const char *fallback_key; const char *text_key; } hint_t;
-#define SET_HINTS 4
+#define SET_HINTS 5
 static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
    [HINTS_CAROUSEL] = {
       { { "cross" },    "btn.cross",        "hint.play" },
@@ -1233,15 +1236,22 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "dpad" },     "btn.dpad",         "hint.move" },
       { { "cross" },    "btn.cross",        "hint.select" },
       { { "circle" },   "btn.circle",       "hint.close" } },
-   [HINTS_PANEL_PAGE] = {
+   [HINTS_PANEL_PAGE] = {   /* pages with choice rows */
       { { "dpad" },     "btn.dpad",         "hint.change" },
       { { "cross" },    "btn.cross",        "hint.select" },
       { { "circle" },   "btn.circle",       "hint.back" } },
+   [HINTS_PANEL_LIST] = {   /* pages of plain actions (Language) */
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "circle" },   "btn.circle",       "hint.back" } },
+   [HINTS_PANEL_INFO] = {   /* nothing selectable (About) */
+      { { "circle" },   "btn.circle",       "hint.back" } },
    [HINTS_OSK] = {
       { { "cross" },    "btn.cross",        "hint.type" },
+      { { "l1", "r1" }, "btn.l1_r1",        "hint.accent" },
       { { "square" },   "btn.square",       "hint.erase" },
       { { "start" },    "btn.start",        "hint.done" },
-      { { "triangle" }, "btn.triangle",     "hint.cancel" } },
+      { { "circle" },   "btn.circle",       "hint.cancel" } },
    [HINTS_CONFIRM] = {
       { { "dpad" },     "btn.dpad",         "hint.move" },
       { { "cross" },    "btn.cross",        "hint.select" },
@@ -1296,7 +1306,7 @@ static void hints_load(const char *home)
          for (k = 0; k < 3 && g_hints[s][i].icons[k]; k++)
          {
             h->icon[k] = icon_get(home, g_hints[s][i].icons[k]);
-            if (!h->icon[k] || !h->icon[k]->tex) h->have_icons = 0;
+            if (!h->icon[k] || !h->icon[k]->tex || h->icon[k]->h <= 0) h->have_icons = 0;
          }
       }
    hints_reload();
@@ -1329,33 +1339,52 @@ static void hints_draw(int set, float y, float alpha)
 {
    /* icons are pixel art authored at 36 px (exported x4): draw them at exactly 36 px,
     * on whole pixels, so every art pixel lands on one screen pixel */
-   const float icon_h = 36.0f, gap_icon = 6.0f, gap_txt = 10.0f, gap_hint = 42.0f;
+   /* icons are used only when every one of the hint loaded (have_icons, h > 0); else
+    * the fallback text, and with neither (empty btn.* and no PNG) just the label */
+   const float icon_h = 36.0f, gap_icon = 6.0f, gap_txt = 10.0f;
    const float ic[4] = { 1, 1, 1, alpha }, tc[4] = { 0.62f, 0.61f, 0.72f, alpha };
-   float total = 0, x;
+   float total = 0, x, gap_hint = 42.0f, avail;
    int i, k, n = 0;
    if (set < 0 || set >= HINTS_COUNT || alpha <= 0.003f) return;
    while (n < SET_HINTS && g_hints[set][n].text_key) n++;
    for (i = 0; i < n; i++)
    {
       hint_gl_t *h = &g_hint_gl[set][i];
-      if (h->fb) total += h->fbw;
-      else for (k = 0; k < 3 && h->icon[k]; k++) total += icon_h * h->icon[k]->w / (float)h->icon[k]->h + gap_icon;
-      total += gap_txt + h->tw + (i < n - 1 ? gap_hint : 0);
+      if (h->fb) total += h->fbw + gap_txt;
+      else if (h->have_icons)
+      {
+         for (k = 0; k < 3 && h->icon[k]; k++) total += floorf(icon_h * h->icon[k]->w / (float)h->icon[k]->h + 0.5f) + gap_icon;
+         total += gap_txt;
+      }
+      total += h->tw + (i < n - 1 ? gap_hint : 0);
+   }
+   /* the bar is centred in [0, 2 * g_hint_cx]: tighten the gaps when a long language
+    * would not fit (5 hints of the keyboard in German left of the panel) */
+   avail = 2.0f * g_hint_cx - 32.0f;
+   if (total > avail && n > 1)
+   {
+      float g = gap_hint - (total - avail) / (n - 1);
+      if (g < 16.0f) g = 16.0f;
+      total -= (gap_hint - g) * (n - 1);
+      gap_hint = g;
    }
    x = floorf(g_hint_cx - total * 0.5f);
    y = floorf(y);
    for (i = 0; i < n; i++)
    {
       hint_gl_t *h = &g_hint_gl[set][i];
-      if (h->fb) { draw_2d(h->fb, x, y - h->fbh * 0.5f, h->fbw, h->fbh, tc, 0); x += h->fbw; }
-      else for (k = 0; k < 3 && h->icon[k]; k++)
+      if (h->fb) { draw_2d(h->fb, x, y - h->fbh * 0.5f, h->fbw, h->fbh, tc, 0); x += h->fbw + gap_txt; }
+      else if (h->have_icons)
       {
-         float w = floorf(icon_h * h->icon[k]->w / (float)h->icon[k]->h + 0.5f);
-         draw_2d(h->icon[k]->tex, x, y - icon_h * 0.5f, w, icon_h, ic, 0);
-         x += w + gap_icon;
+         for (k = 0; k < 3 && h->icon[k]; k++)
+         {
+            float w = floorf(icon_h * h->icon[k]->w / (float)h->icon[k]->h + 0.5f);
+            draw_2d(h->icon[k]->tex, x, y - icon_h * 0.5f, w, icon_h, ic, 0);
+            x += w + gap_icon;
+         }
+         x += gap_txt;
       }
-      x += gap_txt;
-      draw_2d(h->txt, x, floorf(y - h->th * 0.5f), h->tw, h->th, tc, 0);
+      if (h->txt) draw_2d(h->txt, x, floorf(y - h->th * 0.5f), h->tw, h->th, tc, 0);
       x += h->tw + gap_hint;
    }
 }
@@ -1719,10 +1748,13 @@ int main(int argc, char **argv)
                }
                if ((g->tex_state == 1 || g->tex_state == -1) && d > TEX_WINDOW + 3) game_free_tex(g);
             }
-            /* back card only for the settled (or launching) selection */
+            /* back card only for the settled (or launching) selection; never in the attract
+             * scene (it moves every few seconds and never shows the back) nor under the
+             * panel: it is built once the user is back on the carousel */
             {
                game_t *cg = &g_games[pl->first + sel];
-               if ((cg->tex_state == 1 || cg->tex_state == -1) && !cg->back_tex && (t - sel_t > 0.2 || play_t >= 0))
+               if ((cg->tex_state == 1 || cg->tex_state == -1) && !cg->back_tex &&
+                   ((t - sel_t > 0.2 && att.amount < 0.001f && !panel_active()) || play_t >= 0))
                   cg->back_tex = card_tex(cg, 1);
             }
          }
@@ -2127,6 +2159,7 @@ int main(int argc, char **argv)
 
    /* persist settings and selection; hand the launch request to the launcher script.
     * In the attract scene the selection saved is the user's, from before it started (10.5). */
+   panel_shutdown();   /* a colour picked or settings changed with the panel still open */
    if (settings_dirty()) settings_save();
    {
       FILE *f = fopen(g_state, "w");

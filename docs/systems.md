@@ -64,13 +64,15 @@ retroarch_original = video_smooth=false
   back, so always declare both lists with the same keys. Nothing is merged when
   `LUMEN_CORE_OPT_DIR` (set by `lumen.conf`) or `core_options_name` is empty.
 - `retroarch_enhanced` / `retroarch_original` are RetroArch settings. They become `ra.*`
-  lines and `run.sh` appends them as `key = "value"` to the extra config handed to
-  RetroArch (`$LUMEN_RA_EXTRA`); later keys win over RetroArch's own config.
-- When a `.opt` was merged, the extra config also sets `core_options_path` to that file, so
-  RetroArch reads exactly the merged options whatever its global-options setting is.
-  Both mechanisms are written on purpose; which one RetroArch actually honours has to be
-  confirmed on the console (verbose `retroarch.log`, the line about loading core options)
-  and this note updated if one of them turns out to be ignored.
+  lines and `run.sh` writes them as `key = "value"` to the extra config handed to
+  RetroArch (`$LUMEN_RA_EXTRA`), which `run_retroarch()` must pass with `--appendconfig`:
+  RetroArch keeps the *first* copy of a key within one config file, so lines simply
+  concatenated after its `retroarch.cfg` would be ignored.
+- The merged `.opt` is the per-core file RetroArch already reads, so `LUMEN_CORE_OPT_DIR`
+  must be RetroArch's real per-core config folder (its `rgui_config_directory`). No
+  `core_options_path` is set. With `game_specific_options` on, a
+  `<core_options_name>/<content name>.opt` overrides the preset for that game; `run.sh`
+  logs a warning in `session.log` when one exists.
 
 Shipped presets:
 

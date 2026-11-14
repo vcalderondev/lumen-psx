@@ -173,11 +173,13 @@ int         settings_save(void);                          /* 0 ok, -1 error; cle
 Storage: static array of `SETTINGS_MAX` pairs (`char key[48]; char val[96];`), no heap.
 
 Atomic save (`settings_save`): write `<home>/settings.ini.tmp` → `fflush` → `fsync(fileno)` →
-`fclose` → `rename()` over `settings.ini` → `sync()`. On failure, log it, keep the old file,
+`fclose` → `rename()` over `settings.ini` → `fsync()` of the folder (never a global
+`sync()`, which blocks the render thread on every dirty page of the stick). On failure, log it, keep the old file,
 keep `dirty` set. Saving happens:
 
 - when the panel closes and `settings_dirty()`;
-- immediately after a profile create/rename/delete/switch (section 7);
+- a profile switch (or the fallback to `main` after a delete) only marks settings dirty:
+  it is saved with the panel close or on exit (section 7);
 - at program exit if dirty (before writing `state.txt`).
 
 Never on every left/right press.
@@ -704,11 +706,8 @@ other id     → L_SAVES=$LUMEN_HOME/profiles/<id>/saves  L_STATES=$LUMEN_HOME/p
   file, write `key = "newvalue"`; otherwise copy the line. Then append every KV key not
   already present. `mv` the tmp over the file, `sync`.
 - Pure `sh` + `grep`/`sed` (`while IFS= read -r`), no awk dependency.
-- Also append `core_options_path = "<that file>"` to the extra cfg so RetroArch reads exactly
-  the merged file whatever its global-options setting is. The implementer must verify in
-  `retroarch.log` (verbose log line about loading core options) on the console that the
-  merged file is the one loaded; if RetroArch 1.8.8 ignores one of the two mechanisms, keep
-  the one that works and note it in `docs/systems.md`.
+- No `core_options_path` line: the merged file is RetroArch's own per-core file (its
+  `rgui_config_directory`), which it loads by itself; see `docs/systems.md`.
 
 ### 8.6 Demo session (`lumen_run_demo`, step 5)
 
@@ -953,7 +952,7 @@ Accept:
 
 Edits: `src/main.c` (`platform_t` gfx fields, `platform_from_decl`, launch fields),
 `src/panel.c` (Graphics page), `src/launch.c` (opt/ra lines), `scripts/run.sh`
-(`lumen_merge_opt`, `ra.*` into the extra cfg, `core_options_path`), `dist/systems/*.ini` (9.2),
+(`lumen_merge_opt`, `ra.*` into the extra cfg), `dist/systems/*.ini` (9.2),
 `docs/systems.md` (9.1).
 
 Accept:

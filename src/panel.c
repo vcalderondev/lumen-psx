@@ -76,7 +76,8 @@ static char    s_foot[400];            /* page footer text (translated), "" = no
 
 static int     s_open, s_page, s_sel;
 static spring  s_slide, s_fade, s_px, s_pa, s_hl, s_scroll;
-static char    s_free[32];             /* About: free space, measured when the page opens */
+static long    s_free_tenths = -1;     /* About: free space in tenths of GB, or */
+static long    s_free_mb = -1;         /* in MB below 1 GB; measured when the page opens */
 
 static label_t s_title, s_ptitle, s_footer, s_lt, s_gt;
 static label_t s_rl[MAX_ROWS], s_rv[MAX_ROWS];
@@ -239,7 +240,10 @@ static void page_build(void)
       snprintf(num, sizeof(num), "%d", k_seconds[s]);
       trf(v, sizeof(v), "ss.seconds", "n", num, NULL);
       if ((r = row_add(R_CHOICE, ID_SS_LENGTH, tr("ss.demo_length"), v)))
-      { r->at_lo = s == 0; r->at_hi = s == NELEM(k_seconds) - 1; r->dim = !demos; r->enabled = demos; }
+      {
+         r->at_lo = s == 0; r->at_hi = s == NELEM(k_seconds) - 1; r->dim = !demos; r->enabled = demos;
+         if (!demos) r->why = "ss.demo_length_off";
+      }
       row_add(R_ACTION, ID_SS_PREVIEW, tr("ss.preview"), NULL);
       snprintf(s_foot, sizeof(s_foot), "%s", tr("ss.note"));
       break;
@@ -263,10 +267,16 @@ static void page_build(void)
       row_add(R_INFO, ID_INFO, tr("about.systems"), num);
       snprintf(num, sizeof(num), "%d", profiles_count());
       row_add(R_INFO, ID_INFO, tr("about.profiles"), num);
-      if (s_free[0])
+      if (s_free_tenths >= 0)
       {
-         const char *unit = strchr(s_free, '.') ? "about.gb" : "about.mb";
-         row_add(R_INFO, ID_INFO, tr("about.free"), trf(v, sizeof(v), unit, "n", s_free, NULL));
+         /* the decimal separator is translated ("num.decimal": "," in es/pt/fr/de/it) */
+         snprintf(num, sizeof(num), "%ld%s%ld", s_free_tenths / 10, tr("num.decimal"), s_free_tenths % 10);
+         row_add(R_INFO, ID_INFO, tr("about.free"), trf(v, sizeof(v), "about.gb", "n", num, NULL));
+      }
+      else if (s_free_mb >= 0)
+      {
+         snprintf(num, sizeof(num), "%ld", s_free_mb);
+         row_add(R_INFO, ID_INFO, tr("about.free"), trf(v, sizeof(v), "about.mb", "n", num, NULL));
       }
       break;
    }
@@ -292,12 +302,12 @@ static void sel_move(int dir)
 static void measure_free(void)
 {
    struct statvfs st;
-   s_free[0] = 0;
+   s_free_tenths = s_free_mb = -1;
    if (statvfs(g_root, &st) == 0)
    {
       double b = (double)st.f_bavail * (double)st.f_frsize;
-      if (b >= 1024.0 * 1024.0 * 1024.0) snprintf(s_free, sizeof(s_free), "%.1f", b / (1024.0 * 1024.0 * 1024.0));
-      else snprintf(s_free, sizeof(s_free), "%.0f", b / (1024.0 * 1024.0));
+      if (b >= 1024.0 * 1024.0 * 1024.0) s_free_tenths = (long)(b / (1024.0 * 1024.0 * 1024.0) * 10.0 + 0.5);
+      else s_free_mb = (long)(b / (1024.0 * 1024.0) + 0.5);
    }
 }
 
@@ -335,6 +345,16 @@ static void panel_close(void)
    s_open = 0;
    logf_("panel: close");
    if (settings_dirty() && settings_save() != 0) panel_toast("error.save");
+}
+
+/* the frontend is exiting (launch, SDL_QUIT on power-off / SIGTERM) with the panel
+ * maybe still open: commit what a close would. Text typed in the keyboard is not
+ * accepted (it was never confirmed with Done), like a cancel. */
+void panel_shutdown(void)
+{
+   s_modal = M_NONE;
+   panel_close();
+   color_commit();
 }
 
 /* ---- Profile page actions (7.4): any failure shows a toast ---- */
@@ -466,6 +486,27 @@ static void row_change(const row_t *r, int dir)
    }
 }
 
+/* Cross on a choice row: two-state rows toggle, longer lists step forward and wrap */
+static void row_cycle(const row_t *r)
+{
+   if (!r->enabled) return;
+   if (!r->at_hi) { row_change(r, 1); return; }
+   switch (r->id)
+   {
+   case ID_PROFILE_ACTIVE:
+   {
+      const profile_t *p = profiles_get(0);
+      color_commit();
+      if (p && profiles_set_active(p->id) == 0) ui_cards_changed();
+      break;
+   }
+   case ID_PROFILE_COLOR: s_pcolor = 0; break;
+   case ID_SS_AFTER:  settings_set_int("screensaver_minutes", k_minutes[0]); break;
+   case ID_SS_LENGTH: settings_set_int("demo_seconds", k_seconds[0]); break;
+   default: row_change(r, -1); break;   /* Sí/No, Original/Mejorado */
+   }
+}
+
 static void page_input(const ui_nav_t *nav)
 {
    const row_t *r = row_selectable(s_sel) ? &s_rows[s_sel] : NULL;
@@ -477,9 +518,14 @@ static void page_input(const ui_nav_t *nav)
       else if (nav->back || nav->options) panel_close();
       return;
    }
-   if (r && r->type == R_CHOICE && (nav->left || nav->right)) row_change(r, nav->right ? 1 : -1);
-   if (nav->confirm && r && r->type == R_ACTION && r->enabled) row_action(r);
-   else if (nav->confirm && r && !r->enabled && r->why) panel_toast(r->why);
+   if (r && r->type == R_CHOICE && (nav->left || nav->right))
+   {
+      if (!r->enabled && r->why) panel_toast(r->why);
+      else row_change(r, nav->right ? 1 : -1);
+   }
+   if (nav->confirm && r && !r->enabled && r->why) panel_toast(r->why);
+   else if (nav->confirm && r && r->type == R_ACTION && r->enabled) row_action(r);
+   else if (nav->confirm && r && r->type == R_CHOICE) row_cycle(r);
    else if (nav->back || nav->options)
    {
       int from = s_page;
@@ -557,6 +603,39 @@ static void osk_type(const char *s)
    if (was_empty && !s_lower && strcmp(s, " ")) s_lower = 1;   /* first letter upper case, then lower */
 }
 
+/* accent layer: L1 / R1 cycle the last typed letter through its accented forms
+ * (E -> É -> È -> Ê -> Ë -> E), keeping its case; upper / lower pairs per form */
+static const char *const k_accents[][16] = {
+   { "A", "a", "\xC3\x81", "\xC3\xA1", "\xC3\x80", "\xC3\xA0", "\xC3\x82", "\xC3\xA2", "\xC3\x84", "\xC3\xA4", "\xC3\x83", "\xC3\xA3", NULL },
+   { "E", "e", "\xC3\x89", "\xC3\xA9", "\xC3\x88", "\xC3\xA8", "\xC3\x8A", "\xC3\xAA", "\xC3\x8B", "\xC3\xAB", NULL },
+   { "I", "i", "\xC3\x8D", "\xC3\xAD", "\xC3\x8C", "\xC3\xAC", "\xC3\x8E", "\xC3\xAE", "\xC3\x8F", "\xC3\xAF", NULL },
+   { "O", "o", "\xC3\x93", "\xC3\xB3", "\xC3\x92", "\xC3\xB2", "\xC3\x94", "\xC3\xB4", "\xC3\x96", "\xC3\xB6", "\xC3\x95", "\xC3\xB5", NULL },
+   { "U", "u", "\xC3\x9A", "\xC3\xBA", "\xC3\x99", "\xC3\xB9", "\xC3\x9B", "\xC3\xBB", "\xC3\x9C", "\xC3\xBC", NULL },
+   { "C", "c", "\xC3\x87", "\xC3\xA7", NULL },
+   { "N", "n", "\xC3\x91", "\xC3\xB1", NULL },
+   { "S", "s", "\xC3\x9F", "\xC3\x9F", NULL },   /* ß has no Latin-1 capital */
+   { "Y", "y", "\xC3\x9D", "\xC3\xBD", NULL },
+};
+
+static void osk_accent(int dir)
+{
+   size_t len = strlen(s_text), start = len;
+   int g, i, n, lo, found = -1, fg = 0;
+   if (!len) return;
+   while (start > 0 && ((unsigned char)s_text[start - 1] & 0xC0) == 0x80) start--;
+   if (start > 0) start--;
+   for (g = 0; g < NELEM(k_accents) && found < 0; g++)
+      for (i = 0; k_accents[g][i]; i++)
+         if (!strcmp(k_accents[g][i], s_text + start)) { found = i; fg = g; break; }
+   if (found < 0) return;
+   for (n = 0; k_accents[fg][n]; n++) {}
+   lo = found & 1;
+   if (!strcmp(k_accents[fg][found & ~1], k_accents[fg][(found & ~1) + 1])) lo = s_lower;   /* ß */
+   i = ((found / 2 + dir + n / 2) % (n / 2)) * 2 + lo;
+   if (start + strlen(k_accents[fg][i]) > OSK_MAX_BYTES) return;
+   snprintf(s_text + start, sizeof(s_text) - start, "%s", k_accents[fg][i]);
+}
+
 static void osk_erase(void)
 {
    size_t len = strlen(s_text);
@@ -583,9 +662,13 @@ static void osk_ok(void)
 
 static void osk_input(const ui_nav_t *nav)
 {
-   if (nav->options) { s_modal = M_NONE; return; }
+   /* Square (and Backspace) erase; Circle cancels like Triangle and like ○ everywhere
+    * else in the panel */
+   if (nav->options || (nav->back && !nav->erase)) { s_modal = M_NONE; return; }
    if (nav->start) { osk_ok(); return; }
-   if (nav->back) osk_erase();
+   if (nav->erase) osk_erase();
+   if (nav->l1) osk_accent(-1);
+   if (nav->r1) osk_accent(1);
    if (nav->up) s_orow = (s_orow + 4) % 5;
    if (nav->down) s_orow = (s_orow + 1) % 5;
    if (nav->left || nav->right)
@@ -749,7 +832,17 @@ int panel_hint_set(void)
    if (!s_open) return HINTS_CAROUSEL;
    if (s_modal == M_OSK) return HINTS_OSK;
    if (s_modal == M_CONFIRM) return HINTS_CONFIRM;
-   return s_page == P_ROOT ? HINTS_PANEL_ROOT : HINTS_PANEL_PAGE;
+   if (s_page == P_ROOT) return HINTS_PANEL_ROOT;
+   {
+      /* the D-pad only changes values on pages with choice rows */
+      int i, choice = 0, sel = 0;
+      for (i = 0; i < s_nrows; i++)
+      {
+         if (s_rows[i].type == R_CHOICE) choice = 1;
+         if (row_selectable(i)) sel = 1;
+      }
+      return choice ? HINTS_PANEL_PAGE : (sel ? HINTS_PANEL_LIST : HINTS_PANEL_INFO);
+   }
 }
 
 void panel_update(const ui_nav_t *nav, double t, float dt)

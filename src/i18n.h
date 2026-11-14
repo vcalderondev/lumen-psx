@@ -11,6 +11,7 @@ const char *i18n_language(void);                  /* active code */
 int         i18n_count(void);
 const char *i18n_code(int i);
 const char *i18n_name(int i);                     /* that language's "lang.name" */
+const char *i18n_main_profile_name(int i);        /* that language's "profile.main" ("" if none) */
 unsigned    i18n_generation(void);                /* ++ on every successful language change */
 const char *tr(const char *key);                  /* active -> en -> key itself */
 const char *trf(char *buf, size_t n, const char *key, ...);

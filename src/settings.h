@@ -11,5 +11,6 @@ void        settings_set(const char *key, const char *value);   /* marks dirty i
 void        settings_set_int(const char *key, int value);
 int         settings_dirty(void);
 int         settings_save(void);                          /* 0 ok, -1 error; clears dirty */
+int         settings_fsync_dir(const char *dir);          /* fsync a folder (durable rename/mkdir) */
 
 #endif

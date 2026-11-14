@@ -27,6 +27,7 @@ hint.type = Scrivi
 hint.erase = Cancella
 hint.done = Fatto
 hint.cancel = Annulla
+hint.accent = Accento
 btn.l1_r1 = L1 / R1
 btn.select_start = Select + Start
 btn.cross_circle = ✕ / ○
@@ -74,6 +75,7 @@ ss.minutes = {n} min
 ss.never = Mai
 ss.demos = Demo dei giochi
 ss.demo_length = Durata di ogni demo
+ss.demo_length_off = Attiva prima le demo
 ss.seconds = {n} s
 ss.preview = Prova ora
 ss.note = Le demo non salvano mai. Premi un tasto qualsiasi per tornare.
@@ -92,6 +94,7 @@ about.profiles = Profili
 about.free = Spazio libero
 about.gb = {n} GB
 about.mb = {n} MB
+num.decimal = ,
 
 # tastiera su schermo
 osk.space = Spazio

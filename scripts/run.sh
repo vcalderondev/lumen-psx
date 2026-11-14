@@ -128,8 +128,11 @@ lumen_merge_opt() {
   L_OPT_FILE=$1
 }
 
-# lumen_build_ra_extra: RetroArch cfg lines appended after its own config
-# (profile save folders, the graphics preset's ra.* overrides, the merged .opt)
+# lumen_build_ra_extra: RetroArch cfg lines that must win over its own config
+# (profile save folders, the graphics preset's ra.* overrides, demo settings); it is
+# handed over with --appendconfig. RetroArch keeps the FIRST copy of a key within one
+# file, so these lines must never just be concatenated after its retroarch.cfg.
+# The merged .opt needs no line here: RetroArch reads its per-core file by itself.
 lumen_build_ra_extra() {
   : > "${LUMEN_RA_EXTRA}"
   [ -n "$L_SAVES" ] && echo "savefile_directory = \"${L_SAVES}\"" >> "${LUMEN_RA_EXTRA}"
@@ -139,7 +142,6 @@ lumen_build_ra_extra() {
       [ -n "$kvl" ] && echo "${kvl%%=*} = \"${kvl#*=}\"" >> "${LUMEN_RA_EXTRA}"
     done < /tmp/lumen-ra.kv
   fi
-  [ -n "$L_OPT_FILE" ] && echo "core_options_path = \"${L_OPT_FILE}\"" >> "${LUMEN_RA_EXTRA}"
   if [ "$L_MODE" = demo ]; then   # ephemeral: nothing about the demo is kept
     for k in savestate_auto_save savestate_auto_load history_list_enable content_runtime_log \
              content_runtime_log_aggregate sort_savefiles_enable sort_savestates_enable \
@@ -202,6 +204,10 @@ while true; do
   if [ -n "${L_OPT_CORE_NAME}" ]; then
     lumen_merge_opt "${LUMEN_CORE_OPT_DIR}/${L_OPT_CORE_NAME}/${L_OPT_CORE_NAME}.opt" /tmp/lumen-opt.kv ||
       slog "core options merge failed for ${L_OPT_CORE_NAME}"
+    # game_specific_options: a <core>/<content name>.opt takes precedence over the preset
+    gso=${L_CONTENT##*/}; gso="${LUMEN_CORE_OPT_DIR}/${L_OPT_CORE_NAME}/${gso%.*}.opt"
+    [ -n "${LUMEN_CORE_OPT_DIR}" ] && [ -f "${gso}" ] &&
+      slog "warning: ${gso} exists and overrides the graphics preset for this game"
   fi
   if [ "${L_MODE}" = demo ]; then
     lumen_run_demo

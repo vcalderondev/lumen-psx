@@ -1,5 +1,5 @@
 /* Profiles (docs/settings-design.md section 7). Static storage, at most MAX_PROFILES.
- * Every profile.ini write is atomic (tmp + fsync + rename + sync). Deleting renames the
+ * Every profile.ini write is atomic (tmp + fsync + rename + fsync of the folder). Deleting renames the
  * folder to profiles/.trash-<id>-<time> (instant) and a detached thread removes it. */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -95,7 +95,7 @@ static int ini_write(const profile_t *p)
    if (fclose(f) != 0) ok = 0;
    if (ok) ok = rename(tmp, path) == 0;
    if (!ok) { logf_("profiles: write %s failed: %s", path, strerror(errno)); unlink(tmp); return -3; }
-   sync();
+   settings_fsync_dir(dir);
    return 0;
 }
 
@@ -187,20 +187,26 @@ static int name_eq(const char *a, const char *b)
 
 int profiles_name_taken(const char *name, const char *except_id)
 {
-   int i;
+   int i, l;
    for (i = 0; i < s_n; i++)
    {
       if (except_id && !strcmp(s_prof[i].id, except_id)) continue;
       if (name_eq(profiles_display_name(&s_prof[i]), name)) return 1;
+      /* an untitled main profile is shown as "profile.main" in whatever language is
+       * active: its name in every language is taken, or a switch would show twins */
+      if (!s_prof[i].name[0] && !strcmp(s_prof[i].id, "main"))
+         for (l = 0; l < i18n_count(); l++)
+            if (i18n_main_profile_name(l)[0] && name_eq(i18n_main_profile_name(l), name)) return 1;
    }
    return 0;
 }
 
+/* only marks settings dirty: the panel saves when it closes and main() on exit, so
+ * scrolling through profiles never blocks a frame on the USB stick */
 int profiles_set_active(const char *id)
 {
    if (profiles_find(id) < 0) return -1;
    settings_set("profile", id);
-   if (settings_dirty() && settings_save() != 0) return -3;
    logf_("profiles: active %s", id);
    return 0;
 }
@@ -213,6 +219,18 @@ static int clean_name(const char *in, char *out, size_t n)
    len = strlen(out);
    while (len > 0 && out[len - 1] == ' ') out[--len] = 0;
    return len > 0 && !strpbrk(out, "\n\r");
+}
+
+/* undo a half-created profile folder (it did not exist before profiles_create) */
+static void create_rollback(const char *dir)
+{
+   char sub[360];
+   snprintf(sub, sizeof(sub), "%s/profile.ini", dir); unlink(sub);
+   snprintf(sub, sizeof(sub), "%s/profile.ini.tmp", dir); unlink(sub);
+   snprintf(sub, sizeof(sub), "%s/saves", dir); rmdir(sub);
+   snprintf(sub, sizeof(sub), "%s/states", dir); rmdir(sub);
+   if (rmdir(dir) != 0 && errno != ENOENT) logf_("profiles: rollback %s: %s", dir, strerror(errno));
+   settings_fsync_dir(s_dir);
 }
 
 int profiles_create(const char *name, int color, char *id_out, size_t n)
@@ -244,12 +262,13 @@ int profiles_create(const char *name, int color, char *id_out, size_t n)
    }
    p.color = color;
    p.created = (long)time(NULL);
-   if (ini_write(&p) != 0) return -3;
+   if (ini_write(&p) != 0) { create_rollback(dir); return -3; }
    snprintf(sub, sizeof(sub), "%s/saves", dir);
-   if (mkdir_p1(sub)) { logf_("profiles: mkdir %s: %s", sub, strerror(errno)); return -3; }
+   if (mkdir_p1(sub)) { logf_("profiles: mkdir %s: %s", sub, strerror(errno)); create_rollback(dir); return -3; }
    snprintf(sub, sizeof(sub), "%s/states", dir);
-   if (mkdir_p1(sub)) { logf_("profiles: mkdir %s: %s", sub, strerror(errno)); return -3; }
-   sync();
+   if (mkdir_p1(sub)) { logf_("profiles: mkdir %s: %s", sub, strerror(errno)); create_rollback(dir); return -3; }
+   settings_fsync_dir(dir);
+   settings_fsync_dir(s_dir);
    s_prof[s_n++] = p;
    if (id_out) snprintf(id_out, n, "%s", p.id);
    logf_("profiles: created %s", p.id);
@@ -314,7 +333,7 @@ int profiles_delete(const char *id)
       char *copy;
       snprintf(trash, sizeof(trash), "%s/.trash-%s-%ld", s_dir, id, (long)time(NULL));
       if (rename(dir, trash) != 0) { logf_("profiles: cannot move %s: %s", dir, strerror(errno)); return -3; }
-      sync();
+      settings_fsync_dir(s_dir);
       if ((copy = strdup(trash)) && (th = SDL_CreateThread(trash_thread, "trash", copy))) SDL_DetachThread(th);
       else { free(copy); logf_("profiles: %s left for the next session", trash); }
    }
