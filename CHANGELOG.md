@@ -27,12 +27,6 @@ upstream PCSX-ReARMed, on a PSC compositor built from source.
 - Release workflow: builds Lumen, takes the pinned psc-platform release
   (`platform.lock`) and publishes the USB package with this changelog.
 
-### Known limitations
-- The POWER button does nothing during a Lumen session: the PSC has no software
-  power-off, and Sony's suspend to RAM cannot resume a session that runs from the exFAT
-  stick under a GL compositor. Turn the console off by unplugging it (saves and states
-  are written when a game exits, so they survive it). RESET still quits a game.
-
 ### Removed
 - Project Eris' RetroArch 1.8.8 and its cores (archived to backup_eris/ by the installer
   tools, never deleted).
