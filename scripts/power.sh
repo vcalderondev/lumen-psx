@@ -39,10 +39,16 @@ suspend)
   sync
   ;;
 resume)
+  # run by Sony's resume_run (bind-mounted by boot.sh) and by lumen-buttons when
+  # resume_count moves: the first one does it
+  [ -f /tmp/lumen-suspending ] || exit 0
+  mkdir /tmp/lumen-resuming 2>/dev/null || exit 0
+  echo 1 > /sys/class/leds/green/brightness 2>/dev/null
+  echo 0 > /sys/class/leds/red/brightness 2>/dev/null
   for p in $(pids_of "${WRITERS}"); do kill -CONT "$p" 2>/dev/null; done
   say "resume: starting the compositor"
   sh /tmp/lumen-weston-start.sh
-  rm -f /tmp/lumen-suspending
+  rm -f /tmp/lumen-suspending; rmdir /tmp/lumen-resuming
   ;;
 *)
   echo "usage: $0 suspend|resume" >&2; exit 2 ;;
