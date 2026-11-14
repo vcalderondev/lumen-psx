@@ -795,6 +795,70 @@ static void in_event(const SDL_Event *e)
    }
 }
 
+/* ------------------------------------------------------------------------ */
+/* help bar: button icons ($home/icons/<name>.png, optional) + labels        */
+typedef struct { const char *icons[3]; const char *fallback; const char *text; } hint_t;
+static const hint_t g_hints[] = {
+   { { "cross", "circle", NULL }, "\xE2\x9C\x95 / \xE2\x97\x8B", "Jugar" },
+   { { "l1", "r1", NULL },        "L1 / R1",                     "Plataforma" },
+   { { "select", "start", NULL }, "Select + Start",              "Salir" },
+};
+#define NHINTS ((int)(sizeof(g_hints) / sizeof(g_hints[0])))
+typedef struct { GLuint icon[3]; int iw[3], ih[3]; GLuint fb, txt; int fbw, fbh, tw, th; } hint_gl_t;
+static hint_gl_t g_hint_gl[NHINTS];
+
+static void hints_load(const char *home, TTF_Font *font)
+{
+   int i, k;
+   for (i = 0; i < NHINTS; i++)
+   {
+      hint_gl_t *h = &g_hint_gl[i];
+      int have = 1;
+      for (k = 0; k < 3 && g_hints[i].icons[k]; k++)
+      {
+         char path[400]; SDL_Surface *sf;
+         snprintf(path, sizeof(path), "%s/icons/%s.png", home, g_hints[i].icons[k]);
+         sf = IMG_Load(path);
+         if (sf) { h->iw[k] = sf->w; h->ih[k] = sf->h; h->icon[k] = surface_to_tex(sf, 0, NULL); SDL_FreeSurface(sf); }
+         if (!h->icon[k]) have = 0;
+      }
+      if (!have)
+         h->fb = text_tex(font, g_hints[i].fallback, &h->fbw, &h->fbh);
+      h->txt = text_tex(font, g_hints[i].text, &h->tw, &h->th);
+   }
+}
+
+/* draw the hints centred on y; returns nothing, icons scaled to icon_h */
+static void hints_draw(float y, float alpha)
+{
+   const float icon_h = 28.0f, gap_icon = 6.0f, gap_txt = 10.0f, gap_hint = 42.0f;
+   const float ic[4] = { 1, 1, 1, alpha }, tc[4] = { 0.62f, 0.61f, 0.72f, alpha };
+   float total = 0, x;
+   int i, k;
+   for (i = 0; i < NHINTS; i++)
+   {
+      hint_gl_t *h = &g_hint_gl[i];
+      if (h->fb) total += h->fbw;
+      else for (k = 0; k < 3 && h->icon[k]; k++) total += icon_h * h->iw[k] / (float)h->ih[k] + gap_icon;
+      total += gap_txt + h->tw + (i < NHINTS - 1 ? gap_hint : 0);
+   }
+   x = (W - total) * 0.5f;
+   for (i = 0; i < NHINTS; i++)
+   {
+      hint_gl_t *h = &g_hint_gl[i];
+      if (h->fb) { draw_2d(h->fb, x, y - h->fbh * 0.5f, h->fbw, h->fbh, tc, 0); x += h->fbw; }
+      else for (k = 0; k < 3 && h->icon[k]; k++)
+      {
+         float w = icon_h * h->iw[k] / (float)h->ih[k];
+         draw_2d(h->icon[k], x, y - icon_h * 0.5f, w, icon_h, ic, 0);
+         x += w + gap_icon;
+      }
+      x += gap_txt;
+      draw_2d(h->txt, x, y - h->th * 0.5f, h->tw, h->th, tc, 0);
+      x += h->tw + gap_hint;
+   }
+}
+
 typedef struct { GLuint tex; int w, h; } bgtex_t;
 static bgtex_t bg_cur, bg_next;
 static float   bg_mix = 1.0f;          /* 0 -> showing cur, 1 -> next done */
@@ -842,7 +906,7 @@ int main(int argc, char **argv)
    int held_dir = 0; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
    spring bg[3], info_y, info_a, plat_x;
-   label_t l_title = { 0 }, l_sub = { 0 }, l_count = { 0 }, l_brand = { 0 }, l_help = { 0 }, l_start = { 0 };
+   label_t l_title = { 0 }, l_sub = { 0 }, l_count = { 0 }, l_brand = { 0 }, l_start = { 0 };
    float fade = 1.0f; /* 1 = black, fades in at start */
 
    for (i = 1; i < argc; i++)
@@ -937,7 +1001,7 @@ int main(int argc, char **argv)
    bg[0].x = 0.05f; bg[1].x = 0.05f; bg[2].x = 0.08f;
    memset(&info_y, 0, sizeof(info_y)); memset(&info_a, 0, sizeof(info_a)); memset(&plat_x, 0, sizeof(plat_x));
    label_set(&l_brand, g_font_small, "lumen");
-   label_set(&l_help, g_font_small, "\xE2\x97\x8B jugar      \xE2\x96\xA1 favorito      \xE2\x96\xB3 opciones      L1 / R1 plataforma");
+   hints_load(g_home, g_font_small);
    label_set(&l_start, g_font_sub, "Iniciando\xE2\x80\xA6");
 
    /* first frame positions: start off to the right so they fly in */
@@ -1219,7 +1283,8 @@ int main(int argc, char **argv)
             }
             {
                const float hc[4] = { 0.43f, 0.42f, 0.52f, 1 - fade };
-               draw_2d(l_help.tex, (W - l_help.w) * 0.5f, 676, l_help.w, l_help.h, hc, 0);
+               (void)hc;
+               hints_draw(686, 1 - fade);
             }
             if (fade > 0.001f)
             {
