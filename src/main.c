@@ -695,15 +695,28 @@ static const char *FS_2D =
    "                 c += aux2.rgb * 0.55 * exp(-dot(d1, d1) * 2.6) + aux1.rgb * 0.35 * exp(-dot(d2, d2) * 3.5);\n"
    "                 highp float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);\n"
    "                 frag = vec4(c + (n - 0.5) * (1.5 / 255.0), color.a); return; }\n"
-   /* 8: legibility overlay: left 58 % darkened, top and bottom bands, slight overall dim */
-   "  if (mode==8) { float l = 1.0 - smoothstep(0.0, 0.64, v_uv.x); l = 0.80 * l * (0.55 + 0.45 * l);\n"
-   "                 float b = 0.62 * smoothstep(0.66, 1.0, v_uv.y), t = 0.50 * (1.0 - smoothstep(0.0, 0.22, v_uv.y));\n"
-   "                 float a = 1.0 - (1.0 - l) * (1.0 - b) * (1.0 - t) * 0.86;\n"
+   /* 8: legibility overlay: a uniform dark layer (aux0.x opacity), plus the left 58 %,
+    *    top and bottom bands darkened further */
+   "  if (mode==8) { float l = 1.0 - smoothstep(0.0, 0.64, v_uv.x); l = 0.70 * l * (0.55 + 0.45 * l);\n"
+   "                 float b = 0.60 * smoothstep(0.62, 1.0, v_uv.y), t = 0.45 * (1.0 - smoothstep(0.0, 0.24, v_uv.y));\n"
+   "                 float a = 1.0 - (1.0 - l) * (1.0 - b) * (1.0 - t) * (1.0 - aux0.x);\n"
    "                 frag = vec4(0.0, 0.0, 0.0, a * color.a); return; }\n"
    /* 9: flat rounded rectangle, filled (aux0.x <= 0) or stroked inside with width aux0.x */
    "  if (mode==9) { highp float d = rr_dist(); float m;\n"
    "                 if (aux0.x > 0.0) m = clamp(0.5 + aux0.x * 0.5 - abs(d + aux0.x * 0.5), 0.0, 1.0); else m = clamp(0.5 - d, 0.0, 1.0);\n"
    "                 frag = vec4(color.rgb, color.a * m); return; }\n"
+   /* 10: soft drop shadow of a rounded rectangle; the quad is the shape grown by the blur
+    *     radius aux0.x on every side (rect.xy = quad size, rect.z = corner radius), moved
+    *     down by aux0.z px; aux0.y > 0 cuts the shadow out under the shape itself (for
+    *     translucent shapes, like CSS box-shadow) */
+   "  if (mode==10) { highp vec2 hs = rect.xy * 0.5 - vec2(aux0.x); highp float r = min(rect.z, min(hs.x, hs.y));\n"
+   "                  highp vec2 pp = (v_uv - 0.5) * rect.xy;\n"
+   "                  highp vec2 q = abs(pp) - (hs - vec2(r));\n"
+   "                  highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
+   "                  float k = 1.0 - smoothstep(-aux0.x * 0.35, aux0.x, d); k *= k;\n"
+   "                  if (aux0.y > 0.0) { highp vec2 q2 = abs(pp + vec2(0.0, aux0.z)) - (hs - vec2(r));\n"
+   "                    highp float d2 = length(max(q2, 0.0)) + min(max(q2.x, q2.y), 0.0) - r; k *= clamp(d2 + 0.5, 0.0, 1.0); }\n"
+   "                  frag = vec4(0.0, 0.0, 0.0, color.a * k); return; }\n"
    "  if (mode==5) { highp vec2 hs = rect.xy * 0.5; highp float r = min(rect.z, min(hs.x, hs.y));\n"
    "                 highp vec2 q = abs((v_uv - 0.5) * rect.xy) - (hs - vec2(r));\n"
    "                 highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
@@ -1199,6 +1212,29 @@ static void draw_shape(float x, float y, float w, float h, float radius, float s
    glUniform4f(u2_rect, w, h, radius, 0.0f);
    glUniform4f(u2_aux0, stroke, 0.0f, 0.0f, 0.0f);
    draw_2d(0, x, y, w, h, rgba, 9);
+}
+
+/* soft shadow under a rounded rectangle x,y,w,h: blur radius, offset dy, opacity a;
+ * cut = 1 leaves the area under the shape itself clear (translucent shapes) */
+static void draw_shadow_ex(float x, float y, float w, float h, float radius, float blur, float dy, float a, int cut)
+{
+   const float c[4] = { 0, 0, 0, a };
+   glUniform4f(u2_rect, w + 2 * blur, h + 2 * blur, radius, 0.0f);
+   glUniform4f(u2_aux0, blur, cut ? 1.0f : 0.0f, dy, 0.0f);
+   draw_2d(0, x - blur, y - blur + dy, w + 2 * blur, h + 2 * blur, c, 10);
+}
+static void draw_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float a)
+{
+   draw_shadow_ex(x, y, w, h, radius, blur, dy, a, 0);
+}
+
+/* label with a soft 1-2 px shadow, for text over bright art */
+static void draw_text(const label_t *l, float x, float y, const float c[4])
+{
+   const float sh[4] = { 0, 0, 0, 0.45f * c[3] };
+   if (!l->tex) return;
+   draw_2d(l->tex, floorf(x) + 1, floorf(y) + 2, l->w, l->h, sh, 0);
+   draw_2d(l->tex, floorf(x), floorf(y), l->w, l->h, c, 0);
 }
 
 /* textured rounded tile (mode 6), the texture (tw x th) cover-fitted into w x h;
@@ -1793,7 +1829,7 @@ static void bg_draw(const bgtex_t *b, float alpha, double t)
 
 /* ------------------------------------------------------------------------ */
 /* library: tab logos / names and the live rescan                            */
-static TTF_Font *g_font_hero, *g_font_tab;   /* dashboard title and system tabs */
+static TTF_Font *g_font_hero, *g_font_tab, *g_font_name;   /* dashboard title, system tabs, profile name */
 static void platforms_load_art(void)
 {
    int i;
@@ -1873,13 +1909,15 @@ static void library_rescan(int *sel_plat, int *sel)
 /* ------------------------------------------------------------------------ */
 /* dashboard (docs/dashboard-design.md): profile + status bar, system tabs, a row of
  * rounded cover tiles anchored on the selection, title and play statistics          */
-#define DASH_X    64.0f    /* left margin of every block */
-#define TILE      172.0f
-#define TILE_SEL  224.0f
-#define TILE_GAP  16.0f
-#define TILE_Y    196.0f
-#define TAB_Y     112.0f
-#define INFO_Y    438.0f
+/* blocks keep a TV-safe margin: many TVs overscan ~3 % of each edge */
+#define DASH_X    84.0f    /* left / right margin of every block */
+#define TOP_Y     40.0f    /* profile + status row */
+#define TILE      168.0f
+#define TILE_SEL  220.0f
+#define TILE_GAP  18.0f
+#define TILE_Y    206.0f
+#define TAB_Y     118.0f
+#define INFO_Y    452.0f
 static status_t  g_status;
 static char      g_menu_music[512];          /* <home>/assets/music/menu.ogg or "" */
 static struct { char id[16]; GLuint tex; int w, h; label_t initials; } g_avatar;
@@ -1950,8 +1988,8 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
                       float ua, float info_a, float info_y)
 {
    static label_t l_name, l_psub, l_title, l_meta, l_play, l_clock, l_empty;
-   const float white[4] = { 0.97f, 0.97f, 0.98f, ua };
-   const float dim[4] = { 0.82f, 0.82f, 0.86f, 0.78f * ua };
+   const float white[4] = { 0.98f, 0.98f, 0.99f, ua };
+   const float dim[4] = { 0.84f, 0.84f, 0.88f, 0.80f * ua };
    char s[320], a1[96], a2[96], num[24];
    int i, k;
    if (ua <= 0.003f) return;
@@ -1962,88 +2000,129 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       avatar_load(profiles_active());
    }
 
-   /* profile: avatar (or initials on the profile colour), name, games played */
+   /* profile: avatar (or initials on the profile colour) with a thin ring, name, games played */
    {
       const profile_t *ap = profiles_active();
+      const float ring[4] = { 1, 1, 1, 0.35f * ua };
+      const float ax = DASH_X, ay = TOP_Y, ad = 48;
       float sw[4];
       int played = stats_games_played();
       if (strcmp(g_avatar.id, ap->id)) avatar_load(ap);
+      draw_shadow(ax, ay, ad, ad, ad * 0.5f, 10, 3, 0.45f * ua);
       if (g_avatar.tex)
       {
          const float c[4] = { 1, 1, 1, ua };
-         draw_tile(g_avatar.tex, g_avatar.w, g_avatar.h, DASH_X, 26, 44, 44, 22, -2.0f, 0.0f, c);
+         draw_tile(g_avatar.tex, g_avatar.w, g_avatar.h, ax, ay, ad, ad, ad * 0.5f, -2.0f, 0.0f, c);
       }
       else
       {
          profiles_color(ap->color, sw); sw[3] = ua;
-         draw_shape(DASH_X, 26, 44, 44, 22, 0, sw);
+         draw_shape(ax, ay, ad, ad, ad * 0.5f, 0, sw);
          if (g_avatar.initials.tex)
-            draw_2d(g_avatar.initials.tex, floorf(DASH_X + 22 - g_avatar.initials.w * 0.5f), floorf(48 - g_avatar.initials.h * 0.5f),
-                    g_avatar.initials.w, g_avatar.initials.h, white, 0);
+            draw_2d(g_avatar.initials.tex, floorf(ax + ad * 0.5f - g_avatar.initials.w * 0.5f),
+                    floorf(ay + ad * 0.5f - g_avatar.initials.h * 0.5f), g_avatar.initials.w, g_avatar.initials.h, white, 0);
       }
-      label_set(&l_name, g_font_sub, profiles_display_name(ap));
-      draw_2d(l_name.tex, DASH_X + 58, 24, l_name.w, l_name.h, white, 0);
+      draw_shape(ax - 3, ay - 3, ad + 6, ad + 6, ad * 0.5f + 3, 1.5f, ring);
+      label_set(&l_name, g_font_name ? g_font_name : g_font_sub, profiles_display_name(ap));
+      draw_text(&l_name, ax + ad + 16, ay - 1, white);
       snprintf(num, sizeof(num), "%d", played);
       label_set(&l_psub, g_font_small, trf(s, sizeof(s), played == 1 ? "dash.profile_games_one" : "dash.profile_games", "n", num, NULL));
-      draw_2d(l_psub.tex, DASH_X + 58, 50, l_psub.w, l_psub.h, dim, 0);
+      draw_text(&l_psub, ax + ad + 16, ay + 26, dim);
    }
 
    /* status, right to left: clock (only when the time is known), network, controllers */
    {
       const float on[4] = { 1, 1, 1, 0.92f * ua }, off[4] = { 1, 1, 1, 0.35f * ua };
+      const float cy = TOP_Y + 24;
       float x = W - DASH_X;
       int np = SDL_NumJoysticks();
       if (g_status.clock_ok)
       {
-         label_set(&l_clock, g_font_sub, g_status.clock);
+         label_set(&l_clock, g_font_name ? g_font_name : g_font_sub, g_status.clock);
          x -= l_clock.w;
-         draw_2d(l_clock.tex, floorf(x), floorf(48 - l_clock.h * 0.5f), l_clock.w, l_clock.h, white, 0);
-         x -= 24;
+         draw_text(&l_clock, x, cy - l_clock.h * 0.5f, white);
+         x -= 26;
       }
       if (g_status.net_up)
       {
          x -= glyph_w("network", 26);
-         glyph_draw("network", x, 35, 26, on);
-         x -= 20;
+         glyph_draw("network", x, cy - 13, 26, on);
+         x -= 22;
       }
       if (np > 4) np = 4;
       for (k = (np > 0 ? np : 1) - 1; k >= 0; k--)   /* no pad: one dim glyph */
       {
          x -= glyph_w("pad", 28);
-         glyph_draw("pad", x, 34, 28, np > 0 ? on : off);
+         glyph_draw("pad", x, cy - 14, 28, np > 0 ? on : off);
          x -= 8;
       }
    }
 
-   /* system tabs: L1 [logos / names] R1, the selected one bright and underlined */
+   /* system tabs: L1 [pills] R1. Each pill is translucent glass with a soft shadow and a
+    * hairline border; the selected one is brighter */
    if (g_nplat)
-   {
-      float x = DASH_X, lh = 26.0f;
-      const float gl[4] = { 1, 1, 1, 0.55f * ua };
-      if (g_nplat > 1) { glyph_draw("l1", x, TAB_Y + 1, 24, gl); x += glyph_w("l1", 24) + 18; }
+   {  /* a row wider than the safe area scrolls (spring) to keep the selected pill inside,
+       * with the L1 / R1 glyphs pinned at the margins */
+      static spring off;
+      const float ph = 42.0f, lh = 22.0f, padx = 20.0f;
+      const float gl[4] = { 1, 1, 1, 0.60f * ua };
+      float pws[MAX_PLATFORMS], x0, x, total = 0, sx = 0, sw = 0, l1w = 0, r1w = 0, want = 0, left, right;
       for (i = 0; i < g_nplat; i++)
       {
          platform_t *p = &g_plat[i];
-         float cw = 0, cx = x, ta = i == sel_plat ? 1.0f : 0.55f;
-         const float c[4] = { 1, 1, 1, ta * ua };
+         float cw = 0;
+         if (p->logo_tex) cw += lh * p->logo_w / (float)p->logo_h + (p->show_name && p->label ? 9.0f : 0.0f);
+         if (p->show_name && p->label) cw += p->label_w;
+         pws[i] = cw + 2 * padx;
+         if (i == sel_plat) { sx = total; sw = pws[i]; }
+         total += pws[i] + (i + 1 < g_nplat ? 12.0f : 0.0f);
+      }
+      if (g_nplat > 1) { l1w = glyph_w("l1", 24) + 14; r1w = glyph_w("r1", 24) + 14; }
+      left = DASH_X + l1w; right = W - DASH_X - r1w;
+      if (total > right - left)
+      {
+         want = off.x;
+         if (sx - want < 0) want = sx;
+         if (sx + sw - want > right - left) want = sx + sw - (right - left);
+         want = clampf(want, 0.0f, total - (right - left));
+      }
+      spring_step(&off, want, 200, 22, 1.0f / 60.0f);
+      x0 = left - off.x;
+      if (g_nplat > 1) glyph_draw("l1", DASH_X, TAB_Y + (ph - 24) * 0.5f, 24, gl);
+      if (total > right - left)
+      {
+         int sy = (int)(H - TAB_Y - ph - 24);
+         glEnable(GL_SCISSOR_TEST);
+         glScissor((int)left - 16, sy < 0 ? 0 : sy, (int)(right - left) + 32, (int)ph + 40);
+      }
+      x = x0;
+      for (i = 0; i < g_nplat; i++)
+      {
+         platform_t *p = &g_plat[i];
+         const int on_ = i == sel_plat;
+         float cx, pw = pws[i];
+         float fill[4] = { 1, 1, 1, (on_ ? 0.24f : 0.08f) * ua }, edge[4] = { 1, 1, 1, (on_ ? 0.45f : 0.16f) * ua };
+         const float c[4] = { 1, 1, 1, (on_ ? 1.0f : 0.70f) * ua };
+         draw_shadow_ex(x, TAB_Y, pw, ph, ph * 0.5f, 12, 4, (on_ ? 0.45f : 0.30f) * ua, 1);
+         draw_shape(x, TAB_Y, pw, ph, ph * 0.5f, 0, fill);
+         draw_shape(x, TAB_Y, pw, ph, ph * 0.5f, 1.0f, edge);
+         cx = x + padx;
          if (p->logo_tex)
          {
             float lw = lh * p->logo_w / (float)p->logo_h;
-            draw_2d(p->logo_tex, cx, TAB_Y, lw, lh, c, 0);
-            cx += lw + (p->show_name ? 8.0f : 0.0f); cw += lw + (p->show_name ? 8.0f : 0.0f);
+            draw_2d(p->logo_tex, floorf(cx), floorf(TAB_Y + (ph - lh) * 0.5f), lw, lh, c, 0);
+            cx += lw + 9.0f;
          }
          if (p->show_name && p->label)
-         {
-            draw_2d(p->label, cx, floorf(TAB_Y + (lh - p->label_h) * 0.5f), p->label_w, p->label_h, c, 0);
-            cw += p->label_w;
-         }
-         if (i == sel_plat) draw_shape(x, TAB_Y + lh + 10, cw, 3, 1.5f, 0, white);
-         x += cw + 32;
+            draw_2d(p->label, floorf(cx), floorf(TAB_Y + (ph - p->label_h) * 0.5f), p->label_w, p->label_h, c, 0);
+         x += pw + 12;
       }
-      if (g_nplat > 1) glyph_draw("r1", x - 14, TAB_Y + 1, 24, gl);
+      glDisable(GL_SCISSOR_TEST);
+      if (g_nplat > 1)
+         glyph_draw("r1", total > right - left ? W - DASH_X - glyph_w("r1", 24) : x + 2, TAB_Y + (ph - 24) * 0.5f, 24, gl);
    }
 
-   /* tiles */
+   /* tiles: soft shadows first, then the covers; tiles left of the selection fade away */
    if (n)
    {
       int base = (int)floorf(pos);
@@ -2061,9 +2140,10 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          if (idx < 0 || idx >= n) continue;
          if (!g_fx_sides && idx != sel) continue;
          d = idx - pos; x = tile_x(d); sz = tile_size(d);
-         if (x > W || x + sz < 0) continue;
+         ta = ua * (d < 0.0f ? clampf(1.0f + d * 1.8f, 0.0f, 1.0f) : 1.0f);
+         if (ta <= 0.003f || x > W || x + sz < 0) continue;
          g = &g_games[pl->first + idx];
-         ta = ua * (d < -0.5f ? 0.55f * clampf(1.5f + d, 0.0f, 1.0f) : 1.0f);
+         draw_shadow(x, TILE_Y, sz, sz, 14, idx == sel ? 22 : 14, idx == sel ? 10 : 6, (idx == sel ? 0.60f : 0.42f) * ta);
          if (g->tex)
          {
             const float c[4] = { 1, 1, 1, ta };
@@ -2072,15 +2152,17 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          else
          {
             const float c[4] = { 0.16f, 0.16f, 0.20f, 0.7f * ta };
-            draw_shape(x, TILE_Y, sz, sz, 14, 0, c);
+            draw_shape(x, TILE_Y, sz, sz, 14, 0, c);   /* (its shadow above is not cut: barely visible) */
          }
          if (idx == sel)
          {  /* focus ring (fades in with the title) and the media badge */
-            const float ring[4] = { 1, 1, 1, ta * info_a }, badge[4] = { 0.02f, 0.02f, 0.03f, 0.62f * ta };
+            const float ring[4] = { 1, 1, 1, 0.95f * ta * info_a }, badge[4] = { 0.04f, 0.04f, 0.06f, 0.70f * ta };
+            const float bedge[4] = { 1, 1, 1, 0.22f * ta };
             const char *mg = pl->kind == KIND_CART ? "cartridge" : (pl->kind == KIND_ARCADE ? "coin" : "disc");
             const float gc[4] = { 1, 1, 1, 0.95f * ta };
             draw_shape(x - 7, TILE_Y - 7, sz + 14, sz + 14, 20, 3.0f, ring);
             draw_shape(x + sz - 50, TILE_Y + sz - 50, 40, 40, 20, 0, badge);
+            draw_shape(x + sz - 50, TILE_Y + sz - 50, 40, 40, 20, 1.0f, bedge);
             glyph_draw(mg, x + sz - 43, TILE_Y + sz - 43, 26, gc);
          }
       }
@@ -2091,13 +2173,19 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
    {
       const game_t *cg = &g_games[pl->first + sel];
       const game_stats_t *gs = stats_get(cg->content);
-      const float c1[4] = { 0.98f, 0.98f, 0.99f, info_a * ua }, c2[4] = { 0.86f, 0.86f, 0.90f, 0.9f * info_a * ua };
-      const float c3[4] = { 0.80f, 0.80f, 0.85f, 0.75f * info_a * ua };
+      const float c1[4] = { 0.99f, 0.99f, 1.0f, info_a * ua }, c2[4] = { 0.90f, 0.90f, 0.93f, 0.92f * info_a * ua };
+      const float c3[4] = { 0.84f, 0.84f, 0.88f, 0.78f * info_a * ua };
       float sc, y = INFO_Y + info_y;
       label_set(&l_title, g_font_hero, cg->title);
       sc = l_title.w > W - 2 * DASH_X ? (W - 2 * DASH_X) / (float)l_title.w : 1.0f;
-      draw_2d(l_title.tex, DASH_X, y, l_title.w * sc, l_title.h * sc, c1, 0);
-      y += l_title.h * sc + 6 + info_y * 0.4f;
+      if (sc < 1.0f)
+      {
+         const float sh[4] = { 0, 0, 0, 0.45f * c1[3] };
+         draw_2d(l_title.tex, DASH_X + 1, y + 2, l_title.w * sc, l_title.h * sc, sh, 0);
+         draw_2d(l_title.tex, DASH_X, y, l_title.w * sc, l_title.h * sc, c1, 0);
+      }
+      else draw_text(&l_title, DASH_X, y, c1);
+      y += l_title.h * sc + 4 + info_y * 0.4f;
       s[0] = 0;
       if (cg->year[0]) snprintf(s, sizeof(s), "%s", cg->year);
       if (cg->publisher[0]) { size_t l = strlen(s); snprintf(s + l, sizeof(s) - l, "%s%s", l ? "   \xC2\xB7   " : "", cg->publisher); }
@@ -2108,8 +2196,8 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          snprintf(s + l, sizeof(s) - l, "%s%s", l ? "   \xC2\xB7   " : "", a1);
       }
       label_set(&l_meta, g_font_sub, s);
-      draw_2d(l_meta.tex, DASH_X, y, l_meta.w, l_meta.h, c2, 0);
-      y += (l_meta.h ? l_meta.h : 24) + 8;
+      draw_text(&l_meta, DASH_X, y, c2);
+      y += (l_meta.h ? l_meta.h : 24) + 6;
       if (gs && gs->seconds > 0)
       {
          trf(s, sizeof(s), "dash.played", "time", stats_format_duration(a1, sizeof(a1), gs->seconds), NULL);
@@ -2122,20 +2210,23 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       }
       else snprintf(s, sizeof(s), "%s", tr("dash.never"));
       label_set(&l_play, g_font_small, s);
-      draw_2d(l_play.tex, DASH_X, y, l_play.w, l_play.h, c3, 0);
+      draw_text(&l_play, DASH_X, y, c3);
    }
    else
    {
       label_set(&l_empty, g_font_hero, tr("empty.library"));
-      draw_2d(l_empty.tex, DASH_X, INFO_Y, l_empty.w, l_empty.h, white, 0);
+      draw_text(&l_empty, DASH_X, INFO_Y, white);
    }
 }
 
 int main(int argc, char **argv)
 {
-   char font_b[300], font_r[300], font_b_old[300], font_r_old[300], padb[300];
+   char font_b[300], font_r[300], font_m[300], font_sb[300], font_b_old[300], font_r_old[300], padb[300];
    const char *fonts_bold[] = { font_b, font_b_old, "/usr/share/fonts/ttf/LiberationSans-Bold.ttf", NULL };
    const char *fonts_reg[]  = { font_r, font_r_old, "/usr/share/fonts/ttf/LiberationSans-Regular.ttf", NULL };
+   /* Outfit ships four weights (assets/README.md); medium / semibold fall back to bold */
+   const char *fonts_med[]  = { font_m, font_b, font_b_old, "/usr/share/fonts/ttf/LiberationSans-Bold.ttf", NULL };
+   const char *fonts_semi[] = { font_sb, font_b, font_b_old, "/usr/share/fonts/ttf/LiberationSans-Bold.ttf", NULL };
    const char *log_path = NULL;
    int start_attract = 0, focus_demo = 0, home_plat = 0, home_sel = 0, att_prev = 0;
    double last_activity = 0;
@@ -2162,6 +2253,8 @@ int main(int argc, char **argv)
    snprintf(g_state, sizeof(g_state), "%s/state.txt", g_home);
    snprintf(font_b, sizeof(font_b), "%s/assets/fonts/bold.ttf", g_home);
    snprintf(font_r, sizeof(font_r), "%s/assets/fonts/regular.ttf", g_home);
+   snprintf(font_m, sizeof(font_m), "%s/assets/fonts/medium.ttf", g_home);
+   snprintf(font_sb, sizeof(font_sb), "%s/assets/fonts/semibold.ttf", g_home);
    snprintf(font_b_old, sizeof(font_b_old), "%s/fonts/bold.ttf", g_home);      /* old layout */
    snprintf(font_r_old, sizeof(font_r_old), "%s/fonts/regular.ttf", g_home);
    snprintf(padb, sizeof(padb), "%s/gamecontrollerdb.txt", g_home);
@@ -2189,7 +2282,7 @@ int main(int argc, char **argv)
    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
    {
-      int ms = settings_get_int("msaa", 0, 0, 4);   /* the flat dashboard antialiases in its shaders */
+      int ms = settings_get_int("msaa", 2, 0, 4);   /* 2x: edges of text, glyphs and the 3D launch */
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, ms > 0);
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, ms);
    }
@@ -2223,12 +2316,13 @@ int main(int argc, char **argv)
    cv_cv = SDL_CreateCond();
    SDL_CreateThread(cover_worker, "covers", NULL);
 
-   g_font_title = open_font(fonts_bold, 34);
-   g_font_sub   = open_font(fonts_reg, 20);
-   g_font_small = open_font(fonts_reg, 16);
+   g_font_title = open_font(fonts_semi, 34);
+   g_font_sub   = open_font(fonts_reg, 21);
+   g_font_small = open_font(fonts_reg, 17);
    g_font_cover = open_font(fonts_bold, 22);
-   g_font_hero  = open_font(fonts_bold, 46);
-   g_font_tab   = open_font(fonts_bold, 19);
+   g_font_hero  = open_font(fonts_semi, 50);
+   g_font_tab   = open_font(fonts_med, 19);
+   g_font_name  = open_font(fonts_med, 21);
 
    load_systems();
    scan_all();
@@ -2508,6 +2602,7 @@ int main(int argc, char **argv)
          float zoom = 0.0f, open = 0.0f, lift = 0.0f, fly = 0.0f, spin = 0.0f, flash = 0.0f, launching = 0.0f;
          float drop = 0.0f, tilt = 0.0f, shake = 0.0f, led = 0.0f, slot = 0.0f, lit = 1.0f;
          float coin_x = 0.0f, coin_spin = 0.0f, coin_in = 0.0f, credit = 0.0f, insert = 0.0f;
+         int covered;
          int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
          if (play_t >= 0)
          {
@@ -2613,15 +2708,21 @@ int main(int argc, char **argv)
 
          glUseProgram(g_prog_2d);
          glUniform1i(u2_tex, 0);
+         covered = panel_active() && panel_amount() > 0.995f;   /* settings section fully open */
+         if (!covered)
          {  /* full-screen art (current layer, next one crossfading over it), then the
              * legibility overlay (left side, top and bottom bands) in one pass */
             float e = bg_mix * bg_mix * (3 - 2 * bg_mix);
             const float ov[4] = { 1, 1, 1, 1 };
             bg_draw(&bg_cur, 1.0f, t);
             if (!bg_empty(&bg_next)) bg_draw(&bg_next, e, t);
-            if (g_fx_vignette) draw_2d(0, 0, 0, W, H, ov, 8);
+            if (g_fx_vignette)
+            {
+               glUniform4f(u2_aux0, settings_get_int("bg_dim", 45, 0, 90) / 100.0f, 0, 0, 0);
+               draw_2d(0, 0, 0, W, H, ov, 8);
+            }
          }
-         if (g_fx_text)
+         if (g_fx_text && !covered)
          {  /* dashboard UI: dimmed under the panel, gone in the attract scene, fading out
              * as the launch starts (the 3D media is drawn over it) */
             const float pa = panel_amount();
@@ -2735,7 +2836,9 @@ int main(int argc, char **argv)
             }
             if (pa > 0.003f)
             {
-               const float back[4] = { 0, 0, 0, 0.45f * pa };
+               /* the settings are a full-screen section: opaque, so nothing under it is drawn
+                * once it is fully open (see `covered`) */
+               const float back[4] = { 0.043f, 0.047f, 0.062f, pa };
                draw_2d(0, 0, 0, W, H, back, 0);
             }
             {  /* help bar: the set follows the panel, crossfading over 0.15 s; while the
@@ -2746,9 +2849,9 @@ int main(int argc, char **argv)
                const float ha = (1 - fade) * (1 - att.amount);
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
-               g_hint_cx = lerpf(W * 0.5f, (W - 24.0f - 520.0f) * 0.5f, pa);
-               if (h_prev >= 0 && h_mix < 1.0f) hints_draw(h_prev, 686, ha * (1.0f - h_mix));
-               hints_draw(h_cur, 686, ha * h_mix);
+               g_hint_cx = W * 0.5f;
+               if (h_prev >= 0 && h_mix < 1.0f) hints_draw(h_prev, 672, ha * (1.0f - h_mix));
+               hints_draw(h_cur, 672, ha * h_mix);
             }
             if (play_t >= 0 && anim == ANIM_INSERT_CART && slot > 0.0f)
             {
