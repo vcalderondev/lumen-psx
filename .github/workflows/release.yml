@@ -43,12 +43,12 @@ jobs:
           gh release download "$PSC_PLATFORM" -R vcalderondev/psc-platform -D "$RUNNER_TEMP/platform"
           (cd "$RUNNER_TEMP/platform" && sha256sum -c SHA256SUMS)
       # the toolchain action of the SAME pinned psc-platform release
-      - uses: vcalderondev/psc-platform/.github/actions/toolchain@v2.2.0
+      - uses: vcalderondev/psc-platform/.github/actions/toolchain@v2.2.1
         with:
           sysroot-token: ${{ secrets.PSC_SYSROOT_TOKEN }}
       # Lumen's boot payload: signed here from the private input and verified with the
       # console's own gpg/busybox (ARMv7 emulation) before it can go into the zip
-      - uses: vcalderondev/psc-platform/.github/actions/boot-payload@v2.2.0
+      - uses: vcalderondev/psc-platform/.github/actions/boot-payload@v2.2.1
         with:
           payload: ${{ runner.temp }}/platform/psc-boot-payload.tar.gz
           out-dir: ${{ runner.temp }}/boot

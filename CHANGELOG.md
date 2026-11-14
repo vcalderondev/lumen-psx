@@ -3,7 +3,9 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.6.0] - 2026-11-14
+
+The Lumen PSX brand on the console, and a boot that no longer cuts Sony's animation.
 
 ### Added
 - The Lumen PSX logo (frontal LPSX, one colour per letter) at the top centre of the dashboard,
@@ -12,6 +14,12 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 - Startup splash: the LPSX logo fades in with dark letters and fills them with colour, voxel
   row by voxel row from L to X, as Lumen loads; then it dissolves into the dashboard. The boot
   screen before it (`assets/splash.png`) stays black, so the logo shows only once.
+
+### Fixed
+- Sony's boot animation plays to the end before Lumen starts (psc-platform 2.2.1 boot
+  payload), instead of being cut mid-way.
+
+Verified on the console: dashboard logo, splash and boot animation.
 
 ## [0.5.0] - 2026-11-14
 
