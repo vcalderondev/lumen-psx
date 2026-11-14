@@ -1594,19 +1594,6 @@ int main(int argc, char **argv)
                g_detail = abs(o) <= 1;
                if (o == 0)
                {
-                  /* true reflection: the whole case mirrored about the floor, same motion */
-                  float floor_y = -0.5f * gp->h * g->sc.x - 0.01f;
-                  mat4 rb = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x),
-                            m4_mul(m4_rot_y(g->ry.x + sway), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
-                  mat4 mir = m4_mul(m4_translate(0, 2.0f * floor_y, 0), m4_mul(m4_scale(1, -1, 1), rb));
-                  glDisable(GL_DEPTH_TEST);
-                  glUniform1f(u_refl, floor_y);
-                  draw_media(g, gp, mir, g->al.x * (1.0f - fade), op, gp->kind == KIND_DISC ? lift : 0.0f, 0.0f, spin, lit);
-                  glUniform1f(u_refl, 100.0f);
-                  glEnable(GL_DEPTH_TEST);
-               }
-               if (o == 0)
-               {
                   if (gp->idle_float)
                   {
                      bob = sinf((float)t * 1.9f) * 0.035f;
@@ -1615,9 +1602,22 @@ int main(int argc, char **argv)
                   if (play_t >= 0)
                   {
                      op = open; sway *= 1.0f - zoom; bob *= 1.0f - zoom;
-                     ty = lift * 0.35f - drop * 3.2f;
+                     ty = lift * 0.35f - drop * 3.2f - zoom * 0.22f;   /* zoom towards the camera axis */
                      tx_ = tilt;
                   }
+               }
+               if (o == 0)
+               {
+                  /* true reflection: the whole case mirrored about the floor, same motion */
+                  float floor_y = -0.5f * gp->h * g->sc.x - 0.01f;
+                  mat4 rb = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x),
+                            m4_mul(m4_rot_y(g->ry.x + sway), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
+                  mat4 mir = m4_mul(m4_translate(0, 2.0f * floor_y, 0), m4_mul(m4_scale(1, -1, 1), rb));
+                  glDisable(GL_DEPTH_TEST);
+                  glUniform1f(u_refl, floor_y);
+                  draw_media(g, gp, mir, g->al.x * (1.0f - fade) * (1.0f - zoom), op, gp->kind == KIND_DISC ? lift : 0.0f, 0.0f, spin, lit);
+                  glUniform1f(u_refl, 100.0f);
+                  glEnable(GL_DEPTH_TEST);
                }
                base = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x),
                       m4_mul(m4_rot_y(g->ry.x + sway), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
