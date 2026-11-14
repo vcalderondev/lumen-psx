@@ -5,7 +5,7 @@ Everything visual that Lumen ships lives here and is installed to
 
 | Path | What |
 |---|---|
-| `splash.png` | 1280x720 boot screen, shown by the boot payload (psc-platform `boot/`, `lumen-splash`) before Lumen starts: the LPSX logo with its letters dark (unfilled), exactly where Lumen's own splash then fills them (`tools/make-brand.py`) |
+| `splash.png` | 1280x720 boot screen, shown by the boot payload (psc-platform `boot/`, `lumen-splash`) before Lumen starts: plain black on purpose. boot.sh closes it to restart the compositor (a few black seconds), so a logo here and then Lumen's own animated splash looked like two starts |
 | `splash-1080.png` | the same boot screen at 1920x1080, for 1080p output |
 | `icons/<name>.png` | previous pixel-art controller icons (kept as an alternative style), pixel art authored on a 36 px grid and exported x4 (`tools/make-icons.py`); names: cross, circle, triangle, square, dpad, l1, r1, l2, r2, select, start |
 | `glyphs/<name>.png` | dashboard glyphs (PS5-style): flat white on transparent at 2x (64 px), tinted in the shader (`tools/make-glyphs.py`); buttons: cross, circle, triangle, square, dpad, l1, r1, l2, r2, select, start; status: pad, network, clock; top: info, gallery, settings; media badges: disc, cartridge, coin |

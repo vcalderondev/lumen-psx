@@ -2550,13 +2550,15 @@ static float glyph_w(const char *name, float h)
  * fill one by one. Two sizes:
  *  - logo-front[-1080].png, top centre of the dashboard: whenever the dashboard appears,
  *    L, P, S, X drop into place with a fade, 90 ms apart;
- *  - logo-front-splash[-1080].png, the startup splash: the letters start dark (the boot
- *    payload's splash.png shows exactly that frame) and fill with colour voxel row by
- *    voxel row, L to X, as startup goes on; then the splash fades into the dashboard.
+ *  - logo-front-splash[-1080].png, the startup splash: the logo fades in from black with
+ *    its letters dark, and they fill with colour voxel row by voxel row, L to X, as
+ *    startup goes on; then the splash fades into the dashboard. (The boot payload's
+ *    splash.png stays black: boot.sh closes it to restart the compositor, and a logo
+ *    there, a black gap, then the logo again looked like two starts.)
  * Missing PNG: nothing is drawn (plain black splash, the top bar as it was). */
 #define LOGO_W_VOX   28.5f   /* content width of logo-front.svg in voxels: 4 x 6 + 3 x 1.5 */
 #define LOGO_H_VOX   8.0f    /* letter height in voxels (the extrusion hangs below) */
-#define SPLASH_DARK  0.22f   /* brightness of an unfilled letter (make-brand.py: DARK) */
+#define SPLASH_DARK  0.22f   /* brightness of an unfilled letter */
 typedef struct { int tried; GLuint tex[4]; float x[4], w[4], h, vox; } logo_t;
 static logo_t g_logo, g_logo_big;
 static double g_logo_t0 = -1.0;   /* time the entry animation started; -1: replay on next show */
@@ -2671,6 +2673,7 @@ static void splash_logo_draw(float fill, float a)
  * fill from where it is at ~2.5 logos per second (whole frames, vsync). Blocking work
  * runs between calls, so each call is one step of progress; it costs ~0.4 s in all. */
 static float g_splash_fill = -1.0f;   /* < 0: no splash (in-game dialog) */
+static float g_splash_a;               /* the splash fades in from black first (0.25 s) */
 static void splash_step(SDL_Window *win, float target)
 {
    double last = now_s();
@@ -2680,7 +2683,8 @@ static void splash_step(SDL_Window *win, float target)
       double t = now_s();
       float dt = clampf((float)(t - last), 0.0f, 0.1f);   /* a slow frame still advances */
       last = t;
-      g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
+      if (g_splash_a < 1.0f) g_splash_a = fminf(1.0f, g_splash_a + dt / 0.25f);
+      else g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
       SDL_PumpEvents();
       glBindFramebuffer(GL_FRAMEBUFFER, 0);
       glViewport(0, 0, g_dw, g_dh);
@@ -2691,9 +2695,9 @@ static void splash_step(SDL_Window *win, float target)
       glEnable(GL_BLEND);
       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       glUseProgram(g_prog_2d);
-      splash_logo_draw(g_splash_fill, 1.0f);
+      splash_logo_draw(g_splash_fill, g_splash_a);
       SDL_GL_SwapWindow(win);
-      if (g_splash_fill >= target || !g_logo_big.tex[0]) break;
+      if ((g_splash_a >= 1.0f && g_splash_fill >= target) || !g_logo_big.tex[0]) break;
    }
 }
 
@@ -3331,7 +3335,7 @@ int main(int argc, char **argv)
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
    gl_setup();
    g_ortho = m4_ortho(0, W, H, 0);
-   if (!dialog) { g_splash_fill = 0.0f; splash_step(win, 0.0f); }   /* the boot splash's frame */
+   if (!dialog) { g_splash_fill = 0.0f; splash_step(win, 0.0f); }   /* fade in, letters dark */
    make_fx_textures();
    make_tile_shadow();
    bg_mx = SDL_CreateMutex();
