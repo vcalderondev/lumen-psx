@@ -3,9 +3,11 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.11.0] - 2026-11-15
 
-Measured in the simulator; not yet verified on the console.
+A more responsive dashboard, and antialiasing only where the 3D is. Measured in the
+simulator; not yet verified on the console. Three switches in `settings.ini` undo the
+riskier parts one by one: `scene_aa=0`, `tile_split=0`, `shader_cache=0`.
 
 ### Changed
 - A more responsive dashboard at 1080p, same picture. The window has no multisampling
