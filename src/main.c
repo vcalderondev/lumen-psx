@@ -1168,15 +1168,90 @@ static GLuint compile(GLenum type, const char *src)
    return s;
 }
 
+/* Program binaries: compiling and linking the shaders is paid at every start, and Lumen
+ * starts again after every game. The driver's linked program is kept in
+ * <home>/cache/shaders/<key>.bin (key: the driver's version and renderer strings and both
+ * sources), loaded with glProgramBinary on the next start; a binary the driver refuses
+ * (another driver, a cut-short file) is compiled from source and written again.
+ * Setting shader_cache=0 turns it off. */
+static int g_progs_cached, g_progs_built;
+static unsigned fnv1a(unsigned h, const char *s) { while (*s) h = (h ^ (unsigned char)*s++) * 16777619u; return h; }
+static void prog_cache_path(char *out, size_t n, const char *vs, const char *fs)
+{
+   unsigned a = 2166136261u, b = 0x9747b28cu;
+   const char *ver = (const char *)glGetString(GL_VERSION), *ren = (const char *)glGetString(GL_RENDERER);
+   a = fnv1a(fnv1a(fnv1a(fnv1a(a, ver ? ver : ""), ren ? ren : ""), vs), fs);
+   b = fnv1a(fnv1a(fnv1a(fnv1a(b, fs), vs), ren ? ren : ""), LUMEN_VERSION);
+   snprintf(out, n, "%s/cache/shaders/%08x%08x.bin", g_home, a, b);
+}
+
+static int prog_cache_load(GLuint p, const char *path)
+{
+   FILE *f = fopen(path, "rb");
+   unsigned hdr[2]; unsigned char *buf; GLint ok = 0;
+   if (!f) return 0;
+   if (fread(hdr, sizeof(unsigned), 2, f) == 2 && hdr[1] > 0 && hdr[1] < (8u << 20) && (buf = malloc(hdr[1])))
+   {
+      if (fread(buf, 1, hdr[1], f) == hdr[1])
+      {
+         while (glGetError() != GL_NO_ERROR) { }
+         glProgramBinary(p, (GLenum)hdr[0], buf, (GLsizei)hdr[1]);
+         if (glGetError() == GL_NO_ERROR) glGetProgramiv(p, GL_LINK_STATUS, &ok);
+      }
+      free(buf);
+   }
+   fclose(f);
+   return ok;
+}
+
+static void prog_cache_save(GLuint p, const char *path)
+{
+   char tmp[420], dir[420]; GLint len = 0; GLsizei got = 0; unsigned hdr[2]; GLenum fmt = 0; unsigned char *buf; FILE *f;
+   glGetProgramiv(p, GL_PROGRAM_BINARY_LENGTH, &len);
+   if (len <= 0 || !(buf = malloc((size_t)len))) return;
+   while (glGetError() != GL_NO_ERROR) { }
+   glGetProgramBinary(p, len, &got, &fmt, buf);
+   if (glGetError() == GL_NO_ERROR && got > 0)
+   {
+      snprintf(dir, sizeof(dir), "%s/cache", g_home); mkdir(dir, 0755);
+      snprintf(dir, sizeof(dir), "%s/cache/shaders", g_home); mkdir(dir, 0755);
+      snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+      if ((f = fopen(tmp, "wb")))
+      {
+         hdr[0] = (unsigned)fmt; hdr[1] = (unsigned)got;
+         int okw = fwrite(hdr, sizeof(unsigned), 2, f) == 2 && fwrite(buf, 1, (size_t)got, f) == (size_t)got;
+         if (fclose(f) != 0) okw = 0;
+         if (okw) rename(tmp, path); else unlink(tmp);
+      }
+   }
+   free(buf);
+}
+
 static GLuint link_prog(const char *vs, const char *fs)
 {
-   GLint ok; char info[1024];
-   GLuint p = glCreateProgram();
-   glAttachShader(p, compile(GL_VERTEX_SHADER, vs));
-   glAttachShader(p, compile(GL_FRAGMENT_SHADER, fs));
+   static int use = -1;
+   GLint ok; char info[1024], path[400];
+   GLuint p = glCreateProgram(), v, f;
+   if (use < 0)
+   {
+      GLint nf = 0;
+      glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nf);
+      use = nf > 0 && settings_get_int("shader_cache", 1, 0, 1);
+   }
+   if (use)
+   {
+      prog_cache_path(path, sizeof(path), vs, fs);
+      if (prog_cache_load(p, path)) { g_progs_cached++; return p; }
+      glDeleteProgram(p); p = glCreateProgram();   /* a refused binary leaves no state behind */
+   }
+   v = compile(GL_VERTEX_SHADER, vs); f = compile(GL_FRAGMENT_SHADER, fs);
+   glAttachShader(p, v);
+   glAttachShader(p, f);
    glLinkProgram(p);
    glGetProgramiv(p, GL_LINK_STATUS, &ok);
    if (!ok) { glGetProgramInfoLog(p, sizeof(info), NULL, info); logf_("link error: %s", info); }
+   else if (use) prog_cache_save(p, path);
+   g_progs_built++;
    return p;
 }
 
@@ -4223,6 +4298,7 @@ int main(int argc, char **argv)
    boot_mark("window+gl");
    gl_setup();
    crt_prepare(g_dw, g_dh);   /* CRT filter on: its shader and target now, not on the first frame */
+   logf_("shaders: %d from the cache, %d compiled", g_progs_cached, g_progs_built);
    boot_mark("shaders");
    g_ortho = m4_ortho(0, W, H, 0);
    if (!dialog) { g_splash_fill = 0.0f; splash_step(win, 0.0f); }   /* fade in, letters dark */
