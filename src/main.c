@@ -1285,7 +1285,9 @@ static void surface_avg(SDL_Surface *c, float *avg, float *acc)
 /* Upload an SDL surface as RGBA (ABGR8888 == R,G,B,A bytes on little endian). */
 static GLuint surface_to_tex(SDL_Surface *s, int mip, float *avg)
 {
-   GLuint t; SDL_Surface *c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0);
+   /* the workers hand over ABGR8888 already: no second copy of it on the render thread */
+   const int ready = s->format->format == SDL_PIXELFORMAT_ABGR8888 && s->pitch == s->w * 4;
+   GLuint t; SDL_Surface *c = ready ? s : SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0);
    if (!c) return 0;
    if (avg)
    {
@@ -1307,7 +1309,7 @@ static GLuint surface_to_tex(SDL_Surface *s, int mip, float *avg)
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
    if (mip) glGenerateMipmap(GL_TEXTURE_2D);
-   SDL_FreeSurface(c);
+   if (c != s) SDL_FreeSurface(c);
    return t;
 }
 
@@ -2810,27 +2812,78 @@ static bgtex_t bg_gen_layer(int gi)
    return l;
 }
 
+/* A decoded background goes to the GPU a strip per frame (about 2 MB): the whole 1080p
+ * image is 8 MB, and copying it in one call held the frame it landed on. */
+static struct { SDL_Surface *s; GLuint tex; int row; char path[512]; } bg_up;
+static void bg_up_cancel(void)
+{
+   if (bg_up.s) SDL_FreeSurface(bg_up.s);
+   if (bg_up.tex) glDeleteTextures(1, &bg_up.tex);
+   memset(&bg_up, 0, sizeof(bg_up));
+}
+
 static void bg_poll_upload(void)
 {
    SDL_Surface *s = NULL; char path[512] = "";
-   int failed;
-   bgtex_t l;
+   int failed, got;
    SDL_LockMutex(bg_mx);
    s = bg_done; bg_done = NULL;
    failed = bg_done_failed; bg_done_failed = 0;
-   snprintf(path, sizeof(path), "%s", bg_done_path);
+   got = s || failed;
+   if (got) snprintf(path, sizeof(path), "%s", bg_done_path);
    SDL_UnlockMutex(bg_mx);
-   if (!s)
-   {  /* unreadable image: the generated background of that game instead */
-      if (failed && !strcmp(path, bg_shown)) bg_push(bg_gen_layer(bg_game));
-      return;
+   if (got)
+   {
+      bg_up_cancel();   /* a newer result replaces an upload in progress */
+      if (!s)
+      {  /* unreadable image: the generated background of that game instead */
+         if (!strcmp(path, bg_shown)) bg_push(bg_gen_layer(bg_game));
+         return;
+      }
+      if (strcmp(path, bg_shown)) { SDL_FreeSurface(s); return; } /* stale */
+      if (s->format->format != SDL_PIXELFORMAT_ABGR8888 || s->pitch != s->w * 4)
+      {  /* not the worker's format (never happens): the plain upload */
+         bgtex_t l;
+         memset(&l, 0, sizeof(l));
+         l.tex = surface_to_tex(s, 0, NULL);
+         l.w = s->w; l.h = s->h;
+         SDL_FreeSurface(s);
+         bg_push(l);
+         return;
+      }
+      bg_up.s = s;
+      snprintf(bg_up.path, sizeof(bg_up.path), "%s", path);
+      glGenTextures(1, &bg_up.tex);
+      glBindTexture(GL_TEXTURE_2D, bg_up.tex);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, s->w, s->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
    }
-   if (strcmp(path, bg_shown)) { SDL_FreeSurface(s); return; } /* stale */
-   memset(&l, 0, sizeof(l));
-   l.tex = surface_to_tex(s, 0, NULL);
-   l.w = s->w; l.h = s->h;
-   SDL_FreeSurface(s);
-   bg_push(l);
+   if (!bg_up.s) return;
+   if (strcmp(bg_up.path, bg_shown)) { bg_up_cancel(); return; }   /* the selection moved on */
+   {
+      SDL_Surface *u = bg_up.s;
+      int rows = (2 * 1024 * 1024) / (u->w * 4 > 0 ? u->w * 4 : 1);
+      if (rows < 16) rows = 16;
+      if (rows > u->h - bg_up.row) rows = u->h - bg_up.row;
+      glBindTexture(GL_TEXTURE_2D, bg_up.tex);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, bg_up.row, u->w, rows, GL_RGBA, GL_UNSIGNED_BYTE,
+                      (const unsigned char *)u->pixels + (size_t)bg_up.row * u->pitch);
+      bg_up.row += rows;
+      if (bg_up.row >= u->h)
+      {
+         bgtex_t l;
+         memset(&l, 0, sizeof(l));
+         l.tex = bg_up.tex; l.w = u->w; l.h = u->h;
+         bg_up.tex = 0;
+         bg_up_cancel();
+         bg_push(l);
+      }
+   }
 }
 
 /* a generated layer's picture: its palette and the scrim rendered into its small FBO
