@@ -12,6 +12,9 @@
  * frozen, the suspend would hang); when <power>/resume_count changes (the console woke
  * up) it runs power.sh resume.
  * RESET restarts a running game (RetroArch), quits a homebrew app, or restarts the dashboard.
+ * Game watchdog: a RetroArch whose main loop stopped (a core that hangs: it answers no
+ * network command, so RESET / OPEN / Start+Select do nothing and the console looks frozen)
+ * is killed, and run.sh brings the dashboard back. See wd_tick().
  * OPEN in a game pauses it and asks (lumen --dialog): continue, change disc, save and exit,
  * exit; in a homebrew app it quits the app.
  *
@@ -19,7 +22,8 @@
  * in a game ("powered by LPSX"); settings.ini led=pulse|solid. A gpio LED without
  * brightness levels (max_brightness 1) gives a long-on / short-off beat instead.
  *
- * Usage: lumen-buttons [--log file] [--power-dir /data/power]
+ * Usage: lumen-buttons [--log file] [--power-dir /data/power] [--home /media/lumen]
+ *        lumen-buttons --watchdog-only [--log file] [--home dir]   (tests: no buttons)
  *
  * Demo watcher (attract mode, docs/settings-design.md 8.7):
  *   lumen-buttons --demo-watch <seconds> --pid <pid> [--log file]
@@ -360,6 +364,81 @@ static void ra_cmd(const char *cmd)
    if (sendto(s, cmd, strlen(cmd), 0, (struct sockaddr *)&a, sizeof(a)) < 0) logf_("ra_cmd %s: %s", cmd, strerror(errno));
    close(s);
 }
+/* ---- game watchdog. RetroArch answers GET_STATUS from its main loop, once per frame,
+ * also in its menu or paused; a core that never returns from retro_run answers nothing.
+ * One question every WD_PERIOD seconds: after WD_MISSES unanswered in a row (or WD_START
+ * seconds without a first answer: core and content are loaded before the loop starts) the
+ * process gets SIGTERM, then SIGKILL (a stuck main loop never sees RetroArch's own quit
+ * flag). Missed answers only count while this daemon's loop runs, so the OPEN dialog and
+ * the suspend handshake (which block it) never add up. <home>/debug/no-watchdog turns it
+ * off. */
+#define WD_PERIOD 2.0
+#define WD_MISSES 10
+#define WD_START  60.0
+static int    g_wd_sock = -1, g_wd_misses, g_wd_seen, g_wd_asked, g_wd_off = -1;
+static pid_t  g_wd_pid;
+static double g_wd_sent = -10.0, g_wd_since;
+
+static void wd_reset(pid_t pid, double t)
+{
+   char b[256];
+   g_wd_pid = pid; g_wd_since = t; g_wd_misses = 0; g_wd_seen = 0; g_wd_asked = 0;
+   if (g_wd_sock >= 0) while (recv(g_wd_sock, b, sizeof(b), MSG_DONTWAIT) > 0) { }
+}
+
+static void wd_kill(const char *why)
+{
+   int i;
+   pid_t p = g_wd_pid;
+   char path[300];
+   FILE *f;
+   logf_("watchdog: retroarch %d failed to answer (%s): closing it", (int)p, why);
+   snprintf(path, sizeof(path), "%s/logs/session.log", g_home);
+   if ((f = fopen(path, "a"))) { fprintf(f, "watchdog: retroarch stopped answering (%s), killed\n", why); fclose(f); }
+   kill(p, SIGTERM);
+   for (i = 0; i < 20 && proc_alive(p); i++) usleep(100000);
+   if (proc_alive(p)) { kill(p, SIGKILL); logf_("watchdog: SIGKILL"); }
+   sync();
+   wd_reset(0, log_clock());
+}
+
+/* RetroArch is running but has not answered the last questions (RESET uses it) */
+static int wd_stuck(void) { return g_wd_pid && g_wd_misses >= 2; }
+
+static void wd_tick(int paused)
+{
+   double t = log_clock();
+   pid_t ra;
+   char b[256];
+   int got = 0;
+   if (g_wd_off < 0)
+   {
+      snprintf(b, sizeof(b), "%s/debug/no-watchdog", g_home);
+      g_wd_off = exists(b);
+      if (g_wd_off) logf_("watchdog: off (%s)", b);
+   }
+   if (g_wd_off) return;
+   if (paused) { if (g_wd_pid) wd_reset(0, t); return; }
+   if (t - g_wd_sent < WD_PERIOD) return;
+   g_wd_sent = t;
+   ra = find_proc("retroarch");
+   if (ra != g_wd_pid) wd_reset(ra, t);
+   if (!ra) return;
+   if (g_wd_sock < 0 && (g_wd_sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) return;
+   while (recv(g_wd_sock, b, sizeof(b), MSG_DONTWAIT) > 0) got = 1;
+   if (got) { if (!g_wd_seen) logf_("watchdog: retroarch %d answers", (int)ra); g_wd_seen = 1; g_wd_misses = 0; }
+   else if (g_wd_asked) g_wd_misses++;
+   if (g_wd_seen && g_wd_misses >= WD_MISSES) { wd_kill("no answer for 20 s"); return; }
+   if (!g_wd_seen && t - g_wd_since > WD_START) { wd_kill("never answered, 60 s after its start"); return; }
+   {
+      struct sockaddr_in a;
+      memset(&a, 0, sizeof(a));
+      a.sin_family = AF_INET; a.sin_port = htons(55355); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      sendto(g_wd_sock, "GET_STATUS", 10, 0, (struct sockaddr *)&a, sizeof(a));
+      g_wd_asked = 1;
+   }
+}
+
 /* discs of the running game: run.sh writes the count to /tmp/lumen-discs (it builds an
  * .m3u for a multi-disc folder) */
 static int game_discs(void)
@@ -521,7 +600,7 @@ int main(int argc, char **argv)
 {
    const char *log_path = NULL, *power_dir = "/data/power";
    char dev[64], prep[200], okay[200], rcount[200];
-   int i, fd, acked = 0, paused = 0, demo_seconds = -1, demo_pid = 0;
+   int i, fd, acked = 0, paused = 0, demo_seconds = -1, demo_pid = 0, wd_only = 0;
    long resume0 = -1;
    time_t paused_at = 0;
 
@@ -531,6 +610,8 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--power-dir") && i + 1 < argc) power_dir = argv[++i];
       else if (!strcmp(argv[i], "--demo-watch") && i + 1 < argc) demo_seconds = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--pid") && i + 1 < argc) demo_pid = atoi(argv[++i]);
+      else if (!strcmp(argv[i], "--watchdog-only")) wd_only = 1;
+      else if (!strcmp(argv[i], "--home") && i + 1 < argc) g_home = argv[++i];
    }
    g_log = log_path ? fopen(log_path, "a") : NULL;
    if (!g_log) g_log = stderr;
@@ -539,6 +620,11 @@ int main(int argc, char **argv)
    {
       if (demo_seconds < 1 || demo_pid <= 1) { logf_("demo-watch: invalid seconds/pid"); return 3; }
       return demo_watch(demo_seconds, (pid_t)demo_pid);
+   }
+   if (wd_only)
+   {  /* tests (no gpio-keys device needed): only the game watchdog */
+      logf_("watchdog only");
+      for (;;) { usleep(150000); log_tick(); wd_tick(0); }
    }
    snprintf(prep, sizeof(prep), "%s/prepare_suspend", power_dir);
    snprintf(okay, sizeof(okay), "%s/apps_okay", power_dir);
@@ -557,6 +643,7 @@ int main(int argc, char **argv)
       struct pollfd pfd = { fd, POLLIN, 0 };
       int r = poll(&pfd, 1, led_tick(paused));
       log_tick();
+      wd_tick(paused);
 
       /* suspend handshake: answer once per request, after pausing the USB users */
       if (exists(prep))
@@ -600,7 +687,8 @@ int main(int argc, char **argv)
             {  /* RESET: restart the game, or the dashboard */
                pid_t ra = find_proc("retroarch"), lu = find_proc("lumen"), ap = app_pid();
                logf_("reset pressed: %s", ra ? "resetting the game" : (ap ? "quitting the app" : "restarting the dashboard"));
-               if (ra) ra_cmd("RESET");
+               if (ra && wd_stuck()) wd_kill("RESET pressed on a game that does not answer");
+               else if (ra) ra_cmd("RESET");
                else if (ap) app_quit(ap);
                else if (lu) { int f = open("/tmp/lumen-restart", O_WRONLY | O_CREAT, 0644); if (f >= 0) close(f); kill(lu, SIGTERM); }
             }

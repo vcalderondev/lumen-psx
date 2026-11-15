@@ -243,7 +243,7 @@ src/panel.c                   settings panel, on-screen keyboard, confirm dialog
 src/profiles.c                profiles (separate memory cards and save states)
 src/launch.c                  launch request v2 writer
 src/attract.c                 screensaver / attract scene, demo picker
-src/buttons.c                 lumen-buttons: console buttons daemon, demo watcher
+src/buttons.c                 lumen-buttons: console buttons daemon, demo watcher, game watchdog
 dist/lang/*.lang              UI translations
 scripts/boot.sh               boot entry
 scripts/run.sh                session loop
