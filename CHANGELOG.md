@@ -3,6 +3,17 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- PlayStation Portable (`systems/psp.ini`, games in `/media/games/psp`: iso, cso, chd, pbp)
+  on PPSSPP, and Nintendo 64 on Mupen64Plus-Next, both drawing with GLES 3 on the console's
+  GPU (psc-platform 2.3.0). The release installs PPSSPP's data in `retroarch/system/PPSSPP`.
+  Graphics → PSP switches 480x272 (Original) and 960x544 (Enhanced).
+
+### Changed
+- psc-platform 2.3.0 (`platform.lock`).
+
 ## [0.7.0] - 2026-11-14
 
 ### Added
