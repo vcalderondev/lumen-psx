@@ -1,0 +1,13 @@
+# Lumen CRT filter, "strong" (Settings -> Display -> CRT filter): the dashboard's look on the
+# game. Handed to RetroArch by run.sh (--set-shader) when the setting is on.
+shaders = "1"
+shader0 = "crt-lumen.glsl"
+filter_linear0 = "true"
+wrap_mode0 = "clamp_to_border"
+scale_type0 = "viewport"
+parameters = "CRT_SCAN;CRT_MASK;CRT_CURV;CRT_HALO;CRT_VIG"
+CRT_SCAN = "0.55"
+CRT_MASK = "0.32"
+CRT_CURV = "0.045"
+CRT_HALO = "0.24"
+CRT_VIG = "0.34"
