@@ -37,7 +37,8 @@ art    = cover                  ; image on the front: cover | label | marquee
 media_art = disc                ; per-game image of the medium: <game>/disc.png, <game>/cart.png ...
 
 [animation]
-launch = open_case_disc         ; open_case_disc | insert_cartridge | insert_coin | cover (see below)
+launch = flat                   ; flat | open_case_disc | insert_cartridge | insert_coin | cover (see below)
+flat   = psx                    ; launch = flat: the illustration, <home>/assets/launch/<flat>/ (default: the id)
 slot   = top                    ; insert_cartridge: top | front | handheld (default from the shape)
 idle   = float                  ; float | none
 sound  = launch.wav             ; optional, <home>/assets/systems/<id>/launch.wav
@@ -167,6 +168,31 @@ has a default; a minimal declaration only needs `[system] id/name`,
 | arcade | `marquee` (backlit marquee panel) | `insert_coin`: a coin rolls into the slot, "CREDIT 1" blinks, the marquee flickers on |
 | card | `hucard` (default for `kind = card`) | `insert_cartridge` (slot `front`) |
 | any | none needed | `cover`: the generic animation. No console, cartridge or disc is simulated: the game's cover, as a thin card with a halo of its accent colour, rises, turns once about itself and flies into the camera (1.95 s) |
+
+### The flat launch: `launch = flat`
+
+What the shipped systems use since 0.15. No 3D: a field of the game's colour wipes over
+the dashboard from the focused tile, the system's machine, a flat illustration drawn
+after the real hardware, drops in and floats over a line of shadow, and its medium goes
+into it: a cartridge into its slot, a NES Game Pak through the front door (which then
+shuts), a disc under the PlayStation's lid, a cartridge or a UMD into the back of a
+handheld, a coin into the arcade cabinet. A machine with a screen lights it up, in five
+tones of the game's cover, and the screen grows into the frame; one without lights its
+lamp and hops. Then the fade to black, with no white flash. 2.7 s.
+
+The illustration is `<home>/assets/launch/<flat>/`: `launch.ini` and up to seven PNG
+layers of one 480 x 360 canvas (`body`, `under`, `medium`, `over`, `lit`, `tick`, `art`),
+exported from the lumen-design repository (`tools/export-launch.sh`, from
+`mockups/launch-flat.js`); they are not edited by hand. Shipped: `psx`, `n64`, `snes`,
+`megadrive`, `nes`, `gb`, `gba`, `psp`, `arcade`. Where a layer shows the game's art (a
+cartridge's label, a disc, the cabinet's marquee) it has a hole and `art.png` is the
+hole's shape: at Play the game's cover is painted through it, reduced to five flat tones
+of its own palette (a photographic cover clashes with a flat drawing). Layers and cover
+are decoded on worker threads once the selection has settled.
+
+A system whose illustration is missing falls back to the animation it would get without
+`launch = flat` (below). Every layer is one textured quad: the launch draws no models and
+uses no depth buffer.
 
 **Which animation a system gets.** `[animation] launch` when it is declared. Without it,
 the hardware animation of the kind, but only when `[media] shape` says what the medium

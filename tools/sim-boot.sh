@@ -52,6 +52,7 @@ mkdir -p $H/assets/boot $H/assets/models $H/assets/brand $H/shaders $H/themes $H
 cp /new/dist/lang/*.lang $H/lang/; cp /new/dist/shaders/* $H/shaders/; cp -R /new/dist/themes/. $H/themes/
 cp /new/assets/splash.png /new/assets/splash-1080.png $H/assets/
 for d in boot models; do cp /new/assets/$d/* $H/assets/$d/; done
+mkdir -p $H/assets/launch; cp -R /new/assets/launch/. $H/assets/launch/
 cp /new/assets/brand/*.png $H/assets/brand/
 grep -v "^language=" $H/settings.ini > /tmp/s.ini; echo "language=$SIM_LANG" >> /tmp/s.ini; cp /tmp/s.ini $H/settings.ini
 rm -f $H/state.txt
