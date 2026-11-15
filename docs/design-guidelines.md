@@ -1,5 +1,9 @@
 # Lumen design guidelines
 
+> Superseded (2026-11-15): the source of the design is the
+> [lumen-design](https://github.com/vcalderondev/lumen-design) repository (guidelines,
+> tokens, a mockup of every screen). This file is kept as the original proposal.
+
 Status: proposal for review (2026-11-14). Rules for every screen of Lumen so new work
 stays consistent. Direction: a hybrid of two references the user shared:
 
