@@ -48,8 +48,9 @@ cp dist/lang/*.lang "$L/lang/"
 mkdir -p "$L/shaders"; cp dist/shaders/* "$L/shaders/"   # CRT filter presets for RetroArch (run.sh)
 mkdir -p "$L/themes"; cp -R dist/themes/. "$L/themes/"   # example themes (docs/themes.md)
 cp assets/splash.png assets/splash-1080.png "$L/assets/"
-for d in icons glyphs fonts models boot; do mkdir -p "$L/assets/$d"; cp assets/$d/* "$L/assets/$d/"; done
+for d in glyphs fonts boot; do mkdir -p "$L/assets/$d"; cp assets/$d/* "$L/assets/$d/"; done
 mkdir -p "$L/assets/brand"; cp assets/brand/*.png "$L/assets/brand/"   # the SVGs stay in the repo
+mkdir -p "$L/assets/launch"; cp -R assets/launch/. "$L/assets/launch/"   # flat launch illustrations (lumen-design tools/export-launch.sh)
 # platform: compositor packages, RetroArch, cores
 cp "$PF/psc-weston-16.tar.gz" "$L/compositor/"
 T="$(mktemp -d)"; tar xzf "$PF/psc-retroarch.tar.gz" -C "$T"

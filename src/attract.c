@@ -216,15 +216,6 @@ void attract_update(double t, float dt, int can_start, attract_out_t *out)
    out->dim = 0.35f * out->amount;
 }
 
-/* small sinusoids per case offset (<= 0.08 units, 0.12 rad), scaled by the scene amount */
-void attract_case_offset(int o, double t, float *dx, float *dy, float *dry)
-{
-   float a = clampf(s_amt.x, 0.0f, 1.0f), ph = (float)o * 0.9f, tt = (float)(t - s_start_t);
-   *dx  = 0.06f * sinf(tt * 0.70f + ph) * a;
-   *dy  = 0.05f * sinf(tt * 0.95f + ph * 1.3f) * a;
-   *dry = 0.10f * sinf(tt * 0.50f + ph * 0.7f) * a;
-}
-
 /* slow hue rotation (period 24 s) of the ambient colour around the grey axis */
 void attract_bg_target(const float base[3], double t, float out[3])
 {

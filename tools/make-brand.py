@@ -11,8 +11,6 @@ are plain <rect>/<polygon> geometry, so they are rasterized here directly with P
   logo-front-splash-1080.png  the same at 1080p (15 px per voxel)
   ../splash.png, ../splash-1080.png  the boot payload's splash: black with the splash logo
                        dark (unfilled), exactly where Lumen's own splash draws it first
-  logo.png             isometric LPSX (primary logo), 640 px wide: boot / splash screens
-  mark.png             the L of four cubes, 256 px tall: small sizes
 
 Usage: python3 tools/make-brand.py [dir]   (default: assets/brand). Requires Pillow
 (e.g. docker run --rm -v "$PWD:/w" -w /w psc-sim:latest python3 tools/make-brand.py).
@@ -82,7 +80,3 @@ save(big, 'logo-front-splash.png')
 save(big1080, 'logo-front-splash-1080.png')
 splash(big, 1.0, '../splash.png')
 splash(big1080, 1.5, '../splash-1080.png')
-svg = open(f'{D}/logo.svg').read()
-save(render('logo', 640 / float(re.search(r'viewBox="[^ ]+ [^ ]+ ([^ ]+)', svg).group(1))), 'logo.png')
-svg = open(f'{D}/mark.svg').read()
-save(render('mark', 256 / float(re.search(r'viewBox="[^ ]+ [^ ]+ [^ ]+ ([^"]+)"', svg).group(1))), 'mark.png')
