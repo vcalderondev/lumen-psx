@@ -22,6 +22,7 @@
 #   lumen/logs/                 empty, for the boot payload and Lumen
 #   d8781dae-.../{diag,LDIAG.BIN}   Lumen's own boot payload: Sony's usb_watch runs it
 #   games/<system>/             empty, one per system in lumen/systems/*.ini
+#   lumen/MANIFEST              SHA-256 + size of every file (also lumen-psx-<ver>.manifest)
 # No Project Eris: a stock console boots Lumen from a FAT32 stick labelled SONY.
 set -e
 VER=$1; PF=$2; OUTD=$3; BOOT=$4
@@ -97,9 +98,24 @@ mkdir -p "$ST/games"; cat > "$ST/games/README.txt" <<'EOF'
 Put your games in the folder of their system (psx, snes, nes, megadrive, gba, n64, arcade);
 lumen/systems/<system>.ini lists the file types each one accepts.
 EOF
+# lumen/MANIFEST: every folder and file of the package with its SHA-256 and size. The web
+# installer compares it with the copy left on the stick by the previous install and only
+# downloads (zip ranges) and writes what changed, and deletes what a release dropped.
+# Published next to the zip as lumen-psx-<ver>.manifest (covered by SHA256SUMS).
+#   d <path>                    a folder
+#   f <sha256> <bytes> <path>   a file (the manifest itself is not listed)
+if command -v sha256sum >/dev/null 2>&1; then H="sha256sum"; else H="shasum -a 256"; fi
+(cd "$ST" && {
+  echo "# Lumen PSX $VER manifest 1"
+  find . -mindepth 1 -type d | sed 's|^\./||' | LC_ALL=C sort | sed 's|^|d |'
+  find . -type f ! -path ./lumen/MANIFEST | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do
+    printf 'f %s %s %s\n' "$($H "$f" | cut -c1-64)" "$(wc -c < "$f" | tr -d ' ')" "$f"
+  done
+} > "$L/MANIFEST")
 mkdir -p "$OUTD"
 ZIP="$(cd "$OUTD" && pwd)/lumen-psx-$VER.zip"
 rm -f "$ZIP"
+cp "$L/MANIFEST" "${ZIP%.zip}.manifest"
 (cd "$ST" && zip -qr -X "$ZIP" .)
 rm -rf "$ST"
 echo "$ZIP"

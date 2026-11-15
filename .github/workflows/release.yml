@@ -60,7 +60,7 @@ jobs:
       - name: Package
         run: |
           z=$(lumen/scripts/package.sh "$TAG" "$RUNNER_TEMP/platform" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/boot")
-          (cd "$RUNNER_TEMP/dist" && sha256sum *.zip > SHA256SUMS)
+          (cd "$RUNNER_TEMP/dist" && sha256sum *.zip *.manifest > SHA256SUMS)
           { cat "$RUNNER_TEMP/notes.md"; echo
             echo "### Platform: psc-platform $PSC_PLATFORM"; echo '```'; cat "$RUNNER_TEMP/platform/versions.txt"; echo '```'
             echo; echo "Install: format a USB stick FAT32 with the name SONY, unzip at its root, plug it into the console and power on (README-INSTALL.txt). No Project Eris needed."; } > "$RUNNER_TEMP/body.md"
