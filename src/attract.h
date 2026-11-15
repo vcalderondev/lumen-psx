@@ -20,7 +20,6 @@ void  attract_note_input(double t);                 /* any input this frame */
 int   attract_active(void);                         /* ENTER/IDLE/DEMO_OUT */
 void  attract_start(double t);
 void  attract_update(double t, float dt, int can_start, attract_out_t *out);
-void  attract_case_offset(int o, double t, float *dx, float *dy, float *dry);
 void  attract_bg_target(const float base[3], double t, float out[3]);
 void  attract_draw(double t);                       /* PRESS START / demo title, in the 2D block */
 int   attract_pick_demo(void);                      /* g_games index or -1 */

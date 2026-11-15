@@ -48,10 +48,10 @@ cp /boot/payload/splash.sh /tmp/diag/sim/payload/
 # the stick: demo library once (psc-sim seed), then this tree as scripts/package.sh lays it out
 [ -d /media/games ] || sh /app/seed.sh
 H=/media/lumen
-mkdir -p $H/assets/boot $H/assets/models $H/assets/brand $H/shaders $H/themes $H/lang
+mkdir -p $H/assets/boot $H/assets/brand $H/shaders $H/themes $H/lang
 cp /new/dist/lang/*.lang $H/lang/; cp /new/dist/shaders/* $H/shaders/; cp -R /new/dist/themes/. $H/themes/
 cp /new/assets/splash.png /new/assets/splash-1080.png $H/assets/
-for d in boot models; do cp /new/assets/$d/* $H/assets/$d/; done
+cp /new/assets/boot/* $H/assets/boot/
 mkdir -p $H/assets/launch; cp -R /new/assets/launch/. $H/assets/launch/
 cp /new/assets/brand/*.png $H/assets/brand/
 grep -v "^language=" $H/settings.ini > /tmp/s.ini; echo "language=$SIM_LANG" >> /tmp/s.ini; cp /tmp/s.ini $H/settings.ini

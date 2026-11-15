@@ -12,39 +12,26 @@
 #define MAX_PLATFORMS 32   /* systems + Favourites + folders (collections.h) */
 
 enum { KIND_DISC, KIND_CART, KIND_ARCADE };
-enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN,
-       ANIM_COVER,     /* generic: no hardware simulated, the game's cover turns and flies to the camera */
-       ANIM_FLAT };    /* a flat illustration of the machine, its medium goes into it (flat.inc) */
-/* [media] shape: the 3D model of the medium (docs/systems.md, "Built-in shapes") */
-enum { SHAPE_JEWEL, SHAPE_DVD, SHAPE_UMD,
-       SHAPE_CART, SHAPE_CART_SNES, SHAPE_CART_MD, SHAPE_CART_NES, SHAPE_CART_N64, SHAPE_CART_GB, SHAPE_CART_GBA,
-       SHAPE_HUCARD, SHAPE_MARQUEE, SHAPE_COUNT };
-/* insert_cartridge: where the cartridge goes ([animation] slot, default from the shape) */
-enum { SLOT_TOP, SLOT_FRONT, SLOT_HANDHELD };
-
 typedef struct {
    char title[128], publisher[96], year[16], players[8];
-   char content[512], cover[512], bg[512], disc[512], music[512];
+   char content[512], cover[512], bg[512], music[512];
    int platform;
    /* runtime */
-   GLuint tex, back_tex, spine_tex;
+   GLuint tex;
    int tex_state;              /* 0 none, 2 decoding, 1 loaded, -1 placeholder */
    int has_cover;
    float col[3];               /* average cover colour */
    float acc[3];               /* accent: most saturated hue cluster of the cover */
    int tex_w, tex_h;           /* size of the cover texture (tile cover-fit) */
-   spring x, z, ry, sc, al;
 } game_t;
 
 /* System declaration: <home>/systems/<id>.ini (see docs/systems.md). */
 typedef struct {
    char id[32], name[48], logo[300], core[128];
-   char layout[8], paths[512], exts[128], art[16], media_art[16], sound[300];
+   char layout[8], paths[512], exts[128], sound[300];
    char meta[300];             /* layout = stock: metadata file next to the declaration */
-   int order, show_name, kind, launch, idle_float, shape, slot;
-   int launch_alt;             /* launch = flat: the animation used when its illustration is missing */
-   char flat[32];              /* launch = flat: <home>/assets/launch/<flat>/ ([animation] flat, default the id) */
-   float aspect, w, h, color[3];
+   int order, show_name, kind;
+   char flat[32];              /* the launch's illustration: <home>/assets/launch/<flat>/ ([animation] flat, default the id) */
    /* [graphics]: per-core options and RetroArch overrides, "k=v, k=v" lists */
    char gfx_core[48], gfx_enh[640], gfx_orig[640], gfx_ra_enh[160], gfx_ra_orig[160];
    /* third level, "native": core options for a 720p / 1080p output (internal resolution

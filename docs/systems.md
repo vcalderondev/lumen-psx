@@ -29,18 +29,10 @@ extensions = cue,pbp,chd,m3u    ; for layout = files (and multi-disc detection)
 core = pcsx_rearmed_libretro.so ; <home>/cores/<core>
 
 [media]
-kind   = disc                   ; disc | cartridge | arcade | card | floppy | tape
-shape  = jewel                  ; 3D model: jewel | dvd | umd | cart_snes | cart_md | cart_n64 | cart_nes | cart_gb | cart_gba | hucard | marquee
-aspect = 1.136                  ; width / height of the front face
-color  = #141217                ; shell / tray colour
-art    = cover                  ; image on the front: cover | label | marquee
-media_art = disc                ; per-game image of the medium: <game>/disc.png, <game>/cart.png ...
+kind   = disc                   ; disc | cartridge | arcade | card: the badge on the tile
 
 [animation]
-launch = flat                   ; flat | open_case_disc | insert_cartridge | insert_coin | cover (see below)
-flat   = psx                    ; launch = flat: the illustration, <home>/assets/launch/<flat>/ (default: the id)
-slot   = top                    ; insert_cartridge: top | front | handheld (default from the shape)
-idle   = float                  ; float | none
+flat   = psx                    ; the launch's illustration, <home>/assets/launch/<flat>/ (default: the id)
 sound  = launch.wav             ; optional, <home>/assets/systems/<id>/launch.wav
 ```
 
@@ -82,7 +74,7 @@ extensions = cue,bin            ; tried in this order for disc 1 (default cue,bi
   so there is always something to play; the setting is not changed.
 
 Shipped: `psxstock.ini` ("PlayStation Classic", PlayStation logo shared with
-`logo = psx/logo.png`, `pcsx_rearmed`, jewel case, `open_case_disc`, order 12 = right
+`logo = psx/logo.png`, `pcsx_rearmed`, the PlayStation's launch (`flat = psx`), order 12 = right
 after `psx`, same Original / Enhanced presets as `psx`) and `psxstock.games`.
 Its `[demo] allowed = 1`: demos run as ephemeral sessions (saves in `/tmp`), so the
 read-only partition is never touched, and a hidden system is never picked.
@@ -159,62 +151,39 @@ Unknown keys are ignored, so declarations stay forward-compatible. Every value
 has a default; a minimal declaration only needs `[system] id/name`,
 `[library]` and `[launch] core`.
 
-## Built-in shapes and animations
+## The launch
 
-| kind | shapes | launch animation |
-|---|---|---|
-| disc | `jewel` (PS1/CD), `dvd` (keep case), `umd` (small keep case, the disc in its caddy) | `open_case_disc`: the jewel lid / keep-case cover opens, the disc (or the UMD) lifts and flies to the camera |
-| cartridge | `cart_snes`, `cart_md`, `cart_n64`, `cart_nes`, `cart_gb` (`cart_gbc`), `cart_gba`, `cart` (generic) | `insert_cartridge`: into the console's slot, by `[animation] slot` (default from the shape): `top` (SNES, Mega Drive, N64, generic) the cartridge drops into a top-loader; `front` (NES, cards) it lies down and slides in through the front flap; `handheld` (GB, GBA) it slides into the back of the handheld, which turns round and lights its screen. Then the power LED |
-| arcade | `marquee` (backlit marquee panel) | `insert_coin`: a coin rolls into the slot, "CREDIT 1" blinks, the marquee flickers on |
-| card | `hucard` (default for `kind = card`) | `insert_cartridge` (slot `front`) |
-| any | none needed | `cover`: the generic animation. No console, cartridge or disc is simulated: the game's cover, as a thin card with a halo of its accent colour, rises, turns once about itself and flies into the camera (1.95 s) |
+No 3D. A field of the game's colour wipes over the dashboard from the focused tile, the
+system's machine, a flat illustration drawn after the real hardware, drops in and floats
+over a line of shadow, and its medium goes into it: a cartridge into its slot, a NES Game
+Pak through the front door (which then shuts), a disc under the PlayStation's lid, a
+cartridge or a UMD into the back of a handheld, a coin into the arcade cabinet. A machine
+with a screen lights it up, in five tones of the game's cover, and the screen grows into
+the frame; one without lights its lamp and hops. Then the fade to black, with no white
+flash. 2.7 s. The moment the medium seats a click plays (synthesised: a firm latch on top
+loaders, a latch with a spring on front loaders, a small snap on handhelds), over the
+music and independent of its volume.
 
-### The flat launch: `launch = flat`
+The illustration is `<home>/assets/launch/<flat>/` (`[animation] flat`, default the
+system's id): `launch.ini` and up to seven PNG layers of one 480 x 360 canvas (`body`,
+`under`, `medium`, `over`, `lit`, `tick`, `art`), exported from the lumen-design
+repository (`tools/export-launch.sh`, from `mockups/launch-flat.js`); they are not edited
+by hand. Shipped: `psx`, `n64`, `snes`, `megadrive`, `nes`, `gb`, `gba`, `psp`, `arcade`.
+Where a layer shows the game's art (a cartridge's label, a disc, the cabinet's marquee) it
+has a hole and `art.png` is the hole's shape: at Play the game's cover is painted through
+it, reduced to five flat tones of its own palette (a photographic cover clashes with a
+flat drawing). Layers and cover are decoded on worker threads once the selection has
+settled. Every layer is one textured quad: no models, no depth buffer.
 
-What the shipped systems use since 0.15. No 3D: a field of the game's colour wipes over
-the dashboard from the focused tile, the system's machine, a flat illustration drawn
-after the real hardware, drops in and floats over a line of shadow, and its medium goes
-into it: a cartridge into its slot, a NES Game Pak through the front door (which then
-shuts), a disc under the PlayStation's lid, a cartridge or a UMD into the back of a
-handheld, a coin into the arcade cabinet. A machine with a screen lights it up, in five
-tones of the game's cover, and the screen grows into the frame; one without lights its
-lamp and hops. Then the fade to black, with no white flash. 2.7 s.
+**A system without an illustration** (homebrew apps, or a system added with a minimal
+declaration) gets the generic launch on the same field: nothing is assumed about its
+hardware, the game's cover is the object. It floats as a card, turns once and grows into
+the frame.
 
-The illustration is `<home>/assets/launch/<flat>/`: `launch.ini` and up to seven PNG
-layers of one 480 x 360 canvas (`body`, `under`, `medium`, `over`, `lit`, `tick`, `art`),
-exported from the lumen-design repository (`tools/export-launch.sh`, from
-`mockups/launch-flat.js`); they are not edited by hand. Shipped: `psx`, `n64`, `snes`,
-`megadrive`, `nes`, `gb`, `gba`, `psp`, `arcade`. Where a layer shows the game's art (a
-cartridge's label, a disc, the cabinet's marquee) it has a hole and `art.png` is the
-hole's shape: at Play the game's cover is painted through it, reduced to five flat tones
-of its own palette (a photographic cover clashes with a flat drawing). Layers and cover
-are decoded on worker threads once the selection has settled.
-
-A system whose illustration is missing falls back to the animation it would get without
-`launch = flat` (below). Every layer is one textured quad: the launch draws no models and
-uses no depth buffer.
-
-**Which animation a system gets.** `[animation] launch` when it is declared. Without it,
-the hardware animation of the kind, but only when `[media] shape` says what the medium
-looks like. A declaration with neither (a minimal one, or a system Lumen has no model for)
-gets `cover`: nothing is assumed about its hardware. Before 0.14 such a system was shown
-as a generic cartridge going into a generic console (or a CD jewel case).
-
-A shape of another kind is ignored (the kind's generic one is used). With a photo of the
-game's own cartridge (`media_art`) the photo replaces the modelled cartridge; its
-thickness still follows the shape.
-
-The cartridges, cases and consoles are 3D models of the real hardware
-(`assets/models/<key>.lmdl`, built by the scripts in `tools/models/`; see its README):
-Nintendo 64, Super Famicom / PAL Super Nintendo, Mega Drive (model 1), NES, PC Engine,
-Game Boy and Game Boy Advance, in their original plastics, without logos. A console and
-its cartridge share one scale, and each cartridge goes in as deep as on the real console.
-A missing model falls back to a simpler procedural one. The moment the cartridge seats,
-a click plays (synthesised: a firm latch on top loaders, a latch with a spring on front
-loaders, a small snap on handhelds), over the music and independent of its volume.
-
-Shapes and animations are code (one renderer each); declarations only choose
-and parametrise them.
+Before 0.15 the launch was drawn in 3D (jewel and keep cases, cartridges and consoles as
+models). The keys of that renderer are ignored now: `[media] shape`, `aspect`, `color`,
+`art`, `media_art`, and `[animation] launch`, `slot`, `idle`. A game's own disc or
+cartridge picture (`<game>/disc.png`, `<name>-cart.png`) is no longer read.
 
 ## Homebrew apps: `layout = apps`
 

@@ -18,8 +18,22 @@ Flat launch animations. Checked in psc-sim only; not yet verified on the console
   screen grows into the frame; the others light their lamp and hop. No white flash before
   the fade. The cover on the medium is painted in five flat tones of its own palette.
   Every layer is one textured quad: no models, no depth buffer.
-- Homebrew apps keep the `cover` animation, and a system without an illustration keeps
-  its previous animation (`docs/systems.md`, "The flat launch").
+- A system without an illustration (homebrew apps, a minimal declaration) gets the generic
+  launch on the same field: the game's cover as a card that floats, turns once and grows
+  into the frame (`docs/systems.md`, "The launch").
+
+### Removed
+- The 3D launch: the jewel and keep cases, the cartridges and consoles as models, the
+  coin and "INSERT COIN / CREDIT 1", the white flash, their shaders, the multisampled
+  target of the scene and the warm-up of all of it at start-up. `assets/models/` (2.3 MB)
+  and `tools/models/` are gone; `src/main.c` is 1,300 lines shorter.
+- Declaration keys that only that renderer read are ignored: `[media] shape`, `aspect`,
+  `color`, `art`, `media_art` and `[animation] launch`, `slot`, `idle`. A game's own disc
+  or cartridge picture is no longer read. The settings `msaa` and `scene_aa` are ignored:
+  the window has no multisampling.
+- Assets nothing loaded: the pixel-art button icons (`assets/icons/`, superseded by
+  `assets/glyphs/`; `tools/make-icons.py`) and the brand's `logo.png` and `mark.png` (their
+  SVG sources stay).
 
 ## [0.14.1] - 2026-11-15
 
