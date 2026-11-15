@@ -3,7 +3,11 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.12.0] - 2026-11-15
+
+A boot that shows it is alive: the logo and "Loading" instead of a black screen.
+psc-platform 2.4.0. Verified on the console (1080p, Weston 16) on top of 0.9.1; with the
+0.10.0 and 0.11.0 changes it has only run in the simulator.
 
 ### Added
 - Boot: no more long black screen between Sony's animation and the dashboard. The boot
