@@ -13,7 +13,7 @@ LUMEN_HOME="/media/lumen"
 LOG="${LUMEN_HOME}/logs"
 mkdir -p "${LOG}"
 exec >> "${LOG}/boot.log" 2>&1
-echo "=== lumen boot $(date)"
+echo "=== lumen boot $(date) ($(cut -d' ' -f1 /proc/uptime) s since power-on)"
 # CPU / GPU frequency policy, for the record (read only): governor, current and
 # available frequencies of cpu0, and of every devfreq device (the GPU's, if any)
 for f in scaling_governor scaling_cur_freq scaling_min_freq scaling_max_freq scaling_available_governors scaling_available_frequencies; do
@@ -32,8 +32,22 @@ export HOME=/home/root
 cd /home/root
 
 # 1. take over the display
-killall -s TERM sdl_display 2>/dev/null
 killall -s KILL showLogo sonyapp ui_menu auto_dimmer pcsx 2>/dev/null
+
+# Boot splash. The boot payload shows it (a process named sdl_display) on Sony's Weston
+# before this script runs: the logo with its letters dark, which is also the first frame
+# of Lumen's own splash, and "Loading" in the language of settings.ini. It stays up for
+# as long as its compositor lives, so the screen is black only while the compositor is
+# swapped: splash_off right before a compositor stops, splash_on once the session's
+# compositor is up (the payload leaves /tmp/lumen-splash.sh to start it again; without
+# it, an older payload, the screen stays black as before), and it goes for good when
+# Lumen has drawn its own splash (below, before run.sh).
+splash_off() { killall -s TERM sdl_display 2>/dev/null; }
+splash_on() {  # 1080p | 720p
+  [ -f /tmp/lumen-splash.sh ] || return 0
+  pidof sdl_display >/dev/null 2>&1 && return 0
+  sh /tmp/lumen-splash.sh "$1" > /tmp/lumen-splash.out 2>&1 &
+}
 
 # Output resolution: Sony's weston.ini forces HDMI 1280x720. With display=1080p in
 # settings.ini, Weston is restarted with a copy of that config set to 1920x1080
@@ -77,9 +91,10 @@ psc_weston_off() {
 }
 weston_stock() {
   psc_weston_off
-  [ -n "${LUMEN_WESTON}" ] && { killall -s KILL weston 2>/dev/null; sleep 1; LUMEN_WESTON=""; }
+  [ -n "${LUMEN_WESTON}" ] && { splash_off; killall -s KILL weston 2>/dev/null; sleep 1; LUMEN_WESTON=""; }
   if ! systemctl status weston.service | grep -qE 'active\s+\(running\)'; then
     echo "starting weston (stock)"
+    splash_off
     systemctl restart weston.service
   fi
 }
@@ -90,6 +105,7 @@ weston_up() {  # seconds: wait for the Wayland socket
 }
 weston_custom() {  # log file, extra weston args...: start Weston with /tmp/lumen-weston.ini
   wlog=$1; shift
+  splash_off
   systemctl stop weston.service
   killall -s KILL weston 2>/dev/null
   rm -f "${XDG_RUNTIME_DIR}/wayland-0" "${XDG_RUNTIME_DIR}/wayland-0.lock"
@@ -123,12 +139,18 @@ try_psc_weston() {  # version package
   v=$1
   echo "compositor psc weston ${v} (${DISPLAY_MODE:-720p}): overlay from RAM"
   printf '%s\n' "${v}" > "${PW_MARK}"; sync
-  echo "  $(date +%T) stopping Sony's weston"
-  systemctl stop weston.service; pw_stop_weston
+  # unpacked while Sony's Weston still shows the boot splash: the screen is black only
+  # from here on, for the compositor swap itself
   echo "  $(date +%T) unpacking"
   mkdir -p /tmp/pw_upper/usr /tmp/pw_work/usr
-  if ! tar xzpf "$2" -C /tmp/pw_upper/usr ||
-     ! { echo "  $(date +%T) mounting overlay"; mount -t overlay overlay -o lowerdir=/usr,upperdir=/tmp/pw_upper/usr,workdir=/tmp/pw_work/usr /usr; }; then
+  if ! tar xzpf "$2" -C /tmp/pw_upper/usr; then
+    echo "psc compositor ${v}: unpack failed"; rm -rf /tmp/pw_upper /tmp/pw_work; return 1
+  fi
+  echo "  $(date +%T) stopping Sony's weston"
+  splash_off
+  systemctl stop weston.service; pw_stop_weston
+  echo "  $(date +%T) mounting overlay"
+  if ! mount -t overlay overlay -o lowerdir=/usr,upperdir=/tmp/pw_upper/usr,workdir=/tmp/pw_work/usr /usr; then
     echo "psc compositor ${v}: overlay failed"; rm -rf /tmp/pw_upper /tmp/pw_work; return 1
   fi
   echo "  $(date +%T) starting weston ${v}"
@@ -199,6 +221,8 @@ if [ -z "${STARTED}" ] && [ "${DISPLAY_MODE}" = 1080p ]; then
 fi
 [ -n "${STARTED}" ] || { weston_stock; DISPLAY_MODE=720p; }
 export LUMEN_DISPLAY="${DISPLAY_MODE:-720p}"
+splash_on "${LUMEN_DISPLAY}"   # back on the session's compositor (still up if it never stopped)
+echo "compositor ready: $(cut -d' ' -f1 /proc/uptime) s since power-on"
 case "${STARTED}" in psc) export LUMEN_COMPOSITOR="weston${PW_VER}" ;; *) export LUMEN_COMPOSITOR=stock ;; esac
 # how to start the compositor again after a suspend (power.sh: the PowerVR / display
 # driver cannot suspend under a running GL compositor, so it is stopped first)
@@ -273,12 +297,21 @@ echo $! >> /tmp/lumen-usb-writers.pids
 # 2. Lumen session
 # the one-shot marker only guards the window until a frame is on screen: Lumen writes
 # /tmp/lumen-presented after its first swap; a normal power-off later is not a failure
-rm -f /tmp/lumen-presented
+rm -f /tmp/lumen-presented /tmp/lumen-splash-shown /tmp/lumen-boot-splash
+# The boot splash goes when Lumen's own is on screen (/tmp/lumen-splash-shown, written
+# after its second frame), or after 30 s whatever happens. While it is up Lumen skips its
+# fade-in from black (/tmp/lumen-boot-splash): the same picture is already there.
+if [ -f /tmp/lumen-splash.sh ] || pidof sdl_display >/dev/null 2>&1; then
+  : > /tmp/lumen-boot-splash
+  ( i=0; while [ $i -lt 300 ] && [ ! -f /tmp/lumen-splash-shown ] && [ ! -f /tmp/lumen-presented ]; do sleep 0.1; i=$((i + 1)); done
+    sleep 0.2; killall -s TERM sdl_display 2>/dev/null ) &
+fi
 if [ -f "${PW_MARK}" ]; then
   ( i=0; while [ $i -lt 120 ]; do
       [ -f /tmp/lumen-presented ] && { rm -f "${PW_MARK}"; sync; echo "psc compositor: first frame presented"; exit 0; }
       sleep 1; i=$((i + 1)); done ) &
 fi
+echo "starting the frontend: $(cut -d' ' -f1 /proc/uptime) s since power-on"
 sh "${LUMEN_HOME}/run.sh"
 SESSION_RC=$?
 echo "session ended: ${SESSION_RC}"
