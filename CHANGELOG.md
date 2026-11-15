@@ -3,6 +3,24 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.15.0] - 2026-11-15
+
+Flat launch animations. Checked in psc-sim only; not yet verified on the console.
+
+### Changed
+- The launch animations are flat illustrations instead of 3D models (`launch = flat`, the
+  design of lumen-design's "Launch: flat"). A field of the game's colour wipes over the
+  dashboard, the system's machine drops in and floats, and its medium goes into it: the
+  disc under the PlayStation's lid (no jewel case any more), the cartridge into the slot
+  of the Nintendo 64, Super Nintendo and Mega Drive, through the front door of the NES,
+  into the back of the Game Boy, Game Boy Advance and PSP, the coin into the arcade
+  cabinet. A machine with a screen lights it up in the tones of the game's cover and the
+  screen grows into the frame; the others light their lamp and hop. No white flash before
+  the fade. The cover on the medium is painted in five flat tones of its own palette.
+  Every layer is one textured quad: no models, no depth buffer.
+- Homebrew apps keep the `cover` animation, and a system without an illustration keeps
+  its previous animation (`docs/systems.md`, "The flat launch").
+
 ## [0.14.1] - 2026-11-15
 
 The POWER button works: it suspends the console and brings the session back.
