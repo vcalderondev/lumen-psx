@@ -3,6 +3,34 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- Game menu: Start on the dashboard opens a card over the selected game with Play, Add to /
+  Remove from favourites and Add to a folder, which drops down the folders (a check on the
+  ones holding the game) and "New folder…" (on-screen keyboard). Favourites and every
+  folder are rows after the systems (Favourites one press Up from the first system); they
+  are per profile (`profiles/<id>/collections.tsv`) and a folder disappears with its last
+  game. Cross still plays; the help bar shows Start = Options.
+- Save and exit: OPEN in a game adds "Save and exit" to the pause dialog. The state goes to
+  RetroArch's slot 9 (`LUMEN_RESUME_SLOT` in `lumen.conf`), `run.sh` checks it was written
+  and records the game in `profiles/<id>/resume.tsv`; the next Play on it asks "Continue
+  where you left off?" (Continue loads the state with `--entryslot`; Start over forgets it).
+- Homebrew apps: `systems/apps.ini` (layout `apps`, `/media/games/apps/<name>/app.ini`)
+  lists native programs; `run.sh` runs them from their folder, RESET or OPEN quit them
+  (docs/systems.md).
+- Themes: `lumen/themes/<id>/theme.ini` colours plus optional fonts, glyphs, menu music
+  and system logos, chosen in Settings → Display → Theme and applied by restarting Lumen
+  (docs/themes.md, example `dist/themes/sunset`).
+- Power LED: green breathes while the dashboard is on screen, solid in a game
+  (`led=solid` in `settings.ini` keeps it solid; an on/off-only LED gets a slow beat).
+  The console has only green and red LEDs, so there is no blue.
+
+### Changed
+- Start no longer launches the selected game on the dashboard (it opens the game menu).
+- The restart confirmations (Display, Theme) say "Restart" instead of "Delete" and drop
+  the profile-deletion note.
+
 ## [0.6.0] - 2026-11-14
 
 The Lumen PSX brand on the console, and a boot that no longer cuts Sony's animation.

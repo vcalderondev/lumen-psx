@@ -45,6 +45,9 @@
 #include "status.h"
 #include "stats.h"
 #include "version.h"
+#include "collections.h"
+#include "gamemenu.h"
+#include "theme.h"
 
 #define TEX_WINDOW 6       /* covers kept on the GPU around the selection */
 #define VISIBLE 4          /* boxes drawn on each side */
@@ -130,6 +133,7 @@ game_t     g_games[MAX_GAMES];
 int        g_ngames;
 platform_t g_plat[MAX_PLATFORMS];
 int        g_nplat;
+int        g_nreal_games, g_nreal_plat;   /* the library proper; collections are appended after */
 
 char g_root[256]     = "/media";
 /* The UI is laid out in a 1280x720 logical space (W x H); the window may be larger
@@ -155,6 +159,7 @@ static int file_exists(const char *p) { struct stat st; return stat(p, &st) == 0
  * layout keep them directly under <home>/. out = the first that exists, else the new path. */
 static void asset_path(char *out, size_t n, const char *rel_new, const char *rel_old)
 {
+   if (theme_asset(out, n, rel_new)) return;   /* the active theme's own file wins */
    snprintf(out, n, "%s/assets/%s", g_home, rel_new);
    if (file_exists(out)) return;
    snprintf(out, n, "%s/%s", g_home, rel_old);
@@ -432,6 +437,51 @@ static void scan_files(int pi, const char *dir)
    closedir(d);
 }
 
+/* Apps layout (homebrew): <path>/<name>/app.ini, Game.ini style lines:
+ *   Title=  Exec=<program, relative to the folder>  Publisher=  Year=  Players=
+ * art in the folder: icon.png|cover.png|.jpg, background.jpg|png, music.ogg.
+ * content = the program; run.sh starts it natively (kind=app), RESET or OPEN quit it. */
+static void scan_apps(int pi, const char *dir)
+{
+   char path[700], buf[4096], exe[256], base[700];
+   static const char *const cover_sfx[] = { "icon.png", "cover.png", "icon.jpg", "cover.jpg", NULL };
+   static const char *const bg_sfx[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
+   static const char *const music_sfx[] = { "music.ogg", "music.wav", NULL };
+   DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
+   if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
+   while ((de = readdir(d)) && g_ngames < MAX_GAMES)
+   {
+      FILE *f; size_t n; game_t *g;
+      if (de->d_name[0] == '.') continue;
+      snprintf(path, sizeof(path), "%s/%s/app.ini", dir, de->d_name);
+      if (!(f = fopen(path, "rb"))) continue;
+      buf[0] = '\n';
+      n = fread(buf + 1, 1, sizeof(buf) - 2, f); fclose(f);
+      buf[n + 1] = 0;
+      ini_get(buf, "Exec", exe, sizeof(exe));
+      trim(exe);
+      if (!exe[0] || strstr(exe, "..") || exe[0] == '/') { logf_("[%s] %s: no valid Exec=", pl->id, de->d_name); continue; }
+      g = &g_games[g_ngames];
+      memset(g, 0, sizeof(*g));
+      snprintf(g->content, sizeof(g->content), "%s/%s/%s", dir, de->d_name, exe);
+      if (!file_exists(g->content)) { logf_("[%s] %s: %s not found", pl->id, de->d_name, exe); continue; }
+      ini_get(buf, "Title", g->title, sizeof(g->title));
+      ini_get(buf, "Publisher", g->publisher, sizeof(g->publisher));
+      if (!g->publisher[0]) ini_get(buf, "Author", g->publisher, sizeof(g->publisher));
+      ini_get(buf, "Year", g->year, sizeof(g->year));
+      ini_get(buf, "Players", g->players, sizeof(g->players));
+      if (!g->title[0]) snprintf(g->title, sizeof(g->title), "%s", de->d_name);
+      snprintf(base, sizeof(base), "%s/%s/", dir, de->d_name);
+      find_first(g->cover, sizeof(g->cover), base, cover_sfx);
+      g->has_cover = g->cover[0] != 0;
+      find_first(g->bg, sizeof(g->bg), base, bg_sfx);
+      find_first(g->music, sizeof(g->music), base, music_sfx);
+      g->platform = pi;
+      g_ngames++;
+   }
+   closedir(d);
+}
+
 /* Stock layout: the console's built-in games, read-only (never written).
  * <path>/<id>/<BASENAME>.cue|bin per game; the metadata cannot be read from the
  * console's own database (no sqlite on the console), so it comes from a shipped file
@@ -554,6 +604,7 @@ static void scan_all(void)
          trim(tok);
          if (!strcmp(g_plat[pi].layout, "psc")) scan_psc(pi, tok);
          else if (!strcmp(g_plat[pi].layout, "stock")) scan_stock(pi, tok);
+         else if (!strcmp(g_plat[pi].layout, "apps")) scan_apps(pi, tok);
          else scan_files(pi, tok);
       }
    }
@@ -1600,6 +1651,10 @@ static void draw_shadow(float x, float y, float w, float h, float radius, float 
 {
    draw_shadow_ex(x, y, w, h, radius, blur, dy, a, 0);
 }
+void ui_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float a)
+{
+   draw_shadow_ex(x, y, w, h, radius, blur, dy, a, 0);
+}
 
 /* label with a soft 1-2 px shadow, for text over bright art */
 static void draw_text(const label_t *l, float x, float y, const float c[4])
@@ -2031,6 +2086,7 @@ static void in_event(const SDL_Event *e)
       case SDLK_BACKSPACE: b = IN_SQUARE; break;
       case SDLK_b: b = IN_BACK; break;        /* keyboards / psc-sim: Circle */
       case SDLK_s: b = IN_SELECT; break;      /* Select alone: settings */
+      case SDLK_m: b = IN_START; break;       /* keyboards / psc-sim: Start alone (game menu) */
       case SDLK_ESCAPE: b = IN_SELECT; in_set(IN_START, d); break;
       }
       in_set(b, d);
@@ -2072,9 +2128,18 @@ typedef struct { const char *icons[3]; const char *fallback_key; const char *tex
 static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
    [HINTS_CAROUSEL] = {
       { { "cross" },    "btn.cross",        "hint.play" },
+      { { "start" },    "btn.start",        "hint.options" },
       { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
       { { "l2", "r2" }, "btn.l2_r2",        "hint.platform" },
       { { "select" },   "btn.select",       "hint.settings" } },
+   [HINTS_GAMEMENU] = {
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "circle" },   "btn.circle",       "hint.close" } },
+   [HINTS_GAMEMENU_FOLDERS] = {
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.toggle" },
+      { { "circle" },   "btn.circle",       "hint.fold" } },
    [HINTS_PANEL_ROOT] = {
       { { "dpad" },     "btn.dpad",         "hint.move" },
       { { "cross" },    "btn.cross",        "hint.select" },
@@ -2124,7 +2189,12 @@ static const icon_t *icon_get(const char *home, const char *name)
    ic = &g_icons[g_nicons++];
    snprintf(ic->name, sizeof(ic->name), "%s", name);
    /* flat glyphs first (dashboard style), then the pixel-art icons, then the old layout */
-   snprintf(path, sizeof(path), "%s/assets/glyphs/%s.png", home, name);
+   {  /* the theme's glyphs/ or icons/ first */
+      char rel[64];
+      snprintf(rel, sizeof(rel), "glyphs/%s.png", name);
+      if (!theme_asset(path, sizeof(path), rel)) { snprintf(rel, sizeof(rel), "icons/%s.png", name); if (!theme_asset(path, sizeof(path), rel)) path[0] = 0; }
+   }
+   if (!path[0]) snprintf(path, sizeof(path), "%s/assets/glyphs/%s.png", home, name);
    if (!file_exists(path)) snprintf(path, sizeof(path), "%s/assets/icons/%s.png", home, name);
    if (!file_exists(path)) snprintf(path, sizeof(path), "%s/icons/%s.png", home, name);   /* old layout */
    if ((sf = IMG_Load(path))) { ic->w = sf->w; ic->h = sf->h; ic->tex = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
@@ -2179,6 +2249,7 @@ void ui_cards_changed(void)
 {
    int i;
    g_dash_profile_dirty = 1;   /* also the dashboard's avatar and statistics */
+   coll_load(g_home, profiles_active()->id);   /* and its favourites, folders and resume marks */
    for (i = 0; i < g_ngames; i++)
       if (g_games[i].back_tex) { glDeleteTextures(1, &g_games[i].back_tex); g_games[i].back_tex = 0; }
 }
@@ -2186,7 +2257,17 @@ void ui_cards_changed(void)
 /* Display page: leave with exit code 12; run.sh / boot.sh restart the console so the
  * new output and compositor are set up from scratch */
 static int g_want_reboot;
+static int g_play_resume, g_play_asked;   /* Play came from the game menu / resume question */
 void ui_request_reboot(void) { g_want_reboot = 1; logf_("restart requested (display settings)"); }
+/* theme: quit with /tmp/lumen-restart, run.sh starts the frontend again at once */
+static int g_want_restart;
+void ui_request_restart(void)
+{
+   FILE *f = fopen("/tmp/lumen-restart", "w");
+   if (f) fclose(f);
+   g_want_restart = 1;
+   logf_("frontend restart requested (theme)");
+}
 
 /* the Sound page changed music / music_volume */
 void ui_sound_changed(void)
@@ -2414,6 +2495,7 @@ static int g_lib_rescan;   /* set by ui_library_changed(), handled at the top of
 
 /* a setting that changes which systems are listed (show_stock_games) */
 void ui_library_changed(void) { g_lib_rescan = 1; }
+static void coll_rows_build(void);
 
 /* Re-read the declarations and every library without restarting: GPU resources of
  * the old library are freed, the cover worker's in-flight result is dropped (cv_gen),
@@ -2443,10 +2525,11 @@ static void library_rescan(int *sel_plat, int *sel)
    if (cv_req >= 0) { cv_req = -1; cv_busy = 0; }
    if (cv_done >= 0) { if (cv_surf) SDL_FreeSurface(cv_surf); cv_surf = NULL; cv_done = -1; cv_busy = 0; }
    SDL_UnlockMutex(cv_mx);
-   g_ngames = 0; g_nplat = 0;
+   g_ngames = 0; g_nplat = 0; g_nreal_games = 0; g_nreal_plat = 0;
    scan_library();
    build_platform_index();
    platforms_load_art();
+   coll_rows_build();
    *sel_plat = 0; *sel = 0;
    for (p = 0; p < g_nplat; p++)
       if (!strcmp(g_plat[p].id, sys))
@@ -2465,6 +2548,123 @@ static void library_rescan(int *sel_plat, int *sel)
    bg_shown[0] = 0;   /* request the selection again (layers keep their own palette) */
    bg_game = -1;
    logf_("library rescan: games %d, platforms %d, %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
+}
+
+/* ---- collections as dashboard rows: after the systems, one row per folder, then
+ * Favourites (one press Up from the first system, the rows wrap). A row repeats the
+ * library's games (copies with their own textures; game_t.platform stays the game's
+ * real system, so launching, art and attract use it); the media fields of the row follow
+ * the selected game every frame (coll_row_follow). */
+static unsigned g_coll_built;   /* coll_generation() the rows were built from */
+
+static int cmp_gi_title(const void *a, const void *b)
+{
+   return strcasecmp(g_games[*(const int *)a].title, g_games[*(const int *)b].title);
+}
+
+static int game_by_content(const char *c)
+{
+   int i;
+   for (i = 0; i < g_nreal_games; i++) if (!strcmp(g_games[i].content, c)) return i;
+   return -1;
+}
+
+static void coll_row_add(const char *id, const char *name, int folder)
+{
+   static int idx[MAX_GAMES];
+   int n = 0, k, total = folder < 0 ? coll_fav_count() : coll_folder_count(folder);
+   platform_t *p;
+   if (g_nplat >= MAX_PLATFORMS) return;
+   for (k = 0; k < total; k++)
+   {
+      const char *c = folder < 0 ? coll_fav_at(k) : coll_folder_at(folder, k);
+      int gi = c ? game_by_content(c) : -1;
+      if (gi >= 0 && g_ngames + n < MAX_GAMES) idx[n++] = gi;
+   }
+   if (!n) return;   /* nothing of it on this stick */
+   qsort(idx, n, sizeof(int), cmp_gi_title);
+   p = &g_plat[g_nplat];
+   *p = g_plat[g_games[idx[0]].platform];   /* media fields: the first game's system */
+   snprintf(p->id, sizeof(p->id), "%s", id);
+   snprintf(p->name, sizeof(p->name), "%s", name);
+   p->logo[0] = 0; p->logo_tex = 0; p->label = 0; p->show_name = 1;
+   p->has_gfx = 0; p->demo_allowed = 0;
+   p->first = g_ngames; p->count = n;
+   p->label = text_tex(g_font_tab ? g_font_tab : g_font_small, p->name, &p->label_w, &p->label_h);
+   for (k = 0; k < n; k++)
+   {
+      game_t *g = &g_games[g_ngames++];
+      *g = g_games[idx[k]];
+      g->tex = g->back_tex = g->spine_tex = 0; g->tex_state = 0;
+   }
+   g_nplat++;
+}
+
+static void coll_rows_build(void)
+{
+   int i, f;
+   char id[32];
+   /* drop the previous rows (their textures, the cover worker's results for them) */
+   if (g_nreal_games || g_nreal_plat)   /* 0: first build after a scan, nothing to drop */
+   {
+      for (i = g_nreal_games; i < g_ngames; i++) game_free_tex(&g_games[i]);
+      for (i = g_nreal_plat; i < g_nplat; i++) if (g_plat[i].label) glDeleteTextures(1, &g_plat[i].label);
+      SDL_LockMutex(cv_mx);
+      cv_gen++;
+      if (cv_req >= 0) { cv_req = -1; cv_busy = 0; }
+      if (cv_done >= 0) { if (cv_surf) SDL_FreeSurface(cv_surf); cv_surf = NULL; cv_done = -1; cv_busy = 0; }
+      SDL_UnlockMutex(cv_mx);
+      /* the real games in flight are dropped too: they are requested again */
+      for (i = 0; i < g_nreal_games; i++) if (g_games[i].tex_state == 2) g_games[i].tex_state = 0;
+   }
+   g_ngames = g_nreal_games ? g_nreal_games : g_ngames;
+   g_nplat = g_nreal_plat ? g_nreal_plat : g_nplat;
+   g_nreal_games = g_ngames; g_nreal_plat = g_nplat;
+   if (g_nreal_games)
+   {
+      for (f = 0; f < coll_nfolders(); f++) { snprintf(id, sizeof(id), "folder-%d", f + 1); coll_row_add(id, coll_folder_name(f), f); }
+      coll_row_add("fav", tr("coll.favorites"), -1);
+   }
+   g_coll_built = coll_generation();
+   logf_("collections: %d rows, %d games", g_nplat - g_nreal_plat, g_ngames - g_nreal_games);
+}
+
+/* a collection row draws and launches like the selected game's system */
+static void coll_row_follow(platform_t *row, int gi)
+{
+   const platform_t *src;
+   if (gi < 0 || gi >= g_ngames) return;
+   src = &g_plat[g_games[gi].platform];
+   row->kind = src->kind; row->launch = src->launch; row->idle_float = src->idle_float;
+   row->aspect = src->aspect; row->w = src->w; row->h = src->h;
+   memcpy(row->color, src->color, sizeof(row->color));
+   memcpy(row->art, src->art, sizeof(row->art)); memcpy(row->media_art, src->media_art, sizeof(row->media_art));
+   memcpy(row->sound, src->sound, sizeof(row->sound));
+}
+
+/* rebuild after a change in the game menu, keeping the selection on the same game
+ * (same row id + content), else the same row, else the last system */
+static void coll_rows_rebuild(int *sel_plat, int *sel)
+{
+   char id[32] = "", content[512] = "";
+   int p, k, was_virtual = *sel_plat >= g_nreal_plat;
+   if (*sel_plat >= 0 && *sel_plat < g_nplat)
+   {
+      snprintf(id, sizeof(id), "%s", g_plat[*sel_plat].id);
+      if (*sel >= 0 && *sel < g_plat[*sel_plat].count) snprintf(content, sizeof(content), "%s", g_games[g_plat[*sel_plat].first + *sel].content);
+   }
+   coll_rows_build();
+   if (!was_virtual) return;   /* real rows keep their indices */
+   for (p = g_nreal_plat; p < g_nplat; p++)
+      if (!strcmp(g_plat[p].id, id))
+      {
+         *sel_plat = p;
+         if (*sel >= g_plat[p].count) *sel = g_plat[p].count - 1;
+         for (k = 0; k < g_plat[p].count; k++)
+            if (!strcmp(g_games[g_plat[p].first + k].content, content)) { *sel = k; break; }
+         return;
+      }
+   *sel_plat = g_nreal_plat > 0 ? g_nreal_plat - 1 : 0; *sel = 0;
 }
 
 
@@ -3050,7 +3250,8 @@ static void test_shots(double ts)
 /* ---- in-game dialog (lumen --dialog game | discs:<count>:<current>, run by lumen-buttons
  * on OPEN while RetroArch is paused): the game's cover as a dimmed backdrop, a card with
  * the cover, the title and the choices, the dashboard's help bar. Exit code = the answer:
- * 0 continue, 2 exit the game, 10 + k switch to disc k (1-based). Circle = continue. */
+ * 0 continue, 2 exit the game, 3 save (resume slot) and exit, 10 + k switch to disc k
+ * (1-based). Circle = continue. */
 static void dialog_launch_info(char *title, size_t tn, char *cover, size_t cn)
 {
    char line[700], content[600] = "";
@@ -3099,6 +3300,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          label_set(&row_l[n], g_font_name, buf); ans[n++] = i == cur ? 0 : 10 + i;
       }
    }
+   label_set(&row_l[n], g_font_name, tr("dialog.save_exit")); ans[n++] = 3;
    label_set(&row_l[n], g_font_name, tr("dialog.exit")); ans[n++] = 2;
 
    dialog_launch_info(gtitle, sizeof(gtitle), cover_path, sizeof(cover_path));
@@ -3137,15 +3339,19 @@ static int run_dialog(SDL_Window *win, const char *kind)
          const float RW = 56, cwid = 640, head = 140, pad = 28;
          float chgt = head + n * RW + (sect_before >= 0 ? 34 : 0) + pad, cx = (W - cwid) * 0.5f, cy = (H - chgt) * 0.5f - 18;
          float a = clampf(fade.x, 0, 1), rowy[MAXROW], y = cy + head;
-         const float white[4] = { 1, 1, 1, a }, dim[4] = { 0.70f, 0.73f, 0.80f, a }, acc[4] = { 0.36f, 0.60f, 1.0f, a };
-         const float card[4] = { 0.10f, 0.12f, 0.16f, 0.92f * a }, pillc[4] = { 0.23f, 0.51f, 0.96f, a };
-         const float scrim[4] = { 0.016f, 0.024f, 0.031f, 0.86f }, red[4] = { 1.0f, 0.55f, 0.55f, a };
+         float white[4] = { 1, 1, 1, a }, dim[4], acc[4], card[4], pillc[4], scrim[4], red[4];
+         theme_color(TC_DIM, dim); dim[3] = a;
+         theme_color(TC_ACCENT, acc); acc[3] = a;
+         theme_color(TC_CARD, card); card[3] = theme_card_alpha() * a;
+         theme_color(TC_PILL, pillc); pillc[3] = a;
+         theme_color(TC_BACKDROP, scrim); scrim[3] = 0.86f;
+         theme_color(TC_DANGER, red); red[3] = a;
          for (i = 0; i < n; i++) { if (i == sect_before) y += 34; rowy[i] = y; y += RW; }
          if (t - t0 < 0.02) pill.x = rowy[sel];
          spring_step(&pill, rowy[sel], 260, 26, dt);
 
          glViewport(0, 0, g_dw, g_dh);
-         glClearColor(0.016f, 0.024f, 0.031f, 1.0f);
+         glClearColor(scrim[0], scrim[1], scrim[2], 1.0f);
          glClear(GL_COLOR_BUFFER_BIT);
          glDisable(GL_DEPTH_TEST);
          glEnable(GL_BLEND);
@@ -3271,9 +3477,17 @@ int main(int argc, char **argv)
    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
    TTF_Init();
    settings_load(g_home);
+   theme_init(g_home);
+   {  /* a theme may bring its own fonts (themes/<id>/fonts/<weight>.ttf) */
+      theme_asset(font_b, sizeof(font_b), "fonts/bold.ttf");
+      theme_asset(font_r, sizeof(font_r), "fonts/regular.ttf");
+      theme_asset(font_m, sizeof(font_m), "fonts/medium.ttf");
+      theme_asset(font_sb, sizeof(font_sb), "fonts/semibold.ttf");
+   }
    i18n_init(g_home);
    i18n_set_language(settings_get("language", "es"));
    profiles_load(g_home);
+   coll_load(g_home, profiles_active()->id);
 
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -3367,6 +3581,7 @@ int main(int argc, char **argv)
    logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
    splash_step(win, 0.45f);
    platforms_load_art();
+   coll_rows_build();
    splash_step(win, 0.6f);
 
    /* resume last selection */
@@ -3455,8 +3670,16 @@ int main(int argc, char **argv)
          home_plat = sel_plat; home_sel = sel; sel_t = t;
          info_y.x = 18.0f; info_a.x = 0.0f;
       }
+      if (g_coll_built != coll_generation() && play_t < 0 && !gamemenu_open_now() && !panel_active())
+      {
+         coll_rows_rebuild(&sel_plat, &sel);
+         sel_t = t; info_y.x = 18.0f; info_a.x = 0.0f; bg_shown[0] = 0;
+      }
+      if (sel_plat >= g_nplat) { sel_plat = 0; sel = 0; }
       pl = g_nplat ? &g_plat[sel_plat] : NULL;
-      int n = pl ? pl->count : 0, move = 0, plat_move = 0, page = 0, play = 0, att_swallow, restore = -1;
+      if (pl && sel_plat >= g_nreal_plat && pl->count) coll_row_follow(pl, pl->first + (sel < pl->count ? sel : 0));
+      int n = pl ? pl->count : 0, move = 0, plat_move = 0, page = 0, play = 0, att_swallow, restore = -1, want_menu = 0;
+      ui_nav_t fnav;   /* one navigation frame shared by the panel and the game menu (auto-repeat state) */
       if (dt > 0.05f) dt = 0.05f;
       last = t;
 
@@ -3468,6 +3691,7 @@ int main(int argc, char **argv)
       }
       if (g_ntin && !test_input(t - t0)) running = 0;
       if (g_want_reboot) { exit_code = 12; running = 0; }
+      if (g_want_restart) { exit_code = 0; running = 0; }
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
@@ -3489,7 +3713,9 @@ int main(int argc, char **argv)
       if (!panel_active() && !att_swallow && in_down[IN_SELECT] && in_down[IN_START]) running = 0;
       else
       {
-         if (in_pressed[IN_PLAY] || (in_pressed[IN_START] && !in_down[IN_SELECT])) play = 1;
+         /* Cross plays; Start alone opens the game menu (favourite, folders) */
+         if (in_pressed[IN_PLAY]) play = 1;
+         if (in_pressed[IN_START] && !in_down[IN_SELECT]) want_menu = 1;
          /* L1 / R1: previous / next page of games; L2 / R2 (and up / down): system */
          if (in_pressed[IN_L1]) page = -1;
          if (in_pressed[IN_R1]) page = 1;
@@ -3508,25 +3734,42 @@ int main(int argc, char **argv)
          welcome_update(&wn, dt);
          memset(in_pressed, 0, sizeof(in_pressed));
          g_want_settings = 0; held_dir = 0;
-         move = plat_move = page = play = 0;
+         move = plat_move = page = play = want_menu = 0;
       }
+      nav_fill(&fnav, t);
       {  /* settings panel: owns the input while open or closing (6.3) */
-         ui_nav_t nav;
-         int was_open = panel_active();
-         nav_fill(&nav, t);
+         ui_nav_t nav = fnav;
+         int was_open = panel_active(), gm = gamemenu_active();
          if (!was_open || att_swallow) memset(&nav, 0, sizeof(nav));
-         if (!was_open && in_pressed[IN_OPTIONS] && play_t < 0 && !att_swallow) panel_open();
+         if (!was_open && !gm && in_pressed[IN_OPTIONS] && play_t < 0 && !att_swallow) panel_open();
          if (g_want_settings)   /* Select tapped: opens the panel; while open it acts like Triangle */
          {
             g_want_settings = 0;
-            if (!was_open && play_t < 0) panel_open();
+            if (!was_open && !gm && play_t < 0) panel_open();
             else if (was_open) nav.options = 1;
          }
          panel_update(&nav, t, dt);
-         if (was_open || panel_active()) { move = plat_move = page = play = 0; held_dir = 0; }
+         if (was_open || panel_active()) { move = plat_move = page = play = want_menu = 0; held_dir = 0; }
       }
-      if (play_t >= 0) { move = plat_move = page = play = 0; }
-      if (att_swallow) { move = plat_move = page = play = 0; held_dir = 0; held_next = t + 0.32; }
+      {  /* game menu (Start) and resume question: own the input while open; the keyboard
+          * it opens for a new folder is the panel's (above) */
+         ui_nav_t gn = fnav;
+         int open_now = gamemenu_open_now(), r;
+         if (!open_now || panel_active() || att_swallow) memset(&gn, 0, sizeof(gn));
+         gamemenu_update(&gn, t, dt);
+         if (open_now || gamemenu_active()) { move = plat_move = page = play = want_menu = 0; held_dir = 0; }
+         r = gamemenu_take();
+         if (r == GM_PLAY || r == GM_PLAY_RESUME) { play = 1; g_play_resume = r == GM_PLAY_RESUME; g_play_asked = g_play_resume; }   /* "Play" in the menu still asks */
+      }
+      if (play_t >= 0) { move = plat_move = page = play = want_menu = 0; }
+      if (att_swallow) { move = plat_move = page = play = want_menu = 0; held_dir = 0; held_next = t + 0.32; }
+      if (n && want_menu && play_t < 0) gamemenu_open(pl->first + sel);
+      if (n && play && play_t < 0 && !g_play_asked)
+      {  /* left with Save and exit: ask before playing (Continue / Start over) */
+         g_play_resume = 0;
+         if (resume_has(g_games[pl->first + sel].content)) { gamemenu_resume_open(pl->first + sel); play = 0; }
+      }
+      g_play_asked = 0;
       if (!move && held_dir && t >= held_next) { move = held_dir; held_next = t + 0.085; }
       {  /* attract: auto-rotation; the user's selection is kept and restored on leave */
          int now_att = attract_active();
@@ -3655,7 +3898,7 @@ int main(int argc, char **argv)
             {
                game_t *g = &g_games[k];
                int d = 9999;
-               if (g->platform == g_games[pl->first].platform)
+               if (k >= pl->first && k < pl->first + n)   /* games of the row on screen */
                {
                   int o = abs((k - pl->first) - sel);
                   d = o < n - o ? o : n - o;
@@ -3937,7 +4180,8 @@ int main(int argc, char **argv)
             {
                /* the settings are a full-screen section: opaque, so nothing under it is drawn
                 * once it is fully open (see `covered`) */
-               const float back[4] = { 0.043f, 0.047f, 0.062f, pa };
+               float back[4];
+               theme_color(TC_PANEL, back); back[3] = pa;
                draw_2d(0, 0, 0, W, H, back, 0);
             }
             {  /* help bar: the set follows the panel, crossfading over 0.15 s; while the
@@ -3945,7 +4189,9 @@ int main(int argc, char **argv)
                static int h_cur = HINTS_CAROUSEL, h_prev = -1;
                static float h_mix = 1.0f;
                int want = welcome_active() ? (welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
-                          panel_active() ? panel_hint_set() : (attract_active() ? HINTS_ATTRACT : HINTS_CAROUSEL);
+                          panel_active() ? panel_hint_set() :
+                          gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
+                          (attract_active() ? HINTS_ATTRACT : HINTS_CAROUSEL);
                const float ha = (1 - fade) * (1 - att.amount) * launch_ui;
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
@@ -3960,6 +4206,7 @@ int main(int argc, char **argv)
                label_set(lb, g_font_sub, tr(insert ? "coin.insert" : "coin.credit"));
                draw_2d(lb->tex, (W - lb->w) * 0.5f, 640, lb->w, lb->h, yc, 0);
             }
+            gamemenu_draw(t);
             panel_draw(t);
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);
@@ -4111,9 +4358,12 @@ int main(int argc, char **argv)
       launch_req_t req;
       memset(&req, 0, sizeof(req));
       snprintf(core, sizeof(core), "%s/%s", g_core_dir, lp->core);
+      req.app = !strcmp(lp->layout, "apps");
+      if (req.app) snprintf(core, sizeof(core), "app");   /* no libretro core: run.sh runs the program */
       req.core = core; req.content = g->content; req.system = lp->id; req.title = g->title;
       req.profile = profiles_active()->id;
       req.demo = demo;
+      req.resume = !demo && g_play_resume;
       req.demo_seconds = demo && lp->demo_seconds > 0 ? lp->demo_seconds : settings_get_int("demo_seconds", 60, 20, 300);
       if (lp->has_gfx)
       {
@@ -4132,8 +4382,8 @@ int main(int argc, char **argv)
          if (f) { fprintf(f, "system=%s\ncontent=%s\n", lp->id, g->content); fclose(f); }
       }
       if (launch_write("/tmp/lumen-launch", &req) == 0)
-         logf_("launch request: %s (%s %ds, profile %s, graphics %s)", g->content, demo ? "demo" : "normal",
-               req.demo_seconds, req.profile, req.graphics ? req.graphics : "-");
+         logf_("launch request: %s (%s %ds, profile %s, graphics %s%s%s)", g->content, demo ? "demo" : (req.app ? "app" : "normal"),
+               req.demo_seconds, req.profile, req.graphics ? req.graphics : "-", req.resume ? ", resume" : "", req.app ? ", app" : "");
       else { logf_("launch request refused, not launching"); exit_code = 1; }
    }
    SDL_LockMutex(bg_mx); bg_quit = 1; SDL_CondSignal(bg_cv); SDL_UnlockMutex(bg_mx);
