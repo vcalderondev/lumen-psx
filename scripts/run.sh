@@ -373,6 +373,8 @@ while true; do
   export LUMEN_RA_ENTRYSLOT
   rm -f /tmp/lumen-save-exit; : > /tmp/lumen-t0
   slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default}, graphics ${L_GRAPHICS:-default}${L_CRT:+, crt ${L_CRT}}${L_OPT_FILE:+, options ${L_OPT_FILE}}${LUMEN_RA_ENTRYSLOT:+, resume slot ${LUMEN_RA_ENTRYSLOT}})"
+  # a truncated copy is the usual reason a game never starts: keep its size in the log
+  slog "content: $(wc -c < "${L_CONTENT}" 2>/dev/null || echo '?') bytes"
   t0=$(date +%s)
   lumen_discs
   run_retroarch "${L_CORE}" "${RA_CONTENT}" "${LOG}/retroarch.log"
