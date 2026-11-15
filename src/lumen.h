@@ -12,7 +12,8 @@
 #define MAX_PLATFORMS 32   /* systems + Favourites + folders (collections.h) */
 
 enum { KIND_DISC, KIND_CART, KIND_ARCADE };
-enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN };
+enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN,
+       ANIM_COVER };   /* generic: no hardware simulated, the game's cover turns and flies to the camera */
 /* [media] shape: the 3D model of the medium (docs/systems.md, "Built-in shapes") */
 enum { SHAPE_JEWEL, SHAPE_DVD, SHAPE_UMD,
        SHAPE_CART, SHAPE_CART_SNES, SHAPE_CART_MD, SHAPE_CART_NES, SHAPE_CART_N64, SHAPE_CART_GB, SHAPE_CART_GBA,
@@ -62,6 +63,7 @@ extern int        g_nplat;
 extern int        g_nreal_games, g_nreal_plat;   /* games/platforms of the library; the rest are collections */
 extern char       g_root[256], g_home[256], g_core_dir[256];
 extern TTF_Font  *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
+extern TTF_Font  *g_font_caps, *g_font_medium;   /* kickers (Medium 15), buttons and names (Medium 21) */
 extern float      g_ui_scale;   /* device px per logical px (1280x720 layout) */
 
 typedef struct { GLuint tex; int w, h; char key[200]; } label_t;
@@ -78,6 +80,8 @@ void   label_free(label_t *l);
 void   gl_use_2d(void);        /* glUseProgram(g_prog_2d) + sampler 0 */
 void   gl_scissor(float x, float y, float w, float h);   /* logical rect, top-left origin */
 void   ui_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float a);
+/* flat rounded rectangle: filled (stroke 0) or a ring of `stroke` px inside its edge */
+void   ui_shape(float x, float y, float w, float h, float radius, float stroke, const float rgba[4]);
 GLuint tex_from_surface(SDL_Surface *s);   /* mipmapped RGBA texture; the surface stays the caller's */
 /* image (tw x th texels) cover-fitted into a rounded rectangle; ends in another program:
  * call gl_use_2d() before more draw_2d() */
@@ -91,7 +95,8 @@ typedef struct { int up, down, left, right, confirm, back, erase, options, start
 void   ui_language_changed(void);   /* rebuild text baked into textures after i18n_set_language() */
 void   ui_cards_changed(void);      /* the active profile changed: regenerate the back of the cases */
 void   ui_avatar_changed(void);     /* the active profile's avatar.png changed: load it again */
-int    ui_avatar(GLuint *tex, int *w, int *h);   /* the active profile's picture; 0 = none (initials) */
+int    ui_avatar(GLuint *tex, int *w, int *h);
+void   ui_avatar_draw(float x, float y, float d, float a);   /* picture or initials, a circle of d px */   /* the active profile's picture; 0 = none (initials) */
 void   ui_library_changed(void);    /* a setting changed which systems are listed: rescan next frame */
 
 #endif
