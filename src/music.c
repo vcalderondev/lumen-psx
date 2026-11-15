@@ -17,6 +17,7 @@
 #include "stb_vorbis.c"
 #pragma GCC diagnostic pop
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,6 +134,55 @@ static float ramp(float x, float t, float st)
    return x;
 }
 
+/* ---- one-shot effects (cartridge clicks) ---- */
+#define NCLICK 3
+static float *clk[NCLICK];        /* mono, dev_rate; written once at init */
+static int clk_len[NCLICK];
+static int sfx_k = -1, sfx_pos;   /* playing effect; under audio lock */
+
+static unsigned rnd_state = 0x1234567u;
+static float rnd(void) { rnd_state = rnd_state * 1664525u + 1013904223u; return (float)(rnd_state >> 8) / 8388608.0f - 1.0f; }
+
+/* A plastic latch: a bright transient (filtered noise + a short resonance) and, a few ms
+ * later, the body of the console answering (a damped low tone). */
+static void click_make(int k)
+{
+   static const float res_hz[NCLICK] = { 2300, 2900, 4200 }, res_ms[NCLICK] = { 7, 5, 3 };
+   static const float thud_hz[NCLICK] = { 120, 165, 320 }, thud_ms[NCLICK] = { 45, 30, 12 };
+   static const float thud_a[NCLICK] = { 0.75f, 0.55f, 0.25f }, gap_ms[NCLICK] = { 9, 7, 3 };
+   const int n = dev_rate * 12 / 100;   /* 120 ms */
+   float *b = calloc(n, sizeof(float)), hp = 0, prev = 0, peak = 0;
+   int i;
+   if (!b) return;
+   for (i = 0; i < n; i++)
+   {
+      float t = (float)i / dev_rate, x, nz = rnd();
+      hp = 0.6f * (hp + nz - prev); prev = nz;               /* high-passed noise */
+      x = hp * expf(-t / 0.0012f) * 0.9f;
+      x += sinf(6.2832f * res_hz[k] * t) * expf(-t / (res_ms[k] * 0.001f)) * 0.5f;
+      if (k == 1)   /* the spring of the front door: a faint ring after the latch */
+         x += sinf(6.2832f * 1150.0f * t) * expf(-t / 0.025f) * 0.10f;
+      {
+         float t2 = t - gap_ms[k] * 0.001f;
+         if (t2 >= 0)
+            x += (sinf(6.2832f * thud_hz[k] * t2) + 0.3f * rnd() * expf(-t2 / 0.004f))
+                 * expf(-t2 / (thud_ms[k] * 0.001f)) * thud_a[k] * (1.0f - expf(-t2 / 0.0008f));
+      }
+      b[i] = x;
+      if (fabsf(x) > peak) peak = fabsf(x);
+   }
+   for (i = 0; i < n; i++) b[i] *= 0.80f * 32767.0f / (peak > 0 ? peak : 1);
+   clk[k] = b; clk_len[k] = n;
+}
+
+void music_click(int kind)
+{
+   if (!dev || kind < 0 || kind >= NCLICK || !clk[kind]) return;
+   SDL_LockAudioDevice(dev);
+   sfx_k = kind; sfx_pos = 0;
+   SDL_UnlockAudioDevice(dev);
+}
+
 static void SDLCALL audio_cb(void *ud, Uint8 *stream, int len)
 {
    short *out = (short *)stream;
@@ -173,6 +223,12 @@ static void SDLCALL audio_cb(void *ud, Uint8 *stream, int len)
       m = mvol * (1 - duck);
       l *= m;
       r *= m;
+      if (sfx_k >= 0)
+      {  /* the effect on top of the music, centred */
+         float e = clk[sfx_k][sfx_pos];
+         l += e; r += e;
+         if (++sfx_pos >= clk_len[sfx_k]) sfx_k = -1;
+      }
       out[i * 2]     = l > 32767 ? 32767 : l < -32768 ? -32768 : (short)l;
       out[i * 2 + 1] = r > 32767 ? 32767 : r < -32768 ? -32768 : (short)r;
    }
@@ -387,6 +443,10 @@ int music_init(void)
    }
    dev_rate = got.freq > 0 ? got.freq : 44100;
    rstep = 1.0f / (0.2f * dev_rate);
+   {
+      int k;
+      for (k = 0; k < NCLICK; k++) click_make(k);
+   }
    logf_("music: device %d Hz, %d ch, %d samples", got.freq, got.channels, got.samples);
    req_mx = SDL_CreateMutex();
    req_cv = SDL_CreateCond();
@@ -476,6 +536,10 @@ void music_shutdown(void)
    SDL_WaitThread(loader, NULL);               /* waits out an in-flight file read */
    loader = NULL;
    SDL_CloseAudioDevice(dev);                  /* callback no longer runs */
+   {
+      int k;
+      for (k = 0; k < NCLICK; k++) { free(clk[k]); clk[k] = NULL; }
+   }
    for (k = 0; k < NV; k++) src_free(&vo[k].s);
    for (k = 0; k < nfree; k++) src_free(&freel[k]);
    memset(vo, 0, sizeof vo);
