@@ -92,7 +92,8 @@ sound.note = Each game can bring its own track (music.ogg in its folder); withou
 # graphics
 gfx.original = Original
 gfx.enhanced = Enhanced
-gfx.note = "Enhanced" raises the resolution or smooths the picture; some games may run slower.
+gfx.native = Native
+gfx.note = "Enhanced" raises the resolution or smooths the picture, "Native" renders at the display's resolution; some games may run slower.
 gfx.none = No system offers enhanced graphics
 
 # library
