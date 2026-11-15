@@ -3,6 +3,15 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Fixed
+- Games on a disc image no longer stop for ~300 ms every couple of seconds on a slow USB
+  stick. `run.sh` sets the kernel read-ahead of the stick to 2 MB (default: 128 KB), so
+  the image is read ahead in long bursts instead of small reads that each took ~200 ms.
+  Measured on the console with Bloody Roar II on a Kingston DT 101 G2: 32 stalls (11.4 s)
+  in 98 s before, 4 stalls (1.7 s) in 130 s with the 2 MB read-ahead.
+
 ## [0.12.1] - 2026-11-15
 
 Packaging only: the console runs exactly what 0.12.0 runs.
