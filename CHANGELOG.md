@@ -3,6 +3,20 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- Game watchdog (`lumen-buttons`): a RetroArch whose main loop stopped is closed and the
+  dashboard comes back, instead of a console that looks frozen (a hung core answers
+  neither RESET, OPEN nor Start+Select). The daemon asks RetroArch `GET_STATUS` every 2 s
+  over its command interface: 20 s without an answer (60 s for a game that never answered:
+  core and content load before the loop starts) closes it, and RESET on a game that does
+  not answer closes it at once. `logs/buttons.log` and `logs/session.log` say so;
+  `debug/no-watchdog` turns it off. Tested under ARMv7 emulation with the Nintendo 64
+  core hung on a truncated ROM, a game stopped mid-session and a healthy game; not yet
+  verified on the console.
+- `logs/session.log` records the size of the launched content (a truncated copy is the
+  usual reason a game never starts).
 ## [0.9.2] - 2026-11-15
 
 Lighter launch animations. Measured in the simulator; not yet timed on a console.
