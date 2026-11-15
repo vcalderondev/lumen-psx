@@ -69,6 +69,7 @@ int launch_write(const char *path, const launch_req_t *r)
                 r->demo ? "demo" : "normal", r->demo_seconds) > 0;
    if (ok && r->resume) ok = fprintf(f, "resume=1\n") > 0;
    if (ok && r->app) ok = fprintf(f, "kind=app\n") > 0;
+   if (ok && r->crt && match(r->crt, 1)) ok = fprintf(f, "crt=%s\n", r->crt) > 0;
    if (ok && r->graphics) ok = fprintf(f, "graphics=%s\n", r->graphics) > 0;
    if (ok && r->opt_core_name && r->opt_core_name[0]) ok = fprintf(f, "opt_core_name=%s\n", r->opt_core_name) > 0;
    if (ok && r->opt_list) ok = write_list(f, "opt.", r->opt_list);

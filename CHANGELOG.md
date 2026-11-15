@@ -3,6 +3,21 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- CRT filter (Settings → Display → CRT filter: Off, Soft, Strong; `crt=` in
+  `settings.ini`): scanlines, aperture grille, slight curvature, halation and vignette.
+  The dashboard draws through one extra GLES 3 pass (`src/crt.c`, MSAA kept, applied
+  live, also on the splash, the launch animation and the in-game dialog); games get the
+  same look from `lumen/shaders/crt-lumen-*.glslp`, which `run.sh` hands to RetroArch
+  (`video_shader_enable` in the extra config, `--set-shader`) for software and GLES 3 cores.
+  Launch request: new `crt=` line.
+
+### Fixed
+- In-game dialog: a slow first frame could throw the selection pill off screen (its
+  frame step is now capped like the dashboard's).
+
 ## [0.8.0] - 2026-11-14
 
 ### Added

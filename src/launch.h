@@ -10,6 +10,7 @@ typedef struct {
    const char *opt_list, *ra_list;         /* "k=v, k=v" from the declaration, or NULL */
    int resume;                             /* 1: load the Save and exit state (run.sh --entryslot) */
    int app;                                /* 1: a native homebrew app (content = executable) */
+   const char *crt;                        /* CRT filter "soft" | "strong" (run.sh --set-shader), or NULL */
 } launch_req_t;
 
 int launch_write(const char *path, const launch_req_t *r);   /* 0 ok, -1 invalid, -2 I/O */
