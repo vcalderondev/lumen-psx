@@ -92,6 +92,7 @@ sound.note = Ogni gioco può avere una propria traccia (music.ogg nella sua cart
 # grafica
 gfx.original = Originale
 gfx.enhanced = Migliorata
+gfx.native = Nativa
 gfx.note = «Migliorata» aumenta la risoluzione o ammorbidisce l'immagine; alcuni giochi potrebbero rallentare.
 gfx.none = Nessun sistema offre grafica migliorata
 

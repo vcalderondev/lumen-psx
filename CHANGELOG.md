@@ -19,6 +19,58 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 - `tools/sim-boot.sh`: the whole boot sequence on the desktop simulator, filmed, with the
   black stretches listed.
 
+## [0.10.0] - 2026-11-15
+
+Nintendo 64 that plays: lighter core options, a Native graphics level, and a watchdog for
+games that hang. psc-platform 2.3.1.
+
+### Added
+- Graphics: a third level, **Native**, for systems that declare it (`native_720` /
+  `native_1080` in the system's `[graphics]`): the core renders at the display's own
+  resolution. Nintendo 64 (960x720 / 1440x1080) and PSP (1440x816 / 1920x1088). Settings
+  > Graphics steps Original, Enhanced, Native; systems without it keep two levels.
+  Checked in the simulator; not yet verified on the console.
+- Nintendo 64 graphics presets (`systems/n64.ini`): Mupen64Plus-Next's defaults ran Super
+  Mario 64 slow on the console. Every level now runs GLideN64 on its own thread, without
+  colour / depth buffer copies to RDRAM, LOD emulation or hybrid filter, and dupes frames;
+  Original is the console's own 320x240 (verified on the console: Super Mario 64 plays
+  well, and cleaner than before), Enhanced is 640x480. Core option keys may contain `-`.
+- Game watchdog (`lumen-buttons`): a RetroArch whose main loop stopped is closed and the
+  dashboard comes back, instead of a console that looks frozen (a hung core answers
+  neither RESET, OPEN nor Start+Select). The daemon asks RetroArch `GET_STATUS` every 2 s
+  over its command interface: 20 s without an answer (60 s for a game that never answered:
+  core and content load before the loop starts) closes it, and RESET on a game that does
+  not answer closes it at once. `logs/buttons.log` and `logs/session.log` say so;
+  `debug/no-watchdog` turns it off. Tested under ARMv7 emulation (a core hung from the
+  start, a game stopped mid-session, a healthy game); not yet verified on the console.
+- `logs/session.log` records the size of the launched content (a truncated copy is the
+  usual reason a game never starts).
+
+### Fixed
+- Nintendo 64: a ROM that never starts (a truncated copy) no longer freezes the console
+  (psc-platform 2.3.1: the core gives control back to RetroArch before the game's first
+  frame).
+
+## [0.9.2] - 2026-11-15
+
+Lighter launch animations. Measured in the simulator; not yet timed on a console.
+
+### Changed
+- Launch animations: several times cheaper for the console's GPU, same picture. The
+  solid parts of the 3D models are drawn with blending off (the PowerVR then shades each
+  pixel once instead of every layer of every part), with their own small shader (lighting
+  per vertex) instead of the general one, and the models ship optimised
+  (`tools/models/optimize.py`: parts merged by material, 16-bit indices, decimated within
+  0.05 - 0.10 mm; 134,000 -> 104,000 triangles, 402,000 -> 86,000 vertices, 12.6 -> 2.3 MB
+  to read from the USB stick at start-up).
+- The launch runs on real time down to 10 fps (it ran slow under 20 fps).
+- `logs/lumen.log` gets one line per launch with how it ran (`launch: N frames in X s
+  (fps), worst frame`).
+
+### Fixed
+- Stripes across cartridge labels and case covers in the launch (the print fought with
+  the paper behind it for the depth test; the depth buffer is also ten times finer now).
+
 ## [0.9.1] - 2026-11-15
 
 ### Fixed
