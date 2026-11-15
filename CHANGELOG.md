@@ -3,6 +3,26 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Fixed
+- POWER (still behind the test switch `debug/power-suspend`, not verified on the console):
+  the session no longer depends on the USB stick across Sony's suspend to RAM. Sony's
+  power manager unmounts the stick before it suspends and the stick can come back as a
+  new device, while Lumen's session scripts and its button daemon ran from the stick and
+  kept logs open on it: after the resume they read from a device that was gone.
+  With the switch, `boot.sh`, `run.sh`, `power.sh` and `lumen-buttons` now run from
+  copies in RAM (`/tmp/lumen-run`) and log there; `power.sh suspend` lists whatever still
+  uses the stick, writes the logs out and unmounts it; `power.sh resume` records what the
+  kernel did with the USB bus, waits up to 20 s for the stick (sda1 / sdb1, label SONY*),
+  mounts it and only then starts the compositor and the frontend. If the stick does not
+  come back the console restarts instead of staying on a black screen.
+  Without the switch nothing changes: POWER is ignored, as before.
+- To test on the console: create an empty file `lumen/debug/power-suspend` on the stick,
+  boot, press POWER (red LED), press it again. Whatever happens, `lumen/logs/suspend.log`
+  and `lumen/logs/boot.log` on the stick now tell the story (who held the stick, how it
+  was unmounted, the kernel's messages at the resume, which device came back).
+
 ## [0.14.0] - 2026-11-15
 
 Menus that speak the dashboard's language, and a generic launch animation for systems
