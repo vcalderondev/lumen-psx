@@ -104,6 +104,11 @@ retroarch_original = video_smooth=false
 - Lists are **comma-separated** `key=value` pairs (`;` starts a comment, so it cannot
   separate pairs). Keys are `[A-Za-z0-9_-]`; values may not contain `,` `=` `"`.
   Invalid pairs are skipped (and logged) when the launch request is written.
+- `native_720` / `native_1080` (optional) add a third level, **Native**: core options that
+  render at the display's own resolution. The list for the current output is used (1080p,
+  else 720p; the other one when only one is declared), with `retroarch_native` (default:
+  `retroarch_enhanced`). Systems without them keep two levels; a stored `native` then
+  means Enhanced. Shipped: n64 (960x720 / 1440x1080) and psp (1440x816 / 1920x1088).
 - A system "has graphics" when `enhanced` or `retroarch_enhanced` is non-empty.
 - `enhanced` / `original` are core options. At launch the chosen list goes into the
   launch request as `opt.*` lines, and `run.sh` merges them into
@@ -129,7 +134,7 @@ Shipped presets:
 |---|---|---|
 | psx, psxstock | PCSX-ReARMed NEON enhancement (high internal resolution) | enhancement off |
 | snes, megadrive, gba, arcade | `video_smooth=true` (bilinear filter) | `video_smooth=false` |
-| n64 | 640x480, LOD and hybrid filter, bilinear output | the fastest: GLideN64 on its own thread, native 320x240, no depth copy or filters (both: no colour buffer copy to RDRAM, frame duping) |
+| n64 | 640x480 | the console's own 320x240 (both, and Native: GLideN64 on its own thread, no colour / depth buffer copies to RDRAM, no LOD or hybrid filter, frame duping) |
 
 ## Attract-mode demos: `[demo]`
 
