@@ -2257,38 +2257,54 @@ static const icon_t *icon_get(const char *home, const char *name)
 }
 
 /* (re)build the hint texts in the active language; icons stay */
+/* A set's icons and texts are made the first time it is drawn: at start-up only the
+ * carousel's (there are 12 sets, some 45 text textures and 12 icon files on the stick;
+ * most sessions show two or three of them). */
+static unsigned char g_hint_ready[HINTS_COUNT];
+static const char   *g_hint_home = "";
+
+static void hints_set_load(int s)
+{
+   int i, k;
+   g_hint_ready[s] = 1;
+   for (i = 0; i < SET_HINTS && g_hints[s][i].text_key; i++)
+   {
+      hint_gl_t *h = &g_hint_gl[s][i];
+      h->have_icons = 1;
+      for (k = 0; k < 3 && g_hints[s][i].icons[k]; k++)
+      {
+         h->icon[k] = icon_get(g_hint_home, g_hints[s][i].icons[k]);
+         if (!h->icon[k] || !h->icon[k]->tex || h->icon[k]->h <= 0) h->have_icons = 0;
+      }
+      if (!h->have_icons)
+         h->fb = text_tex(g_font_small, tr(g_hints[s][i].fallback_key), &h->fbw, &h->fbh);
+      h->txt = text_tex(g_font_small, tr(g_hints[s][i].text_key), &h->tw, &h->th);
+   }
+}
+
+/* the texts follow the language: dropped, made again when their set is next drawn */
 static void hints_reload(void)
 {
    int s, i;
    for (s = 0; s < HINTS_COUNT; s++)
+   {
       for (i = 0; i < SET_HINTS && g_hints[s][i].text_key; i++)
       {
          hint_gl_t *h = &g_hint_gl[s][i];
          if (h->fb) glDeleteTextures(1, &h->fb);
          if (h->txt) glDeleteTextures(1, &h->txt);
          h->fb = h->txt = 0; h->fbw = h->fbh = h->tw = h->th = 0;
-         if (!h->have_icons)
-            h->fb = text_tex(g_font_small, tr(g_hints[s][i].fallback_key), &h->fbw, &h->fbh);
-         h->txt = text_tex(g_font_small, tr(g_hints[s][i].text_key), &h->tw, &h->th);
       }
+      g_hint_ready[s] = 0;
+   }
 }
 
-/* icons once ($home/assets/icons/<name>.png), then the texts */
+/* icons from $home/assets/icons/<name>.png (loaded once each, shared by the sets) */
 static void hints_load(const char *home)
 {
-   int s, i, k;
-   for (s = 0; s < HINTS_COUNT; s++)
-      for (i = 0; i < SET_HINTS && g_hints[s][i].text_key; i++)
-      {
-         hint_gl_t *h = &g_hint_gl[s][i];
-         h->have_icons = 1;
-         for (k = 0; k < 3 && g_hints[s][i].icons[k]; k++)
-         {
-            h->icon[k] = icon_get(home, g_hints[s][i].icons[k]);
-            if (!h->icon[k] || !h->icon[k]->tex || h->icon[k]->h <= 0) h->have_icons = 0;
-         }
-      }
+   g_hint_home = home;
    hints_reload();
+   hints_set_load(HINTS_CAROUSEL);
 }
 
 /* section 5.3: text baked into textures follows the language; every other label is
@@ -2348,6 +2364,7 @@ static void hints_draw(int set, float y, float alpha)
    float total = 0, x, gap_hint = 42.0f, avail;
    int i, k, n = 0;
    if (set < 0 || set >= HINTS_COUNT || alpha <= 0.003f) return;
+   if (!g_hint_ready[set]) hints_set_load(set);
    while (n < SET_HINTS && g_hints[set][n].text_key) n++;
    for (i = 0; i < n; i++)
    {
