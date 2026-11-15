@@ -3,6 +3,39 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.14.0] - 2026-11-15
+
+Menus that speak the dashboard's language, and a generic launch animation for systems
+whose hardware Lumen does not know. Checked in psc-sim and built with the console
+toolchain; not yet verified on the console.
+
+### Added
+- Generic launch animation, `launch = cover`: the game's cover turns once about itself
+  with a halo of its accent colour and flies into the camera. It is now the fallback for
+  every system that declares neither `[animation] launch` nor `[media] shape`, instead of
+  a made-up cartridge and console (or a CD case). Homebrew apps use it (they were shown as
+  a HuCard going into a PC Engine). Systems with a declared shape keep their hardware
+  animation.
+
+### Changed
+- Menus redesigned to follow the dashboard's language (design source:
+  [lumen-design](https://github.com/vcalderondev/lumen-design)): every menu is a glass card
+  over the dimmed game art, the focus is the same white ring as on the tiles, and no
+  selection is a filled bar of colour any more.
+  - Settings: no longer an opaque full-screen list. The status row stays, the sections are
+    a rail on the left and the focused section is already open in a card on the right
+    (Cross / Right enter it, Circle / Left go back, Triangle closes). The Profile card
+    shows the avatar, the name and the games played.
+  - Game menu: a card on the right, so the focused cover and its title stay visible;
+    "Play" is a white primary button.
+  - File picker, on-screen keyboard and confirm dialogs: same cards, ring and buttons;
+    the destructive answer is tinted, never filled.
+- `src/ui.c`: the shared components (scrim, card, ring, focus, kicker, text fitting).
+- The settings no longer clear the screen to a flat colour: the art keeps drawing under
+  them (one more blended full-screen pass; to be measured on the console). Theme keys
+  `pill` and `panel` are no longer used by these menus.
+- Checked in psc-sim at 720p only; the in-game pause dialog still has the old look.
+
 ## [0.13.0] - 2026-11-15
 
 A picture for your profile, picked from the stick, and a dashboard whose focus moves up to
