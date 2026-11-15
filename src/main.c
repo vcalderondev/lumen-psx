@@ -1255,6 +1255,7 @@ static GLuint link_prog(const char *vs, const char *fs)
    return p;
 }
 
+static void mdl_setup(void);   /* meshes.inc: the programs of the modelled hardware */
 static void gl_setup(void)
 {
    /* unit quad in XY, centred, facing +Z: pos(3) uv(2) normal(3) */
@@ -1267,6 +1268,7 @@ static void gl_setup(void)
       -0.5f,  0.5f, 0, 0, 0, 0, 0, 1,
    };
    static const unsigned char white[4] = { 255, 255, 255, 255 };
+   mdl_setup();
    g_prog_box = link_prog(VS_BOX, FS_BOX);
    u_mvp = glGetUniformLocation(g_prog_box, "mvp");
    u_model = glGetUniformLocation(g_prog_box, "model");
@@ -1599,6 +1601,7 @@ static void draw_quad_box(mat4 model, GLuint tex, const float tint[3], float alp
    glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
+static int    g_cost_on;
 #include "meshes.inc"
 
 /* PS1 jewel case, height 1.0: 142 x 125 x 10 mm -> width 1.136, depth 0.08.
@@ -1920,7 +1923,6 @@ static void draw_reflection(const game_t *g, const platform_t *pl, mat4 base, fl
 /* cost meter (LUMEN_COST=1): device pixels covered per frame, split by blending and by
  * shader weight, plus draw calls; logged once per second. A proxy for GPU load that a
  * software renderer can measure too (tools/host). */
-static int    g_cost_on;
 static double g_cost_px_opaque, g_cost_px_blend, g_cost_px_heavy, g_cost_draws;
 static void cost_add(float w, float h, int mode)
 {
@@ -2034,11 +2036,14 @@ static void launch_warmup(void)
          g_disc_tex = (k & 2) ? wtex : 0;
          g_detail = 1;
          glDisable(GL_DEPTH_TEST);   /* reflection pass */
-         glUniform1f(u_refl, -0.5f);
+         launch_refl(-0.5f);
          draw_media(&wg, gp, base, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f);
-         glUniform1f(u_refl, 100.0f);
+         launch_refl(100.0f);
          glEnable(GL_DEPTH_TEST);
          draw_media(&wg, gp, base, 0.0f, 1.0f, gp->kind == KIND_DISC ? 1.0f : 0.0f, 0.0f, 0.0f, 1.0f);
+         /* and opaque, as the launch draws it (blending off for the solid parts of the
+          * models: another state for the driver); a few pixels, cleared with the frame */
+         draw_media(&wg, gp, base, 1.0f, 1.0f, gp->kind == KIND_DISC ? 1.0f : 0.0f, 0.0f, 0.0f, 1.0f);
          if (gp->kind == KIND_DISC)
          {
             glDisable(GL_DEPTH_TEST);
@@ -4180,9 +4185,13 @@ int main(int argc, char **argv)
    double b_draw = 0, b_swap = 0;   /* bench: time issuing frames / blocked in the swap */
    SDL_GameController *pad = NULL;
    double t0 = now_s(), last, fps_t, info_t = 0, play_t = -1;
-   float play_pt = 0.0f;   /* launch clock: the sum of the (clamped, <= 50 ms) frame times since
-                            * Play, so a slow frame never skips part of the animation (it was
-                            * t - play_t: a 560 ms stall on the first frame jumped 0.6 s ahead) */
+   float play_pt = 0.0f;   /* launch clock: the sum of the frame times since Play, each clamped to
+                            * 100 ms, so a stall never skips part of the animation (it was
+                            * t - play_t: a 560 ms stall on the first frame jumped 0.6 s ahead)
+                            * and anything from 10 fps up plays in real time (clamped to 50 ms
+                            * like the springs, it ran slow under 20 fps) */
+   float launch_dt = 0.0f, lt_sum = 0.0f, lt_max = 0.0f;   /* launch frame times (real, unclamped) */
+   int lt_n = 0, lt_slow = 0;
    int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0, crt_on = 0;
    int held_dir = 0; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
@@ -4370,7 +4379,11 @@ int main(int argc, char **argv)
    }
    home_plat = sel_plat; home_sel = sel;
 
-   g_proj = m4_perspective(38.0f * (float)M_PI / 180.0f, (float)W / H, 0.1f, 50.0f);
+   /* the launch scene (the only 3D) lives 2 to 7 units from the camera: a near plane at 1
+    * instead of 0.1 gives the console's 16-bit depth buffer ten times the precision there
+    * (steps of 0.03 mm of a model instead of 0.3 mm, which is what lay between a label
+    * and its cartridge) */
+   g_proj = m4_perspective(38.0f * (float)M_PI / 180.0f, (float)W / H, 1.0f, 30.0f);
    g_view = m4_translate(0, 0.22f, -4.7f);
    g_vp = m4_mul(g_proj, g_view);
    g_ortho = m4_ortho(0, W, H, 0);
@@ -4440,8 +4453,16 @@ int main(int argc, char **argv)
       if (pl && sel_plat >= g_nreal_plat && pl->count) coll_row_follow(pl, pl->first + (sel < pl->count ? sel : 0));
       int n = pl ? pl->count : 0, move = 0, plat_move = 0, page = 0, play = 0, att_swallow, restore = -1, want_menu = 0;
       ui_nav_t fnav;   /* one navigation frame shared by the panel and the game menu (auto-repeat state) */
+      launch_dt = dt > 0.10f ? 0.10f : dt;   /* a stall (>= 100 ms) still does not skip the animation */
+      if (play_t >= 0 && t > play_t)
+      {  /* how the launch ran on this machine: one line in the log when it ends */
+         lt_n++; lt_sum += dt;
+         if (dt > lt_max) lt_max = dt;
+         if (dt > 0.025f) lt_slow++;
+      }
       if (dt > 0.05f) dt = 0.05f;
       last = t;
+      if (g_cost_on) mc_frame();
 
       memset(in_pressed, 0, sizeof(in_pressed));
       while (SDL_PollEvent(&e))
@@ -4691,7 +4712,9 @@ int main(int argc, char **argv)
          float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
          float pdt = 0.0f;   /* launch clock step this frame */
-         if (play_t >= 0 && t > play_t) { pdt = g_launch_shots ? 1.0f / 30.0f : dt; play_pt += pdt; }
+         /* the launch runs on real time (launch_dt): at 15 fps it lasts what it lasts at
+          * 60, it does not stretch with the frame time like the dashboard's springs */
+         if (play_t >= 0 && t > play_t) { pdt = g_launch_shots ? 1.0f / 30.0f : launch_dt; play_pt += pdt; }
          if (play_t >= 0)
          {
             float pt = play_pt, u, end = 2.8f, fl_t = 2.35f;
@@ -4766,7 +4789,12 @@ int main(int argc, char **argv)
             }
             flash = clampf(1.0f - fabsf(pt - fl_t) / 0.22f, 0, 1);
             fade = clampf((pt - fl_t) / 0.30f, 0, 1);
-            if (pt > end) { exit_code = 10; running = 0; }
+            if (pt > end)
+            {
+               exit_code = 10; running = 0;
+               if (lt_n) logf_("launch: %d frames in %.2f s (%.1f fps), worst %.0f ms, %d over 25 ms; animation %.2f s",
+                               lt_n, lt_sum, lt_n / lt_sum, lt_max * 1000.0f, lt_slow, end);
+            }
 #undef SMOOTH
          }
          else
@@ -4857,7 +4885,7 @@ int main(int argc, char **argv)
             glUniform3fv(u_light, 1, light);
             glUniform3fv(u_cam, 1, cam);
          }
-         glUniform1f(u_refl, 100.0f);   /* reflections off */
+         launch_refl(100.0f);   /* reflections off */
          glEnable(GL_DEPTH_TEST);
          glDepthFunc(GL_LEQUAL);
          /* 3D only while launching: the selected game's case / cartridge / marquee */
@@ -4905,9 +4933,9 @@ int main(int argc, char **argv)
                             m4_mul(m4_rot_y(g->ry.x + sway), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
                   mat4 mir = m4_mul(m4_translate(0, 2.0f * floor_y, 0), m4_mul(m4_scale(1, -1, 1), rb));
                   glDisable(GL_DEPTH_TEST);
-                  glUniform1f(u_refl, floor_y);
+                  launch_refl(floor_y);
                   draw_media(g, gp, mir, g->al.x * (1.0f - fade) * (1.0f - zoom), op, gp->kind == KIND_DISC ? lift : 0.0f, 0.0f, spin, lit);
-                  glUniform1f(u_refl, 100.0f);
+                  launch_refl(100.0f);
                   glEnable(GL_DEPTH_TEST);
                }
                base = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x),
@@ -5129,9 +5157,9 @@ int main(int argc, char **argv)
       if (g_cost_on && play_t >= 0)
       {  /* launch trace: one line per frame (pt, frame time, CPU issuing, swap, cost) */
          double fpx = g_cost_px_opaque + g_cost_px_blend, fh = g_cost_px_heavy;
-         logf_("launch frame: pt %.3f dt %.1f ms, update %.1f ms, draw %.1f ms, swap %.1f ms, %.2f Mpx (heavy %.2f)",
+         logf_("launch frame: pt %.3f dt %.1f ms, update %.1f ms, draw %.1f ms, swap %.1f ms, %.2f Mpx (heavy %.2f) | mesh %.0f tris %.0f verts %.0f draws, %.2f Mpx blended, %.2f Mpx opaque",
                play_pt, dt * 1000.0, (t_upd - t) * 1000.0, (t_pre - t_upd) * 1000.0, (now_s() - t_pre) * 1000.0,
-               (fpx - lp_px) / 1e6, (fh - lp_heavy) / 1e6);
+               (fpx - lp_px) / 1e6, (fh - lp_heavy) / 1e6, g_mc_tris, g_mc_verts, g_mc_draws, g_mc_px_blend / 1e6, g_mc_px_opaque / 1e6);
       }
       {  /* bench: <home>/bench present -> two rounds (vsync on, then off: frame rates
           * not quantised to 60/30/20), each turning one more thing off per step; per
