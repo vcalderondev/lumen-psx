@@ -14,6 +14,21 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   0.05 - 0.10 mm; 134,000 -> 104,000 triangles, 402,000 -> 86,000 vertices, 12.6 -> 2.3 MB
   to read from the USB stick at start-up).
 - The launch runs on real time down to 10 fps (it ran slow under 20 fps).
+- A more responsive dashboard at 1080p, same picture. The window has no multisampling
+  any more: the launch's 3D is antialiased in its own 4x target (`scene_aa=0` restores
+  the window's MSAA) and the disc's and coin's round edges are smooth. A change of
+  background is one pass instead of two, covers no longer make the GPU shade the
+  background under them (`tile_split=0` to compare), soft shadows are baked once per
+  size, the settings section costs a tenth, generated backgrounds redraw 20 times a
+  second.
+- Nothing waits for the USB stick on the render thread: the log is written by its own
+  thread, a decoded background is uploaded a strip per frame.
+- Start-up: the library scan lists each folder once (it asked the stick for up to 12
+  file names per game) and the linked shaders are cached on the stick
+  (`cache/shaders`, `shader_cache=0` to turn it off). `boot:` lines in the log time
+  each start-up phase; an empty `debug/perf` file adds frame times, stalls and input
+  latency once per second.
+- Launching a game with the same graphics preset as last time writes nothing to the stick.
 
 ### Fixed
 - Stripes across cartridge labels and case covers in the launch (the print fought with
