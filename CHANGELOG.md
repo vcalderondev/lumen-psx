@@ -15,6 +15,12 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   `debug/no-watchdog` turns it off. Tested under ARMv7 emulation with the Nintendo 64
   core hung on a truncated ROM, a game stopped mid-session and a healthy game; not yet
   verified on the console.
+- Nintendo 64 graphics presets (`systems/n64.ini`): Mupen64Plus-Next's defaults are too
+  heavy for the console (Super Mario 64 ran slow on it). Original is the fastest
+  (GLideN64 on its own thread, native 320x240, no depth copy, no LOD or hybrid filter),
+  Enhanced keeps 640x480 and the filters on a single thread; both drop the colour buffer
+  copy to RDRAM and dupe frames. Core option keys may now contain `-`. Checked under ARMv7
+  emulation with homebrew test ROMs; speed on the console not yet measured.
 - `logs/session.log` records the size of the launched content (a truncated copy is the
   usual reason a game never starts).
 ## [0.9.2] - 2026-11-15
