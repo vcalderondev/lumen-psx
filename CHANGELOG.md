@@ -3,7 +3,9 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.9.2] - 2026-11-15
+
+Lighter launch animations. Measured in the simulator; not yet timed on a console.
 
 ### Changed
 - Launch animations: several times cheaper for the console's GPU, same picture. The
@@ -14,6 +16,8 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   0.05 - 0.10 mm; 134,000 -> 104,000 triangles, 402,000 -> 86,000 vertices, 12.6 -> 2.3 MB
   to read from the USB stick at start-up).
 - The launch runs on real time down to 10 fps (it ran slow under 20 fps).
+- `logs/lumen.log` gets one line per launch with how it ran (`launch: N frames in X s
+  (fps), worst frame`).
 
 ### Fixed
 - Stripes across cartridge labels and case covers in the launch (the print fought with
