@@ -102,7 +102,7 @@ retroarch_original = video_smooth=false
 ```
 
 - Lists are **comma-separated** `key=value` pairs (`;` starts a comment, so it cannot
-  separate pairs). Keys are `[A-Za-z0-9_]`; values may not contain `,` `=` `"`.
+  separate pairs). Keys are `[A-Za-z0-9_-]`; values may not contain `,` `=` `"`.
   Invalid pairs are skipped (and logged) when the launch request is written.
 - A system "has graphics" when `enhanced` or `retroarch_enhanced` is non-empty.
 - `enhanced` / `original` are core options. At launch the chosen list goes into the
@@ -128,7 +128,8 @@ Shipped presets:
 | system | Enhanced | Original |
 |---|---|---|
 | psx, psxstock | PCSX-ReARMed NEON enhancement (high internal resolution) | enhancement off |
-| snes, megadrive, gba, arcade, n64 | `video_smooth=true` (bilinear filter) | `video_smooth=false` |
+| snes, megadrive, gba, arcade | `video_smooth=true` (bilinear filter) | `video_smooth=false` |
+| n64 | 640x480, LOD and hybrid filter, bilinear output | the fastest: GLideN64 on its own thread, native 320x240, no depth copy or filters (both: no colour buffer copy to RDRAM, frame duping) |
 
 ## Attract-mode demos: `[demo]`
 

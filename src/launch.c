@@ -15,7 +15,7 @@ static int match(const char *s, int lower_only)
    {
       char c = *s;
       if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') continue;
-      if (lower_only && c == '-') continue;
+      if (c == '-') continue;   /* profile ids; core option keys (mupen64plus-...) */
       if (!lower_only && c >= 'A' && c <= 'Z') continue;
       return 0;
    }
