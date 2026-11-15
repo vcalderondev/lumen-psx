@@ -40,7 +40,7 @@ mkdir -p /tmp/app /tmp/diag/sim/payload/bin
 cd /src
 gcc -O2 -std=gnu11 -w -Ithird_party -I/usr/include/SDL2 -D_REENTRANT \
   src/main.c src/i18n.c src/settings.c src/panel.c src/profiles.c src/launch.c src/attract.c \
-  src/music.c src/status.c src/stats.c src/welcome.c src/collections.c src/gamemenu.c src/theme.c src/crt.c \
+  src/music.c src/status.c src/stats.c src/welcome.c src/collections.c src/gamemenu.c src/theme.c src/crt.c src/filepicker.c src/image.c \
   -o /tmp/app/lumen -lSDL2 -lSDL2_image -lSDL2_ttf -lGLESv2 -lm -lpthread
 gcc -O2 -std=gnu99 -Wall -Wextra $(pkg-config --cflags sdl2) -o /tmp/diag/sim/payload/bin/lumen-splash \
   /boot/splash/lumen-splash.c -lSDL2 -ldl

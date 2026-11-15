@@ -6,10 +6,11 @@
 /* help bar sets (main.c draws them; the panel says which one applies) */
 enum { HINTS_CAROUSEL, HINTS_PANEL_ROOT, HINTS_PANEL_PAGE, HINTS_PANEL_LIST, HINTS_PANEL_INFO,
        HINTS_OSK, HINTS_CONFIRM, HINTS_ATTRACT, HINTS_WELCOME, HINTS_WELCOME_LAST, HINTS_GAMEMENU,
-       HINTS_GAMEMENU_FOLDERS, HINTS_COUNT };
+       HINTS_GAMEMENU_FOLDERS, HINTS_FILEPICKER, HINTS_DASH_TABS, HINTS_DASH_PROFILE, HINTS_COUNT };
 
 void  panel_init(void);                 /* after fonts + i18n + settings */
 void  panel_open(void);
+void  panel_open_profile(void);        /* straight into the Profile page (dashboard: Cross on the avatar) */
 void  panel_shutdown(void);             /* on exit: commit pending edits, save settings */
 int   panel_active(void);               /* 1 while open or closing (input owned by the panel) */
 float panel_amount(void);               /* 0..1 open spring, for the backdrop and hint fade */

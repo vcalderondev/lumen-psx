@@ -3,6 +3,30 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.13.0] - 2026-11-15
+
+A picture for your profile, picked from the stick, and a dashboard whose focus moves up to
+the system tabs and the profile. Checked in psc-sim and built with the console toolchain;
+not yet verified on the console.
+
+### Added
+- Profile avatar from a picture: Settings > Profile > Avatar opens a file picker on the
+  USB stick; the chosen PNG / JPG / BMP / GIF is cropped to its centre square, scaled to
+  256 px and saved as `profiles/<id>/avatar.png`. "Remove avatar" goes back to the
+  initials.
+- Dashboard focus moves up: Up from the games reaches the system tabs (Left / Right change
+  the system, Cross or Down go back), Up again the profile (Cross opens Settings >
+  Profile).
+- File picker (`src/filepicker.c`): a reusable card that browses the stick's folders
+  (folders first, files filtered by extension, preview of the highlighted image, last
+  folder remembered per use in `picker.<id>`). Previews and the caller's `accept()` run on
+  a worker thread, so a 12 MP photo never blocks a frame. `src/image.c` holds the decode /
+  crop / scale / atomic PNG write helpers.
+
+### Changed
+- D-pad Up / Down no longer change the system directly: they move the dashboard focus.
+  L2 / R2 change the system from anywhere, as before.
+
 ## [0.12.2] - 2026-11-15
 
 Games start again and no longer stall on a slow stick. psc-platform 2.4.1.

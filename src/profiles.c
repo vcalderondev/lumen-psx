@@ -16,6 +16,7 @@
 #include "profiles.h"
 #include "settings.h"
 #include "i18n.h"
+#include "image.h"
 
 static profile_t s_prof[MAX_PROFILES];
 static int       s_n;
@@ -106,6 +107,51 @@ static int cmp_created(const void *a, const void *b)
    return strcmp(x->id, y->id);
 }
 
+static int avatar_exists(const char *id)
+{
+   char path[400];
+   struct stat st;
+   snprintf(path, sizeof(path), "%s/%s/avatar.png", s_dir, id);
+   return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+void profiles_avatar_refresh(const char *id)
+{
+   int i = profiles_find(id);
+   if (i >= 0) s_prof[i].avatar = avatar_exists(id);
+}
+
+/* runs on a worker thread (the file picker's): reads s_dir only, never s_prof */
+int profiles_set_avatar(const char *id, const char *image)
+{
+   char dir[340], path[400];
+   SDL_Surface *sf;
+   int rc;
+   if (!id || !valid_id(id) || !image) return -3;
+   if (!(sf = image_load_scaled(image, AVATAR_PX, 1, NULL, NULL))) { logf_("profiles: cannot read image %s", image); return -3; }
+   snprintf(dir, sizeof(dir), "%s/%s", s_dir, id);
+   snprintf(path, sizeof(path), "%s/avatar.png", dir);
+   rc = (mkdir_p1(s_dir) || mkdir_p1(dir)) ? -1 : image_save_png(sf, path);
+   SDL_FreeSurface(sf);
+   if (rc != 0) { logf_("profiles: cannot write %s", path); return -3; }
+   logf_("profiles: avatar of %s from %s", id, image);
+   return 0;
+}
+
+int profiles_clear_avatar(const char *id)
+{
+   char dir[340], path[400];
+   int i = profiles_find(id);
+   if (i < 0) return -3;
+   snprintf(dir, sizeof(dir), "%s/%s", s_dir, id);
+   snprintf(path, sizeof(path), "%s/avatar.png", dir);
+   if (unlink(path) != 0 && errno != ENOENT) { logf_("profiles: remove %s: %s", path, strerror(errno)); return -3; }
+   settings_fsync_dir(dir);
+   s_prof[i].avatar = 0;
+   logf_("profiles: avatar of %s removed", id);
+   return 0;
+}
+
 int profiles_load(const char *home)
 {
    DIR *d;
@@ -136,6 +182,7 @@ int profiles_load(const char *home)
       closedir(d);
    }
    if (s_n > 2) qsort(&s_prof[1], s_n - 1, sizeof(profile_t), cmp_created);
+   { int i; for (i = 0; i < s_n; i++) s_prof[i].avatar = avatar_exists(s_prof[i].id); }
    logf_("profiles: %d (active %s)", s_n, profiles_active()->id);
    return s_n;
 }
