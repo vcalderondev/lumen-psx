@@ -117,6 +117,58 @@ static void log_sync_atexit(void)
 
 double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
 
+/* perf probes. Startup: one "boot:" line per phase (always; the splash's own frames are
+ * part of the phase they follow). With LUMEN_COST=1 or <home>/debug/perf, once per
+ * second: the frame's CPU time (update = input, logic, uploads; draw = issuing GL), the
+ * time blocked in the swap, their worst frame, and the latency of the button presses of
+ * that second (SDL event timestamp -> the swap of the frame that shows it returned). */
+static int    g_perf_on;
+static double g_boot_last;
+static void boot_mark(const char *what)
+{
+   double n = now_s();
+   if (g_boot_last > 0.0) logf_("boot: %-10s %5.0f ms", what, (n - g_boot_last) * 1000.0);
+   g_boot_last = n;
+}
+/* main-thread work that can hold a frame back (uploads, text rendering): logged when a
+ * single piece takes over 2 ms */
+static void perf_stall(const char *what, double since)
+{
+   double ms = (now_s() - since) * 1000.0;
+   if (g_perf_on && ms > 2.0) logf_("perf: stall %s %.1f ms", what, ms);
+}
+static struct { int frames, slow, nin; double upd, draw, swap, upd_max, draw_max, swap_max, in_sum, in_max; Uint32 in_ts[8]; int in_n; } g_pf;
+static void perf_input(Uint32 ts) { if (g_perf_on && g_pf.in_n < 8) g_pf.in_ts[g_pf.in_n++] = ts; }
+static void perf_frame(double t, double t_upd, double t_pre, double t_end)
+{
+   static double last;
+   const double u = t_upd - t, d = t_pre - t_upd, w = t_end - t_pre;
+   int i;
+   if (!g_perf_on) return;
+   g_pf.frames++; g_pf.upd += u; g_pf.draw += d; g_pf.swap += w;
+   if (u > g_pf.upd_max) g_pf.upd_max = u;
+   if (d > g_pf.draw_max) g_pf.draw_max = d;
+   if (w > g_pf.swap_max) g_pf.swap_max = w;
+   if (t_end - t > 0.025) g_pf.slow++;
+   for (i = 0; i < g_pf.in_n; i++)
+   {
+      double l = (double)(Uint32)(SDL_GetTicks() - g_pf.in_ts[i]);
+      g_pf.in_sum += l; g_pf.nin++;
+      if (l > g_pf.in_max) g_pf.in_max = l;
+   }
+   g_pf.in_n = 0;
+   if (t - last < 1.0) return;
+   if (last > 0.0 && g_pf.frames)
+   {
+      const double k = 1000.0 / g_pf.frames;
+      logf_("perf: %d frames (%d over 25 ms), update %.2f ms (max %.1f), draw %.2f ms (max %.1f), swap %.1f ms (max %.1f)",
+            g_pf.frames, g_pf.slow, g_pf.upd * k, g_pf.upd_max * 1000.0, g_pf.draw * k, g_pf.draw_max * 1000.0,
+            g_pf.swap * k, g_pf.swap_max * 1000.0);
+      if (g_pf.nin) logf_("perf: input latency %.0f ms avg, %.0f ms max (%d presses)", g_pf.in_sum / g_pf.nin, g_pf.in_max, g_pf.nin);
+   }
+   memset(&g_pf, 0, sizeof(g_pf)); last = t;
+}
+
 static long rss_kb(void)
 {
    char line[256]; long kb = -1;
@@ -2158,7 +2210,10 @@ static void in_event(const SDL_Event *e)
 {
    if (e->type == SDL_KEYDOWN || e->type == SDL_CONTROLLERBUTTONDOWN || e->type == SDL_JOYBUTTONDOWN ||
        (e->type == SDL_JOYHATMOTION && e->jhat.value != SDL_HAT_CENTERED))
+   {
       in_last_activity = now_s();
+      if (e->type != SDL_KEYDOWN || !e->key.repeat) perf_input(e->common.timestamp);
+   }
    switch (e->type)
    {
    case SDL_JOYDEVICEADDED:
@@ -3344,6 +3399,11 @@ static void test_parse(void)
       }
    }
    g_cost_on = getenv("LUMEN_COST") != NULL;
+   {
+      char pp[300];
+      snprintf(pp, sizeof(pp), "%s/debug/perf", g_home);
+      g_perf_on = g_cost_on || file_exists(pp);
+   }
    if (g_ntin || g_ntshot) logf_("test: %d inputs, %d screenshots", g_ntin, g_ntshot);
 }
 
@@ -3615,6 +3675,7 @@ int main(int argc, char **argv)
    if (log_path) g_log = fopen(log_path, "w");
    atexit(log_sync_atexit);
    logf_("lumen %s start", LUMEN_VERSION);
+   boot_mark("");
 
    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0)
    { logf_("SDL_Init: %s", SDL_GetError()); return 1; }
@@ -3637,6 +3698,7 @@ int main(int argc, char **argv)
    i18n_set_language(settings_get("language", "es"));
    profiles_load(g_home);
    coll_load(g_home, profiles_active()->id);
+   boot_mark("sdl+config");
 
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -3696,8 +3758,10 @@ int main(int argc, char **argv)
    g_ui_scale = g_dh / (float)H;
    logf_("output %dx%d, ui scale %.3f", g_dw, g_dh, g_ui_scale);
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
+   boot_mark("window+gl");
    gl_setup();
    crt_prepare(g_dw, g_dh);   /* CRT filter on: its shader and target now, not on the first frame */
+   boot_mark("shaders");
    g_ortho = m4_ortho(0, W, H, 0);
    if (!dialog) { g_splash_fill = 0.0f; splash_step(win, 0.0f); }   /* fade in, letters dark */
    make_fx_textures();
@@ -3719,6 +3783,7 @@ int main(int argc, char **argv)
    g_font_hero  = open_font(fonts_semi, 50);
    g_font_tab   = open_font(fonts_med, 19);
    g_font_name  = open_font(fonts_med, 21);
+   boot_mark("fx+fonts");
    splash_step(win, 0.2f);
    if (dialog)   /* in-game dialog: no library, no music */
    {
@@ -3729,9 +3794,11 @@ int main(int argc, char **argv)
    scan_library();
    build_platform_index();
    logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
+   boot_mark("scan");
    splash_step(win, 0.45f);
    platforms_load_art();
    coll_rows_build();
+   boot_mark("tab art");
    splash_step(win, 0.6f);
 
    /* resume last selection */
@@ -3776,11 +3843,14 @@ int main(int argc, char **argv)
    memset(&dpos, 0, sizeof(dpos)); dpos.x = (float)sel;
    asset_path(g_menu_music, sizeof(g_menu_music), "music/menu.ogg", "music/menu.ogg");
    if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
+   boot_mark("resume");
    if (music_init() == 0) ui_sound_changed();
+   boot_mark("audio");
    hints_load(g_home);
    panel_init();
    welcome_init();
    attract_init(start_attract, g_home);
+   boot_mark("ui");
    memset(&att, 0, sizeof(att));
 
    /* first frame positions: start off to the right so they fly in */
@@ -3792,6 +3862,7 @@ int main(int argc, char **argv)
 
    splash_step(win, 0.8f);
    launch_warmup();
+   boot_mark("warm-up");
    splash_step(win, 1.0f);
    {
       char sp[300];
@@ -3804,6 +3875,7 @@ int main(int argc, char **argv)
       }
    }
    last = fps_t = now_s();
+   boot_mark("last splash");
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
 
@@ -3974,7 +4046,7 @@ int main(int argc, char **argv)
       }
       /* disc art of the settled selection, ready before Play */
       if (n && pl->kind != KIND_ARCADE && play_t < 0 && t - sel_t > 0.4) disc_want(g_games[pl->first + sel].disc);
-      disc_poll_upload();
+      { double ps = now_s(); disc_poll_upload(); perf_stall("disc upload", ps); }
 
       /* background: once the selection has settled, the game's image (decoded on the
        * worker) or a background generated from its cover colours */
@@ -3993,7 +4065,7 @@ int main(int argc, char **argv)
             else bg_push(bg_gen_layer(bg_game));
          }
       }
-      bg_poll_upload();
+      { double ps = now_s(); bg_poll_upload(); perf_stall("background upload", ps); }
       bg_advance(dt);
 
       /* music: the game's track once the selection has settled 0.8 s, else the menu
@@ -4013,7 +4085,7 @@ int main(int argc, char **argv)
          if (want) music_play(want, fade_s);
          music_duck(0.55f * panel_amount());
       }
-      status_update(t, &g_status);
+      { double ps = now_s(); status_update(t, &g_status); perf_stall("status", ps); }
 
       /* cover streaming: decoded on the worker, nearest to the selection first */
       {
@@ -4025,8 +4097,10 @@ int main(int argc, char **argv)
          SDL_UnlockMutex(cv_mx);
          if (done >= 0)
          {
+            double ps = now_s();
             game_finish_cover(&g_games[done], cs, avg, acc);
             if (cs) SDL_FreeSurface(cs);
+            perf_stall("cover upload", ps);
          }
          if (n)
          {
@@ -4041,7 +4115,7 @@ int main(int argc, char **argv)
                   game_t *g = &g_games[gi];
                   if (g->tex_state) continue;
                   if (g->has_cover) { if (!cv_busy) { g->tex_state = 2; cover_request(gi, g->cover); } placed = 1; }
-                  else { game_placeholder(g); placed = 1; }
+                  else { double ps = now_s(); game_placeholder(g); placed = 1; perf_stall("placeholder", ps); }
                }
             }
             for (k = 0; k < g_ngames; k++)
@@ -4062,7 +4136,7 @@ int main(int argc, char **argv)
                game_t *cg = &g_games[pl->first + sel];
                if ((cg->tex_state == 1 || cg->tex_state == -1) && !cg->back_tex &&
                    ((t - sel_t > 0.2 && att.amount < 0.001f && !panel_active()) || play_t >= 0))
-                  cg->back_tex = card_tex(cg, 1);
+               { double ps = now_s(); cg->back_tex = card_tex(cg, 1); perf_stall("back card", ps); }
             }
          }
       }
@@ -4503,6 +4577,7 @@ int main(int argc, char **argv)
          t_pre = pre;
          SDL_GL_SwapWindow(win);
          b_draw += pre - t; b_swap += now_s() - pre;
+         perf_frame(t, t_upd, pre, now_s());
          if (frames == 30)
          {  /* boot.sh: a picture is on screen (clears the compositor's one-shot guard) */
             FILE *pf = fopen("/tmp/lumen-presented", "w");
