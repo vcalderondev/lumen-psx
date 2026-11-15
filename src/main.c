@@ -1043,6 +1043,22 @@ static const char *FS_TEX =
    "void main(){ frag = texture(tex, v_uv) * color; }\n";
 static GLuint g_prog_tex;
 static GLint  ut_mvp, ut_color;
+
+/* background crossfade: both layers mixed in one opaque full-screen pass (it was the
+ * next layer alpha-blended over the current one: two full-screen passes for the 0.6 s
+ * of every change of background). ma / mb: uv scale (xy) and offset (zw) of each layer */
+static const char *VS_MIX =
+   "#version 300 es\n"
+   "layout(location=0) in vec3 pos; layout(location=1) in vec2 uv;\n"
+   "uniform mat4 mvp; uniform vec4 ma, mb; out highp vec2 v_a; out highp vec2 v_b;\n"
+   "void main(){ v_a=uv*ma.xy+ma.zw; v_b=uv*mb.xy+mb.zw; gl_Position=mvp*vec4(pos,1.0); }\n";
+static const char *FS_MIX =
+   "#version 300 es\n"
+   "precision mediump float;\n"
+   "in highp vec2 v_a; in highp vec2 v_b; uniform sampler2D ta, tb; uniform float k; out vec4 frag;\n"
+   "void main(){ frag = vec4(mix(texture(ta, v_a).rgb, texture(tb, v_b).rgb, k), 1.0); }\n";
+static GLuint g_prog_mix;
+static GLint  um_mvp, um_ma, um_mb, um_k;
 static int    g_fx_bgflat;   /* bench: draw the background as a flat colour (fill without the fetch) */
 
 static GLuint compile(GLenum type, const char *src)
@@ -1108,6 +1124,14 @@ static void gl_setup(void)
    ut_color = glGetUniformLocation(g_prog_tex, "color");
    glUseProgram(g_prog_tex);
    glUniform1i(glGetUniformLocation(g_prog_tex, "tex"), 0);
+   g_prog_mix = link_prog(VS_MIX, FS_MIX);
+   um_mvp = glGetUniformLocation(g_prog_mix, "mvp");
+   um_ma = glGetUniformLocation(g_prog_mix, "ma");
+   um_mb = glGetUniformLocation(g_prog_mix, "mb");
+   um_k = glGetUniformLocation(g_prog_mix, "k");
+   glUseProgram(g_prog_mix);
+   glUniform1i(glGetUniformLocation(g_prog_mix, "ta"), 0);
+   glUniform1i(glGetUniformLocation(g_prog_mix, "tb"), 1);
 
    glGenVertexArrays(1, &g_vao_quad);
    glBindVertexArray(g_vao_quad);
@@ -2677,6 +2701,51 @@ static void bg_poll_upload(void)
    bg_push(l);
 }
 
+/* a generated layer's picture: its palette and the scrim rendered into its small FBO
+ * (g_prog_2d bound on entry and on return, the frame's target and viewport restored) */
+static void bg_gen_render(bgtex_t *b, double t)
+{
+   const float one[4] = { 1, 1, 1, 1 };
+   float a[3], acc[3], base[3];
+   int k;
+   if (!b->gfbo)
+   {
+      glGenTextures(1, &b->gtex);
+      glBindTexture(GL_TEXTURE_2D, b->gtex);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GEN_W, GEN_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glGenFramebuffers(1, &b->gfbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, b->gtex, 0);
+      if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) logf_("bg: generated FBO incomplete");
+   }
+   memcpy(a, b->a, sizeof(a)); memcpy(acc, b->acc, sizeof(acc));
+   for (k = 0; k < 3; k++)
+   {  /* A a bit more saturated around its mean; base = A darkened */
+      float m = (a[0] + a[1] + a[2]) / 3.0f;
+      a[k] = clampf(m + (a[k] - m) * 1.35f, 0.0f, 1.0f);
+      base[k] = a[k] * 0.22f + 0.015f;
+   }
+   for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
+   glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
+   glViewport(0, 0, GEN_W, GEN_H);
+   glDisable(GL_BLEND);
+   glUniform4f(u2_rect, (float)(0.80 + 0.06 * sin(t * 0.314)), (float)(0.20 + 0.06 * cos(t * 0.271)),
+                        (float)(0.22 + 0.06 * cos(t * 0.231)), (float)(0.88 + 0.05 * sin(t * 0.293)));
+   glUniform4f(u2_aux0, base[0], base[1], base[2], 0);
+   glUniform4f(u2_aux1, a[0], a[1], a[2], 0);
+   glUniform4f(u2_aux2, acc[0], acc[1], acc[2], 0);
+   draw_2d(0, 0, 0, W, H, one, 7);
+   glEnable(GL_BLEND);
+   glUniform4f(u2_aux0, g_bg_dim, 0, 0, 0);
+   draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
+   glBindFramebuffer(GL_FRAMEBUFFER, crt_target());   /* the window, or the CRT filter's target */
+   glViewport(0, 0, g_dw, g_dh);
+}
+
 /* draw a layer: images "cover"-fitted with a slow drift (scrim already baked in);
  * generated ones from their palette, rendered with the scrim into a small FBO */
 static void bg_draw(bgtex_t *b, float alpha, double t)
@@ -2694,49 +2763,59 @@ static void bg_draw(bgtex_t *b, float alpha, double t)
    }
    else if (b->gen)
    {
-      const float one[4] = { 1, 1, 1, 1 };
-      float a[3], acc[3], base[3];
-      int k;
-      if (!b->gfbo)
-      {
-         glGenTextures(1, &b->gtex);
-         glBindTexture(GL_TEXTURE_2D, b->gtex);
-         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GEN_W, GEN_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-         glGenFramebuffers(1, &b->gfbo);
-         glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
-         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, b->gtex, 0);
-         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) logf_("bg: generated FBO incomplete");
-      }
-      memcpy(a, b->a, sizeof(a)); memcpy(acc, b->acc, sizeof(acc));
-      for (k = 0; k < 3; k++)
-      {  /* A a bit more saturated around its mean; base = A darkened */
-         float m = (a[0] + a[1] + a[2]) / 3.0f;
-         a[k] = clampf(m + (a[k] - m) * 1.35f, 0.0f, 1.0f);
-         base[k] = a[k] * 0.22f + 0.015f;
-      }
-      for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
-      glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
-      glViewport(0, 0, GEN_W, GEN_H);
-      glDisable(GL_BLEND);
-      glUniform4f(u2_rect, (float)(0.80 + 0.06 * sin(t * 0.314)), (float)(0.20 + 0.06 * cos(t * 0.271)),
-                           (float)(0.22 + 0.06 * cos(t * 0.231)), (float)(0.88 + 0.05 * sin(t * 0.293)));
-      glUniform4f(u2_aux0, base[0], base[1], base[2], 0);
-      glUniform4f(u2_aux1, a[0], a[1], a[2], 0);
-      glUniform4f(u2_aux2, acc[0], acc[1], acc[2], 0);
-      draw_2d(0, 0, 0, W, H, one, 7);
-      glEnable(GL_BLEND);
-      glUniform4f(u2_aux0, g_bg_dim, 0, 0, 0);
-      draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
-      glBindFramebuffer(GL_FRAMEBUFFER, crt_target());   /* the window, or the CRT filter's target */
-      glViewport(0, 0, g_dw, g_dh);
+      bg_gen_render(b, t);
       if (opaque) glDisable(GL_BLEND);
       draw_2d(b->gtex, 0, H, W, -H, c, 0);   /* FBO rows are bottom-up */
    }
    if (opaque) glEnable(GL_BLEND);
+}
+
+/* the texture of a layer and the uv scale / offset (m) that puts it on a full-screen
+ * quad exactly as bg_draw() does */
+static GLuint bg_layer_tex(bgtex_t *b, double t, float m[4])
+{
+   if (b->tex)
+   {
+      float sx = (float)W / b->w, sy = (float)H / b->h, sc = sx > sy ? sx : sy, w = b->w * sc, h = b->h * sc;
+      m[0] = W / w; m[1] = H / h; m[2] = (w - W) * 0.5f / w; m[3] = (h - H) * 0.5f / h;
+      return b->tex;
+   }
+   bg_gen_render(b, t);
+   m[0] = 1.0f; m[1] = -1.0f; m[2] = 0.0f; m[3] = 1.0f;   /* FBO rows are bottom-up */
+   return b->gtex;
+}
+
+/* the background of the frame: the current layer, the next one crossfading over it
+ * (e: 0 -> 1). While both show, one opaque pass samples the two (FS_MIX) */
+static void bg_draw_layers(float e, double t)
+{
+   float ma[4], mb[4];
+   GLuint ta, tb;
+   mat4 m;
+   if (!g_fx_bg) return;
+   if (bg_empty(&bg_next) || e <= 0.001f) { bg_draw(&bg_cur, 1.0f, t); return; }
+   if (e >= 0.999f) { bg_draw(&bg_next, 1.0f, t); return; }   /* covers the current one */
+   if (bg_empty(&bg_cur) || g_fx_bgflat)
+   {  /* nothing under it yet (startup: over the clear colour), or the bench's flat fill */
+      bg_draw(&bg_cur, 1.0f, t);
+      bg_draw(&bg_next, e, t);
+      return;
+   }
+   ta = bg_layer_tex(&bg_cur, t, ma);
+   tb = bg_layer_tex(&bg_next, t, mb);
+   if (g_cost_on) { glDisable(GL_BLEND); cost_add(W, H, 0); }
+   m = m4_mul(g_ortho, m4_mul(m4_translate(W * 0.5f, H * 0.5f, 0), m4_scale(W, -H, 1)));
+   glDisable(GL_BLEND);
+   glUseProgram(g_prog_mix);
+   glUniformMatrix4fv(um_mvp, 1, GL_FALSE, m.m);
+   glUniform4fv(um_ma, 1, ma);
+   glUniform4fv(um_mb, 1, mb);
+   glUniform1f(um_k, e);
+   glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tb);
+   glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, ta);
+   glDrawArrays(GL_TRIANGLES, 0, 6);
+   glUseProgram(g_prog_2d);
+   glEnable(GL_BLEND);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -4366,8 +4445,7 @@ int main(int argc, char **argv)
             const float ov[4] = { 1, 1, 1, 1 };
             (void)ov;
             g_bg_dim = settings_get_int("bg_dim", 45, 0, 90) / 100.0f;
-            bg_draw(&bg_cur, 1.0f, t);   /* opaque: the scrim is baked into both kinds of layer */
-            if (!bg_empty(&bg_next)) bg_draw(&bg_next, e, t);
+            bg_draw_layers(e, t);   /* opaque: the scrim is baked into both kinds of layer */
          }
          if (g_fx_text && !covered)
          {  /* dashboard UI: dimmed under the panel, gone in the attract scene, fading out
