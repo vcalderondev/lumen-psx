@@ -342,6 +342,8 @@ suspend_wait() {
   [ -f /tmp/lumen-suspending ] || return 1
   slog "suspended: waiting for the resume"
   while [ -f /tmp/lumen-suspending ]; do sleep 0.5; done
+  # the stick did not come back: boot.sh restarts the console
+  [ -f /tmp/lumen-resume-failed ] && exit 3
   slog "resumed"
   return 0
 }
