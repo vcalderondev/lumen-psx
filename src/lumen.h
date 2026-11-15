@@ -9,7 +9,7 @@
 #define W 1280
 #define H 720
 #define MAX_GAMES 2048
-#define MAX_PLATFORMS 16
+#define MAX_PLATFORMS 32   /* systems + Favourites + folders (collections.h) */
 
 enum { KIND_DISC, KIND_CART, KIND_ARCADE };
 enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN };
@@ -50,6 +50,7 @@ extern game_t     g_games[MAX_GAMES];
 extern int        g_ngames;
 extern platform_t g_plat[MAX_PLATFORMS];
 extern int        g_nplat;
+extern int        g_nreal_games, g_nreal_plat;   /* games/platforms of the library; the rest are collections */
 extern char       g_root[256], g_home[256], g_core_dir[256];
 extern TTF_Font  *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
 extern float      g_ui_scale;   /* device px per logical px (1280x720 layout) */
@@ -67,6 +68,7 @@ void   label_set(label_t *l, TTF_Font *f, const char *s);   /* re-renders only w
 void   label_free(label_t *l);
 void   gl_use_2d(void);        /* glUseProgram(g_prog_2d) + sampler 0 */
 void   gl_scissor(float x, float y, float w, float h);   /* logical rect, top-left origin */
+void   ui_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float a);
 
 /* one frame of navigation for UI modules: press edges, with auto-repeat on the directions.
  * back = Circle or Square; erase = Square alone (the keyboard tells them apart) */

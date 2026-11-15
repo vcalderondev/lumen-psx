@@ -19,14 +19,26 @@
 #   LUMEN_MAIN_STATES    save-state folder of the "main" profile
 #   LUMEN_CORE_OPT_DIR   folder holding RetroArch's <Core Name>/<Core Name>.opt
 #                        (graphics presets are merged there; empty: not merged)
+#   LUMEN_RESUME_SLOT    RetroArch save-state slot of "Save and exit" (default 9): every
+#                        normal session starts on it, a resumed one loads it
 #   run_retroarch()      function(core, content, logfile) to launch a game; it must
 #                        apply the extra config in $LUMEN_RA_EXTRA (RetroArch cfg lines)
+#                        and pass --entryslot $LUMEN_RA_ENTRYSLOT when it is set (resume)
+#
+# Save and exit (OPEN in a game, lumen-buttons): the state goes to the resume slot and
+# /tmp/lumen-save-exit is left; after RetroArch exits the content is recorded in
+# $LUMEN_HOME/profiles/<profile>/resume.tsv ("<content>\t<epoch>"), so the frontend asks
+# "continue?" next time (launch request resume=1 -> --entryslot).
+# Homebrew apps (launch request kind=app): content is a native program, started from its
+# folder with the frontend's video driver; its pid is in /tmp/lumen-app.pid (RESET / OPEN
+# quit it, lumen-buttons).
 LUMEN_HOME="${LUMEN_HOME:-$(cd "$(dirname "$0")" && pwd)}"
 LOG="${LUMEN_HOME}/logs"
 RETROARCH="${RETROARCH:-retroarch}"
 LUMEN_MAIN_SAVES=""
 LUMEN_MAIN_STATES=""
 LUMEN_CORE_OPT_DIR=""
+LUMEN_RESUME_SLOT=9
 LUMEN_RA_EXTRA=/tmp/lumen-ra-extra.cfg
 mkdir -p "${LOG}"
 chmod +x "${LUMEN_HOME}/lumen" 2>/dev/null
@@ -39,7 +51,7 @@ slog() { echo "$*" >> "${LOG}/session.log"; }
 # and the ra.* pairs to /tmp/lumen-ra.kv ("key=value" lines). Fails without core/content.
 lumen_parse_launch() {
   L_CORE=""; L_CONTENT=""; L_SYSTEM=""; L_TITLE=""; L_PROFILE=main; L_MODE=normal
-  L_DEMO_SECONDS=60; L_GRAPHICS=""; L_OPT_CORE_NAME=""
+  L_DEMO_SECONDS=60; L_GRAPHICS=""; L_OPT_CORE_NAME=""; L_RESUME=0; L_KIND=game
   : > /tmp/lumen-opt.kv; : > /tmp/lumen-ra.kv
   [ -f "$1" ] || return 1
   first="$(sed -n 1p "$1")"
@@ -57,6 +69,8 @@ lumen_parse_launch() {
           demo_seconds) L_DEMO_SECONDS=$val ;;
           graphics) L_GRAPHICS=$val ;;
           opt_core_name) L_OPT_CORE_NAME=$val ;;
+          resume) L_RESUME=$val ;;
+          kind) L_KIND=$val ;;
           opt.*) echo "${key#opt.}=${val}" >> /tmp/lumen-opt.kv ;;
           ra.*) echo "${key#ra.}=${val}" >> /tmp/lumen-ra.kv ;;
         esac
@@ -70,6 +84,9 @@ lumen_parse_launch() {
   case "$L_PROFILE" in *[!a-z0-9_-]*|"") L_PROFILE=main ;; esac
   case "$L_MODE" in demo) ;; *) L_MODE=normal ;; esac
   case "$L_DEMO_SECONDS" in *[!0-9]*|"") L_DEMO_SECONDS=60 ;; esac
+  case "$L_RESUME" in 1) ;; *) L_RESUME=0 ;; esac
+  case "$L_KIND" in app) ;; *) L_KIND=game ;; esac
+  [ "$L_KIND" = app ] && [ -n "$L_CONTENT" ] && return 0
   [ -n "$L_CORE" ] && [ -n "$L_CONTENT" ]
 }
 
@@ -150,6 +167,10 @@ lumen_build_ra_extra() {
       [ -n "$kvl" ] && echo "${kvl%%=*} = \"${kvl#*=}\"" >> "${LUMEN_RA_EXTRA}"
     done < /tmp/lumen-ra.kv
   fi
+  if [ "$L_MODE" != demo ]; then   # Save and exit writes this slot (lumen-buttons SAVE_STATE)
+    echo "state_slot = \"${LUMEN_RESUME_SLOT}\"" >> "${LUMEN_RA_EXTRA}"
+    echo 'savestate_auto_index = "false"' >> "${LUMEN_RA_EXTRA}"
+  fi
   if [ "$L_MODE" = demo ]; then   # ephemeral: nothing about the demo is kept
     for k in savestate_auto_save savestate_auto_load history_list_enable content_runtime_log \
              content_runtime_log_aggregate sort_savefiles_enable sort_savestates_enable \
@@ -225,7 +246,48 @@ lumen_playlog() {
 }
 
 run_retroarch() {  # core content logfile
-  "${RETROARCH}" --appendconfig "${LUMEN_RA_EXTRA}" -L "$1" "$2" > "$3" 2>&1
+  "${RETROARCH}" --appendconfig "${LUMEN_RA_EXTRA}" ${LUMEN_RA_ENTRYSLOT:+--entryslot "${LUMEN_RA_ENTRYSLOT}"} \
+    -L "$1" "$2" > "$3" 2>&1
+}
+
+# lumen_resume_mark T0REF: after Save and exit, record the content in the profile's
+# resume.tsv (one line per content, the newest wins). With a known state folder the
+# slot's file must be newer than the launch, else the save did not happen.
+lumen_resume_mark() {
+  [ -f /tmp/lumen-save-exit ] || return 0
+  rm -f /tmp/lumen-save-exit
+  rm_base=${L_CONTENT##*/}; rm_base=${rm_base%.*}
+  if [ -n "$L_STATES" ] && [ -d "$L_STATES" ]; then
+    found=$(find "$L_STATES" -name "${rm_base}.state${LUMEN_RESUME_SLOT}" -newer "$1" 2>/dev/null | head -1)
+    if [ -z "$found" ]; then slog "save and exit: no new ${rm_base}.state${LUMEN_RESUME_SLOT} in ${L_STATES}, not marked"; return 0; fi
+  fi
+  rm_dir="${LUMEN_HOME}/profiles/${L_PROFILE}"
+  mkdir -p "$rm_dir" || return 0
+  rm_con=$(printf '%s' "$L_CONTENT" | tr -d '\t\r\n')
+  rm_tab=$(printf '\t')
+  { [ -f "$rm_dir/resume.tsv" ] && grep -vF "${rm_con}${rm_tab}" "$rm_dir/resume.tsv"
+    printf '%s\t%s\n' "$rm_con" "$(date +%s)"; } > "$rm_dir/resume.tsv.tmp" &&
+    mv -f "$rm_dir/resume.tsv.tmp" "$rm_dir/resume.tsv"
+  sync
+  slog "save and exit: ${rm_con} (slot ${LUMEN_RESUME_SLOT})"
+}
+
+# lumen_run_app: a native homebrew program (kind=app), from its own folder. FAT32 sticks
+# may not keep the exec bit: the program then runs from a copy in /tmp.
+lumen_run_app() {
+  app_dir=${L_CONTENT%/*}; app_bin=${L_CONTENT}
+  if [ ! -x "$app_bin" ]; then
+    chmod +x "$app_bin" 2>/dev/null
+    [ -x "$app_bin" ] || { cp -f "$app_bin" /tmp/lumen-app-bin && chmod +x /tmp/lumen-app-bin && app_bin=/tmp/lumen-app-bin; }
+  fi
+  slog "app: ${L_CONTENT} (${L_TITLE:-?})"
+  ( cd "$app_dir" && LUMEN_APP_DIR="$app_dir" SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland}" exec "$app_bin" ) \
+    > "${LOG}/app.log" 2>&1 &
+  app_pid=$!
+  echo "$app_pid" > /tmp/lumen-app.pid
+  wait "$app_pid"
+  slog "app exit=$?"
+  rm -f /tmp/lumen-app.pid /tmp/lumen-app-bin
 }
 [ -f "${LUMEN_HOME}/lumen.conf" ] && . "${LUMEN_HOME}/lumen.conf"
 
@@ -277,12 +339,23 @@ while true; do
     continue
   fi
   lumen_profile_dirs
+  if [ "${L_KIND}" = app ]; then
+    t0=$(date +%s)
+    lumen_run_app
+    lumen_playlog "$t0"
+    continue
+  fi
   lumen_build_ra_extra
-  slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default}, graphics ${L_GRAPHICS:-default}${L_OPT_FILE:+, options ${L_OPT_FILE}})"
+  LUMEN_RA_ENTRYSLOT=""
+  [ "${L_RESUME}" = 1 ] && LUMEN_RA_ENTRYSLOT=${LUMEN_RESUME_SLOT}
+  export LUMEN_RA_ENTRYSLOT
+  rm -f /tmp/lumen-save-exit; : > /tmp/lumen-t0
+  slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default}, graphics ${L_GRAPHICS:-default}${L_OPT_FILE:+, options ${L_OPT_FILE}}${LUMEN_RA_ENTRYSLOT:+, resume slot ${LUMEN_RA_ENTRYSLOT}})"
   t0=$(date +%s)
   lumen_discs
   run_retroarch "${L_CORE}" "${RA_CONTENT}" "${LOG}/retroarch.log"
   slog "retroarch exit=$?"
+  lumen_resume_mark /tmp/lumen-t0
   lumen_playlog "$t0"
 done
 

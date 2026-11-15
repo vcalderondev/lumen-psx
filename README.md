@@ -11,6 +11,9 @@ A lightweight 3D game frontend for the PlayStation Classic.
 - launches games in RetroArch and comes back to the same game afterwards
 - tiny: a single ~75 KB binary; only covers near the selection stay in memory
 - translated UI: Spanish (default), English, Portuguese, French, German, Italian
+- game menu on Start: favourites and folders (shown as their own rows), and "Save and exit"
+  on OPEN with a "continue where you left off?" question on the next Play
+- homebrew apps (`layout = apps`, docs/systems.md) and themes (docs/themes.md)
 
 Target: SDL2 2.0.4, SDL2_image 2.0.1, SDL2_ttf 2.0.14, OpenGL ES 3.2 (PowerVR GE8300),
 Weston 1.11 / Wayland, glibc 2.24, Cortex-A35 (armhf), 1 GB RAM.

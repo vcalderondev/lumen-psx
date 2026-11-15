@@ -15,6 +15,7 @@
 #include "settings.h"
 #include "profiles.h"
 #include "version.h"
+#include "theme.h"
 
 /* ------------------------------------------------------------------------ */
 /* geometry and colours                                                      */
@@ -30,10 +31,11 @@
 #define SLIDE_OFF 560.0f     /* s_slide when closed: drives the open/close motion */
 #define MAX_ROWS 20
 
-static const float C_TXT[3] = { 0.96f, 0.96f, 0.98f };
-static const float C_DIM[3] = { 0.62f, 0.63f, 0.70f };
-static const float C_ACC[3] = { 0.36f, 0.55f, 1.00f };
-static const float C_RED[3] = { 1.00f, 0.42f, 0.42f };
+/* the active theme's (theme.h), set in panel_init; these are Lumen's own */
+static float C_TXT[3] = { 0.96f, 0.96f, 0.98f };
+static float C_DIM[3] = { 0.62f, 0.63f, 0.70f };
+static float C_ACC[3] = { 0.36f, 0.55f, 1.00f };
+static float C_RED[3] = { 1.00f, 0.42f, 0.42f };
 
 static void col(float out[4], const float rgb[3], float a) { out[0] = rgb[0]; out[1] = rgb[1]; out[2] = rgb[2]; out[3] = a; }
 
@@ -68,7 +70,7 @@ enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
        ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500,
-       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_INFO = 900 };
+       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_INFO = 900 };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
  * next boot (settings display / scanout). The compositor is not a choice: boot.sh runs
@@ -103,6 +105,15 @@ static int display_pending(void)
    return out_1080() != out_in_use_1080() || comp_setting() != comp_in_use();
 }
 static void restart_yes(void) { ui_request_reboot(); }
+static void theme_apply_yes(void) { ui_request_restart(); }
+/* index of the theme chosen in the settings (may differ from the one in use until a restart) */
+static int theme_setting_index(void)
+{
+   const char *want = settings_get("theme", "default");
+   int i;
+   for (i = 0; i < theme_count(); i++) if (!strcmp(theme_id(i), want)) return i;
+   return 0;
+}
 
 typedef struct {
    int type, id, enabled, dim, check, enter, at_lo, at_hi;
@@ -117,6 +128,7 @@ static int     s_nrows;
 static char    s_foot[400];            /* page footer text (translated), "" = none */
 
 static int     s_open, s_page, s_sel;
+static int     s_osk_only;             /* keyboard opened from the game menu, panel hidden */
 static spring  s_slide, s_fade, s_px, s_pa, s_hl, s_scroll;
 static long    s_free_tenths = -1;     /* About: free space in tenths of GB, or */
 static long    s_free_mb = -1;         /* in MB below 1 GB; measured when the page opens */
@@ -184,6 +196,7 @@ static char        s_cbuf[300];         /* confirm message */
 
 static void osk_open(const char *title_key, const char *initial, osk_accept_fn accept);
 static void confirm_open(const char *message, confirm_fn on_yes);
+static void confirm_open_ex(const char *message, const char *note_key, const char *yes_key, confirm_fn on_yes);
 
 /* toast */
 static label_t     s_toast;
@@ -316,6 +329,13 @@ static void page_build(void)
       row_add(R_INFO, ID_INFO, tr("display.in_use"), v);
       if ((r = row_add(R_ACTION, ID_DSP_RESTART, tr("display.restart"), NULL)) && !display_pending())
       { r->enabled = 0; r->dim = 1; r->why = "display.nothing_pending"; }
+      {  /* theme: chosen here, applied by restarting Lumen (fonts and art load at start) */
+         int ti = theme_setting_index();
+         if ((r = row_add(R_CHOICE, ID_DSP_THEME, tr("display.theme"), theme_name(ti))))
+         { r->at_lo = ti <= 0; r->at_hi = ti >= theme_count() - 1; if (theme_count() < 2) { r->enabled = 0; r->dim = 1; r->why = "display.no_themes"; } }
+         if ((r = row_add(R_ACTION, ID_DSP_THEME_APPLY, tr("display.theme_apply"), NULL)) && ti == theme_active_index())
+         { r->enabled = 0; r->dim = 1; r->why = "display.theme_in_use"; }
+      }
       snprintf(s_foot, sizeof(s_foot), "%s", tr("display.note"));
       break;
    }
@@ -529,9 +549,13 @@ static void row_action(const row_t *r)
       trf(s_cbuf, sizeof(s_cbuf), "profile.delete_confirm", "name", profiles_display_name(profiles_active()), NULL);
       confirm_open(s_cbuf, delete_yes);
    }
+   else if (r->id == ID_DSP_THEME_APPLY)
+   {
+      confirm_open_ex(tr("display.theme_confirm"), NULL, "confirm.restart", theme_apply_yes);
+   }
    else if (r->id == ID_DSP_RESTART)
    {
-      confirm_open(tr("display.restart_confirm"), restart_yes);
+      confirm_open_ex(tr("display.restart_confirm"), NULL, "confirm.restart", restart_yes);
    }
    else if (r->id == ID_SS_PREVIEW)
    {
@@ -584,6 +608,10 @@ static void row_change(const row_t *r, int dir)
       break;
    case ID_DSP_SCANOUT:
       settings_set_int("scanout", dir > 0);
+      break;
+   case ID_DSP_THEME:
+      i = theme_setting_index() + dir;
+      if (i >= 0 && i < theme_count()) settings_set("theme", theme_id(i));
       break;
    case ID_SND_VOLUME:
       i = music_volume() + dir * VOL_STEP;
@@ -864,17 +892,23 @@ static void osk_draw(double t, float a)
 
 /* ------------------------------------------------------------------------ */
 /* confirm dialog                                                            */
-static void confirm_open(const char *message, confirm_fn on_yes)
+/* note_key NULL = no note; yes_key = the label of the confirming button */
+static void confirm_open_ex(const char *message, const char *note_key, const char *yes_key, confirm_fn on_yes)
 {
    if (s_modal != M_NONE) return;
    if (s_modal_drawn == M_OSK) osk_free();
    wlabel_set(&s_cmsg, g_font_sub, message, (int)DLG_W - 60);
-   wlabel_set(&s_cnote, g_font_small, tr("profile.delete_note"), (int)DLG_W - 60);
+   if (note_key) wlabel_set(&s_cnote, g_font_small, tr(note_key), (int)DLG_W - 60);
+   else label_free(&s_cnote);
    label_set(&s_cbtn[0], g_font_sub, tr("confirm.cancel"));
-   label_set(&s_cbtn[1], g_font_sub, tr("confirm.delete"));
+   label_set(&s_cbtn[1], g_font_sub, tr(yes_key));
    s_csel = 0; s_con_yes = on_yes;
    s_modal = s_modal_drawn = M_CONFIRM;
    s_mod.x = 0; s_mod.v = 0;
+}
+static void confirm_open(const char *message, confirm_fn on_yes)
+{
+   confirm_open_ex(message, "profile.delete_note", "confirm.delete", on_yes);
 }
 
 static void confirm_input(const ui_nav_t *nav)
@@ -928,6 +962,20 @@ void panel_init(void)
    label_set(&s_gt, g_font_sub, "\xE2\x80\xBA");   /* › */
    s_slide.x = SLIDE_OFF;
    s_page = P_ROOT;
+   if (theme_active_index() > 0)
+   {
+      theme_color(TC_TEXT, C_TXT); theme_color(TC_DIM, C_DIM);
+      theme_color(TC_ACCENT, C_ACC); theme_color(TC_DANGER, C_RED);
+   }
+}
+
+/* the on-screen keyboard alone, over the dashboard (game menu: New folder) */
+void panel_osk(const char *title_key, const char *initial, const char *(*accept)(const char *))
+{
+   if (s_open) return;
+   s_open = 1; s_osk_only = 1;
+   osk_open(title_key, initial, accept);
+   logf_("panel: keyboard (%s)", title_key);
 }
 
 void panel_open(void)
@@ -971,9 +1019,10 @@ void panel_update(const ui_nav_t *nav, double t, float dt)
       else page_input(nav);
    }
    else if (s_modal != M_NONE) s_modal = M_NONE;
+   if (s_open && s_osk_only && s_modal == M_NONE) { s_open = 0; s_osk_only = 0; }
 
-   spring_step(&s_slide, s_open ? 0.0f : SLIDE_OFF, 170, 18, dt);
-   spring_step(&s_fade, s_open ? 1.0f : 0.0f, 90, 14, dt);
+   spring_step(&s_slide, s_open && !s_osk_only ? 0.0f : SLIDE_OFF, 170, 18, dt);
+   spring_step(&s_fade, s_open && !s_osk_only ? 1.0f : 0.0f, 90, 14, dt);
    if (!s_open && s_slide.x > SLIDE_OFF - 20.0f && s_fade.x < 0.003f && s_modal_drawn == M_NONE) return;   /* fully closed */
 
    page_build();
@@ -1030,6 +1079,7 @@ void panel_draw(double t)
    int i;
    if (s_slide.x > SLIDE_OFF - 10.0f && a < 0.003f && s_modal_drawn == M_NONE) return;
    gl_use_2d();
+   if (a < 0.003f && s_modal_drawn != M_NONE) goto modal;   /* keyboard alone (panel_osk) */
    ca = a * clampf(s_pa.x, 0.0f, 1.0f);
    cx = px + s_px.x;
    col(f, (const float[3]){ 1, 1, 1 }, 0.08f * a);   /* hairline under the header */
@@ -1134,6 +1184,7 @@ void panel_draw(double t)
    glDisable(GL_SCISSOR_TEST);
 
    /* modal over the panel */
+modal:
    if (s_modal_drawn != M_NONE)
    {
       float m = clampf(s_mod.x, 0.0f, 1.0f);
