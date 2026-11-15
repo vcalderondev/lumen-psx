@@ -1922,6 +1922,39 @@ static void bake_scrim(SDL_Surface *c, float dim)
    free(fx);
 }
 
+/* The worker keeps the last three decoded backgrounds (scrim baked, 8 MB each at 1080p):
+ * decoding a 1080p JPEG is the wait between settling on a game and its background, and
+ * going back to the game just left, or on to the next one (bg_prefetch, asked for once
+ * the selection has settled), finds it done. Worker thread only. */
+typedef struct { char path[512]; float dim; SDL_Surface *s; unsigned used; } bg_cache_t;
+static bg_cache_t bg_cache[3];
+static unsigned   bg_cache_tick;
+static char       bg_pre[512];      /* path to decode ahead (guarded by bg_mx) */
+static int        bg_pre_new;
+
+/* the decoded background for path, from the cache or decoded into it; NULL if unreadable */
+static SDL_Surface *bg_cache_get(const char *path)
+{
+   const float dim = g_bg_dim;
+   SDL_Surface *s, *c = NULL;
+   int k, slot = 0;
+   for (k = 0; k < 3; k++)
+      if (bg_cache[k].s && bg_cache[k].dim == dim && !strcmp(bg_cache[k].path, path)) { bg_cache[k].used = ++bg_cache_tick; return bg_cache[k].s; }
+   s = IMG_Load(path);
+   if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
+   if (!c) return NULL;
+   bake_scrim(c, dim);
+   for (k = 0; k < 3; k++)
+   {
+      if (!bg_cache[k].s) { slot = k; break; }
+      if (bg_cache[k].used < bg_cache[slot].used) slot = k;
+   }
+   if (bg_cache[slot].s) SDL_FreeSurface(bg_cache[slot].s);
+   bg_cache[slot].s = c; bg_cache[slot].dim = dim; bg_cache[slot].used = ++bg_cache_tick;
+   snprintf(bg_cache[slot].path, sizeof(bg_cache[slot].path), "%s", path);
+   return c;
+}
+
 static int bg_worker(void *unused)
 {
    (void)unused;
@@ -1929,15 +1962,21 @@ static int bg_worker(void *unused)
    while (!bg_quit)
    {
       char path[512]; SDL_Surface *s, *c = NULL;
-      while (!bg_req_new && !bg_quit) SDL_CondWait(bg_cv, bg_mx);
+      int pre;
+      while (!bg_req_new && !bg_pre_new && !bg_quit) SDL_CondWait(bg_cv, bg_mx);
       if (bg_quit) break;
-      snprintf(path, sizeof(path), "%s", bg_req);
-      bg_req_new = 0;
+      pre = !bg_req_new;   /* the request of the selection goes first */
+      snprintf(path, sizeof(path), "%s", pre ? bg_pre : bg_req);
+      if (pre) bg_pre_new = 0; else bg_req_new = 0;
       SDL_UnlockMutex(bg_mx);
-      s = path[0] ? IMG_Load(path) : NULL;
-      if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
-      if (c) bake_scrim(c, g_bg_dim);
+      {
+         const double w0 = now_s();
+         s = path[0] ? bg_cache_get(path) : NULL;
+         if (s && !pre) c = SDL_ConvertSurface(s, s->format, 0);   /* the render thread's own copy */
+         if (g_perf_on && path[0]) logf_("perf: background %s by the worker in %.0f ms", pre ? "decoded ahead" : "handed over", (now_s() - w0) * 1000.0);
+      }
       SDL_LockMutex(bg_mx);
+      if (pre) continue;
       if (bg_done) SDL_FreeSurface(bg_done);
       bg_done = c;
       bg_done_failed = !c && path[0];
@@ -1948,8 +1987,20 @@ static int bg_worker(void *unused)
    return 0;
 }
 
+/* decode ahead a background the selection is likely to ask for next */
+static void bg_prefetch(const char *path)
+{
+   SDL_LockMutex(bg_mx);
+   snprintf(bg_pre, sizeof(bg_pre), "%s", path);
+   bg_pre_new = 1;
+   SDL_CondSignal(bg_cv);
+   SDL_UnlockMutex(bg_mx);
+}
+
+static double g_bg_req_t;   /* perf probe: when the selection's background was asked for */
 static void bg_request(const char *path)
 {
+   g_bg_req_t = now_s();
    SDL_LockMutex(bg_mx);
    snprintf(bg_req, sizeof(bg_req), "%s", path);
    bg_req_new = 1;
@@ -2529,6 +2580,7 @@ static void bg_poll_upload(void)
          bg_up.tex = 0;
          bg_up_cancel();
          bg_push(l);
+         if (g_perf_on) logf_("perf: background ready %.0f ms after it was asked for", (now_s() - g_bg_req_t) * 1000.0);
       }
    }
 }
@@ -3831,7 +3883,7 @@ int main(int argc, char **argv)
    float launch_dt = 0.0f, lt_sum = 0.0f, lt_max = 0.0f;   /* launch frame times (real, unclamped) */
    int lt_n = 0, lt_slow = 0;
    int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0, crt_on = 0;
-   int held_dir = 0; double held_next = 0, sel_t = 0;
+   int held_dir = 0, nav_dir = 1; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
    spring bg[3], info_y, info_a, plat_x, dpos;
    label_t l_start = { 0 };
@@ -4260,7 +4312,7 @@ int main(int argc, char **argv)
 
       if (n && move)
       {
-         sel = (sel + move + n) % n; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t;
+         sel = (sel + move + n) % n; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; nav_dir = move;
          if (!attract_active() && n > 1) music_sfx(move > 0 ? SFX_MOVE_NEXT : SFX_MOVE_PREV);
       }
       if (n > 1 && page)
@@ -4311,6 +4363,12 @@ int main(int argc, char **argv)
          }
       }
       { double ps = now_s(); bg_poll_upload(); perf_stall("background upload", ps); }
+      if (n && play_t < 0 && t - sel_t > 0.6)
+      {  /* settled: the background of the next game in the direction of travel, decoded ahead */
+         static char pre_last[512];
+         const game_t *ng = &g_games[pl->first + (sel + (nav_dir < 0 ? -1 : 1) + n) % n];
+         if (ng->bg[0] && strcmp(ng->bg, pre_last)) { snprintf(pre_last, sizeof(pre_last), "%s", ng->bg); bg_prefetch(ng->bg); }
+      }
       bg_advance(dt);
 
       /* music: the game's track once the selection has settled 0.8 s, else the menu
