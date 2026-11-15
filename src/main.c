@@ -2265,13 +2265,26 @@ static void launch_warmup(void)
    logf_("launch warm-up: %.0f ms", (now_s() - t0) * 1000.0);
 }
 
+/* A shape antialiased by its shader (modes 5, 6, 9) fades over the pixel its edge
+ * crosses, but a quad the size of the shape stops at the edge: on its straight sides
+ * the outer half of that fade was never drawn (the window's multisampling used to cover
+ * for it). The quad is one device pixel larger on every side, the shape's own
+ * coordinates unchanged (uvw). */
+static void draw_sdf(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
+{
+   const float p = 1.0f / g_ui_scale;
+   glUniform4f(u2_uvw, -p / w, -p / h, (w + 2 * p) / w, (h + 2 * p) / h);
+   draw_2d(tex, x - p, y - p, w + 2 * p, h + 2 * p, rgba, mode);
+   glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+}
+
 /* glass rounded rectangle (mode 5): the shader needs the size in pixels for its distance field */
 void draw_round_rect(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha)
 {
    const float k = g_ui_scale;   /* shape maths in device px: 1-px antialiased edges */
    glUniform4f(u2_rect, w * k, h * k, radius * k, border_alpha);
    glUniform4f(u2_aux0, 2.0f * k, 0.0f, 0.0f, 0.0f);   /* border band: 2 logical px */
-   draw_2d(0, x, y, w, h, rgba, 5);
+   draw_sdf(0, x, y, w, h, rgba, 5);
 }
 
 /* flat rounded rectangle (mode 9): filled, or stroked inside with width `stroke` */
@@ -2280,7 +2293,7 @@ static void draw_shape(float x, float y, float w, float h, float radius, float s
    const float k = g_ui_scale;
    glUniform4f(u2_rect, w * k, h * k, radius * k, 0.0f);
    glUniform4f(u2_aux0, stroke * k, 0.0f, 0.0f, 0.0f);
-   draw_2d(0, x, y, w, h, rgba, 9);
+   draw_sdf(0, x, y, w, h, rgba, 9);
 }
 
 /* soft shadow under a rounded rectangle x,y,w,h: blur radius, offset dy, opacity a;
@@ -2505,16 +2518,16 @@ static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, flo
    if (g_tile_split < 0) g_tile_split = settings_get_int("tile_split", 1, 0, 1);
    if (g_tile_split && rgba[3] >= 0.999f && w > 2.0f * radius + 12.0f && h > 12.0f)
    {
-      const float ix = radius + 1.0f, iy = 1.0f;
+      const float ix = radius + 1.0f, iy = 1.0f, p = 1.0f / g_ui_scale;   /* p: the edge's fade, see draw_sdf() */
       tile_part(tex, x, y, w, h, ix, iy, w - 2 * ix, h - 2 * iy, rgba, 1);
-      tile_part(tex, x, y, w, h, 0, 0, ix, h, rgba, 0);
-      tile_part(tex, x, y, w, h, w - ix, 0, ix, h, rgba, 0);
-      tile_part(tex, x, y, w, h, ix, 0, w - 2 * ix, iy, rgba, 0);
-      tile_part(tex, x, y, w, h, ix, h - iy, w - 2 * ix, iy, rgba, 0);
+      tile_part(tex, x, y, w, h, -p, -p, ix + p, h + 2 * p, rgba, 0);
+      tile_part(tex, x, y, w, h, w - ix, -p, ix + p, h + 2 * p, rgba, 0);
+      tile_part(tex, x, y, w, h, ix, -p, w - 2 * ix, iy + p, rgba, 0);
+      tile_part(tex, x, y, w, h, ix, h - iy, w - 2 * ix, iy + p, rgba, 0);
       glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
       return;
    }
-   draw_2d(tex, x, y, w, h, rgba, 6);
+   draw_sdf(tex, x, y, w, h, rgba, 6);
 }
 
 /* ------------------------------------------------------------------------ */
