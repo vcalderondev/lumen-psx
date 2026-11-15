@@ -2029,11 +2029,139 @@ static void draw_shape(float x, float y, float w, float h, float radius, float s
 
 /* soft shadow under a rounded rectangle x,y,w,h: blur radius, offset dy, opacity a;
  * cut = 1 leaves the area under the shape itself clear (translucent shapes) */
+/* Baked shadows. FS_2D mode 10 evaluates one or two distance fields and a smoothstep
+ * per pixel over the whole blurred quad (1.3 Mpx for the game menu's card at 1080p,
+ * every frame). The falloff of a shape only depends on its size, so it is computed once
+ * on the CPU with the shader's own formula, kept as a texture and drawn as a plain
+ * textured quad. A soft shadow needs no resolution: its texels are up to 4 device px
+ * (at least 15 across the blur radius). One with the shape cut out has the cut's 1 px
+ * edge: it is baked on the device's own pixel grid for where the quad sits (fx, fy: the
+ * fraction of a pixel its corner is at) and drawn texel for pixel. A size is baked the second frame in a row
+ * it is asked for: one that is animating (the card growing) uses the shader meanwhile. */
+typedef struct { float w, h, r, blur, dy, fx, fy; int cut; } shadow_key_t;
+typedef struct { shadow_key_t k; GLuint tex; unsigned used; } shadow_tex_t;
+static shadow_tex_t g_shadow_tex[32];
+static struct { shadow_key_t k; unsigned frame; } g_shadow_miss[16];
+static unsigned g_frame_id = 1;        /* frames presented (main loop and dialog) */
+static unsigned g_shadow_bake_frame;   /* texels baked during g_frame_id == this */
+static int      g_shadow_baked_px;
+
+static int shadow_key_eq(const shadow_key_t *a, const shadow_key_t *b)
+{
+   return fabsf(a->w - b->w) < 0.126f && fabsf(a->h - b->h) < 0.126f && a->r == b->r && a->blur == b->blur &&
+          a->cut == b->cut && (!a->cut || (a->dy == b->dy && fabsf(a->fx - b->fx) < 0.01f && fabsf(a->fy - b->fy) < 0.01f));
+}
+
+/* key in device px: quad size, corner radius, blur, offset of the cut */
+static GLuint shadow_bake(const shadow_key_t *q)
+{
+   const float f = q->cut ? 1.0f : clampf(q->blur / 15.0f, 1.0f, 4.0f);
+   const int tw = (int)ceilf(q->cut ? q->fx + q->w : q->w / f), th = (int)ceilf(q->cut ? q->fy + q->h : q->h / f);
+   const float hx = q->w * 0.5f - q->blur, hy = q->h * 0.5f - q->blur;
+   const float r = q->r < (hx < hy ? hx : hy) ? q->r : (hx < hy ? hx : hy);
+   unsigned char *px;
+   GLuint t;
+   int x, y;
+   if (tw < 2 || th < 2 || tw > 1024 || th > 1024 || !(px = malloc((size_t)tw * th * 4))) return 0;
+   for (y = 0; y < th; y++)
+      for (x = 0; x < tw; x++)
+      {
+         const float ppx = q->cut ? x + 0.5f - q->fx - q->w * 0.5f : ((x + 0.5f) / tw - 0.5f) * q->w;
+         const float ppy = q->cut ? y + 0.5f - q->fy - q->h * 0.5f : ((y + 0.5f) / th - 0.5f) * q->h;
+         float qx = fabsf(ppx) - (hx - r), qy = fabsf(ppy) - (hy - r);
+         float ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0, in = qx > qy ? qx : qy;
+         float d = sqrtf(ox * ox + oy * oy) + (in < 0 ? in : 0) - r;
+         float k = 1.0f - smooth01(-q->blur * 0.35f, q->blur, d);
+         unsigned char *o = px + ((size_t)y * tw + x) * 4;
+         k *= k;
+         if (q->cut)
+         {
+            float d2;
+            qx = fabsf(ppx) - (hx - r); qy = fabsf(ppy + q->dy) - (hy - r);
+            ox = qx > 0 ? qx : 0; oy = qy > 0 ? qy : 0; in = qx > qy ? qx : qy;
+            d2 = sqrtf(ox * ox + oy * oy) + (in < 0 ? in : 0) - r;
+            k *= clampf(d2 + 0.5f, 0.0f, 1.0f);
+            if (fabsf(ppx) > q->w * 0.5f || fabsf(ppy) > q->h * 0.5f) k = 0.0f;   /* pixel outside the quad */
+         }
+         o[0] = o[1] = o[2] = 255; o[3] = (unsigned char)(255.0f * k + 0.5f);
+      }
+   glGenTextures(1, &t);
+   glBindTexture(GL_TEXTURE_2D, t);
+   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   free(px);
+   g_shadow_baked_px += tw * th;
+   return t;
+}
+
+/* the baked texture of a shadow, 0 while it has none (the shader draws it) */
+static GLuint shadow_lookup(const shadow_key_t *q)
+{
+   const int NT = (int)(sizeof(g_shadow_tex) / sizeof(g_shadow_tex[0])), NM = (int)(sizeof(g_shadow_miss) / sizeof(g_shadow_miss[0]));
+   int i, slot = 0, seen = 0, ms = 0;
+   for (i = 0; i < NT; i++)
+      if (g_shadow_tex[i].tex && shadow_key_eq(&g_shadow_tex[i].k, q)) { g_shadow_tex[i].used = g_frame_id; return g_shadow_tex[i].tex; }
+   for (i = 0; i < NM; i++)
+   {
+      if (g_shadow_miss[i].frame && shadow_key_eq(&g_shadow_miss[i].k, q))
+      {
+         if (g_shadow_miss[i].frame + 1 == g_frame_id) seen = 1;
+         if (g_shadow_miss[i].frame == g_frame_id) return 0;   /* asked twice this frame, noted already */
+         ms = i; break;
+      }
+      if (g_shadow_miss[i].frame < g_shadow_miss[ms].frame) ms = i;   /* else the oldest note is replaced */
+   }
+   if (g_shadow_bake_frame != g_frame_id) { g_shadow_bake_frame = g_frame_id; g_shadow_baked_px = 0; }
+   if (!seen || g_shadow_baked_px > 150000)
+   {  /* first frame of this size, or enough baked for one frame: note it, try the next */
+      g_shadow_miss[ms].k = *q; g_shadow_miss[ms].frame = g_frame_id;
+      return 0;
+   }
+   g_shadow_miss[ms].frame = 0;
+   for (i = 0; i < NT; i++)
+   {
+      if (!g_shadow_tex[i].tex) { slot = i; break; }
+      if (g_shadow_tex[i].used < g_shadow_tex[slot].used) slot = i;
+   }
+   if (g_shadow_tex[slot].tex) glDeleteTextures(1, &g_shadow_tex[slot].tex);
+   g_shadow_tex[slot].k = *q; g_shadow_tex[slot].used = g_frame_id;
+   g_shadow_tex[slot].tex = shadow_bake(q);
+   return g_shadow_tex[slot].tex;
+}
+
 static void draw_shadow_ex(float x, float y, float w, float h, float radius, float blur, float dy, float a, int cut)
 {
    const float c[4] = { 0, 0, 0, a };
-   if (!g_fx_shadows) return;
    const float k = g_ui_scale;
+   shadow_key_t q;
+   GLuint tex;
+   if (!g_fx_shadows || a <= 0.003f) return;
+   q.w = (w + 2 * blur) * k; q.h = (h + 2 * blur) * k; q.r = radius * k; q.blur = blur * k; q.dy = dy * k; q.cut = cut;
+   q.fx = q.fy = 0.0f;
+   if (cut)
+   {
+      q.fx = (x - blur) * k; q.fx -= floorf(q.fx);
+      q.fy = (y - blur + dy) * k; q.fy -= floorf(q.fy);
+   }
+   if ((tex = shadow_lookup(&q)))
+   {  /* draw_2d() mode 0 without its snap to device pixels (a shadow follows its shape);
+       * a cut one covers whole device pixels from the one its corner is in */
+      const float qx = cut ? floorf((x - blur) * k) / k : x - blur, qy = cut ? floorf((y - blur + dy) * k) / k : y - blur + dy;
+      const float qw = cut ? ceilf(q.fx + q.w) / k : w + 2 * blur, qh = cut ? ceilf(q.fy + q.h) / k : h + 2 * blur;
+      mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(qx + qw * 0.5f, qy + qh * 0.5f, 0), m4_scale(qw, -qh, 1)));
+      if (g_cost_on) cost_add(qw, qh, 0);
+      glUseProgram(g_prog_tex);
+      glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, m.m);
+      glUniform4fv(ut_color, 1, c);
+      glBindTexture(GL_TEXTURE_2D, tex);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      glUseProgram(g_prog_2d);
+      return;
+   }
    glUniform4f(u2_rect, (w + 2 * blur) * k, (h + 2 * blur) * k, radius * k, 0.0f);
    glUniform4f(u2_aux0, blur * k, cut ? 1.0f : 0.0f, dy * k, 0.0f);
    draw_2d(0, x - blur, y - blur + dy, w + 2 * blur, h + 2 * blur, c, 10);
@@ -3954,7 +4082,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          }
          crt_end();
       }
-      SDL_GL_SwapWindow(win);
+      SDL_GL_SwapWindow(win); g_frame_id++;
    }
    logf_("dialog answer %d", answer);
    return answer;
@@ -4917,7 +5045,7 @@ int main(int argc, char **argv)
             if (pf) fclose(pf);
          }
       }
-      frames++;
+      frames++; g_frame_id++;
       if (g_cost_on && play_t >= 0)
       {  /* launch trace: one line per frame (pt, frame time, CPU issuing, swap, cost) */
          double fpx = g_cost_px_opaque + g_cost_px_blend, fh = g_cost_px_heavy;
