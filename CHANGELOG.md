@@ -3,6 +3,17 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.12.1] - 2026-11-15
+
+Packaging only: the console runs exactly what 0.12.0 runs.
+
+### Added
+- Release manifest: `lumen/MANIFEST` in the zip, and `lumen-psx-v0.12.1.manifest` next to
+  it (covered by `SHA256SUMS`), list every folder and file of the package with its
+  SHA-256 and size. The web installer (lumen-web `/install`) compares it with the copy
+  left on the stick by the previous install, downloads only the changed files as byte
+  ranges of the zip, deletes the files a release dropped and repairs damaged ones.
+
 ## [0.12.0] - 2026-11-15
 
 A boot that shows it is alive: the logo and "Loading" instead of a black screen.
