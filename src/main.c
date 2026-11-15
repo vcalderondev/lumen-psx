@@ -69,6 +69,7 @@ static double g_log_synced = -10.0;   /* monotonic time of the last fsync */
 static int    g_log_pending;          /* lines written since that fsync (writer thread) */
 static pthread_mutex_t g_log_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_log_cv = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  g_log_room = PTHREAD_COND_INITIALIZER;   /* the writer took the queue */
 static pthread_t       g_log_thread;
 static int    g_log_async, g_log_quit, g_log_force;
 static char   g_log_q[16384];         /* queued lines, '\n' terminated */
@@ -123,6 +124,7 @@ static void *log_writer(void *unused)
       n = g_log_qn; force = g_log_force; quit = g_log_quit;
       memcpy(out, g_log_q, n);
       g_log_qn = 0; g_log_force = 0;
+      pthread_cond_broadcast(&g_log_room);
       pthread_mutex_unlock(&g_log_mx);
       if (n) { fwrite(out, 1, n, g_log); fflush(g_log); g_log_pending = 1; }
       log_sync(force || quit);
@@ -150,7 +152,9 @@ void logf_(const char *fmt, ...)
    n = strlen(line);
    line[n++] = '\n';
    pthread_mutex_lock(&g_log_mx);
-   if (g_log_async && n <= sizeof(g_log_q) - g_log_qn)
+   /* a burst that fills the queue waits for the writer to take it (lines stay in order) */
+   while (g_log_async && n > sizeof(g_log_q) - g_log_qn) pthread_cond_wait(&g_log_room, &g_log_mx);
+   if (g_log_async)
    {
       memcpy(g_log_q + g_log_qn, line, n);
       g_log_qn += n;
@@ -160,7 +164,7 @@ void logf_(const char *fmt, ...)
       return;
    }
    pthread_mutex_unlock(&g_log_mx);
-   /* no writer (startup, stderr), or its queue is full: write here */
+   /* no writer (startup, stderr, exit): write here */
    flockfile(g_log);
    fwrite(line, 1, n, g_log); fflush(g_log);
    if (!g_log_async) { g_log_pending = 1; log_sync(log_is_error(line)); }
@@ -177,7 +181,11 @@ static void log_sync_atexit(void)
       pthread_cond_signal(&g_log_cv);
       pthread_mutex_unlock(&g_log_mx);
       pthread_join(g_log_thread, NULL);
+      pthread_mutex_lock(&g_log_mx);
       g_log_async = 0;
+      if (g_log_qn) { fwrite(g_log_q, 1, g_log_qn, g_log); g_log_qn = 0; }   /* queued as the writer left */
+      pthread_cond_broadcast(&g_log_room);
+      pthread_mutex_unlock(&g_log_mx);
    }
    flockfile(g_log); fflush(g_log); g_log_pending = 1; log_sync(1); funlockfile(g_log);
 }
