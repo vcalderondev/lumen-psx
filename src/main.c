@@ -4611,7 +4611,7 @@ int main(int argc, char **argv)
          float hflip = 0.0f, screen_on = 0.0f;         /* handheld: turn round, screen on */
          float press = 0.0f, shut = 0.0f, seat_t = -1.0f;  /* NES: push down, door shuts; seat time (click) */
          float coin_x = 0.0f, coin_spin = 0.0f, coin_in = 0.0f, credit = 0.0f, insert = 0.0f;
-         int covered, blackout;
+         int covered, blackout, panel_cleared = 0;
          float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
          float pdt = 0.0f;   /* launch clock step this frame */
@@ -4743,7 +4743,11 @@ int main(int argc, char **argv)
          t_upd = now_s();
          crt_on = crt_begin(g_dw, g_dh);   /* CRT filter: the frame goes to its target */
          glViewport(0, 0, g_dw, g_dh);
+         /* settings fully open: an opaque full-screen section. The clear takes its colour
+          * (free on a tile-based GPU) instead of a full-screen quad drawn over the clear */
+         panel_cleared = !blackout && panel_active() && panel_amount() >= 0.999f;
          if (blackout) glClearColor(0, 0, 0, 1);
+         else if (panel_cleared) { float pc[4]; theme_color(TC_PANEL, pc); glClearColor(pc[0], pc[1], pc[2], 1); }
          else glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
          glClearDepthf(1.0f);
          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -4937,7 +4941,7 @@ int main(int argc, char **argv)
                const float dimq[4] = { 0, 0, 0, att.dim };
                draw_2d(0, 0, 0, W, H, dimq, 0);
             }
-            if (pa > 0.003f)
+            if (pa > 0.003f && !panel_cleared)
             {
                /* the settings are a full-screen section: opaque, so nothing under it is drawn
                 * once it is fully open (see `covered`) */
