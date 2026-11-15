@@ -7,6 +7,7 @@ top.games_one = 1 juego  ·  {system}
 top.games = {n} juegos  ·  {system}
 empty.library = Agrega juegos a /games
 launch.starting = Iniciando…
+boot.loading = Cargando
 coin.insert = INSERT COIN
 coin.credit = CREDIT 1
 card.players_one = {n} jugador
