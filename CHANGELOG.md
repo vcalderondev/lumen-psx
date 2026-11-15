@@ -6,32 +6,6 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 ## [Unreleased]
 
 ### Added
-- CRT filter (Settings → Display → CRT filter: Off, Soft, Strong; `crt=` in
-  `settings.ini`): scanlines, aperture grille, slight curvature, halation and vignette.
-  The dashboard draws through one extra GLES 3 pass (`src/crt.c`, MSAA kept, applied
-  live, also on the splash, the launch animation and the in-game dialog); games get the
-  same look from `lumen/shaders/crt-lumen-*.glslp`, which `run.sh` hands to RetroArch
-  (`video_shader_enable` in the extra config, `--set-shader`) for software and GLES 3 cores.
-  Launch request: new `crt=` line.
-
-### Fixed
-- In-game dialog: a slow first frame could throw the selection pill off screen (its
-  frame step is now capped like the dashboard's).
-
-## [0.8.0] - 2026-11-14
-
-### Added
-- PlayStation Portable (`systems/psp.ini`, games in `/media/games/psp`: iso, cso, chd, pbp)
-  on PPSSPP, and Nintendo 64 on Mupen64Plus-Next, both drawing with GLES 3 on the console's
-  GPU (psc-platform 2.3.0). The release installs PPSSPP's data in `retroarch/system/PPSSPP`.
-  Graphics → PSP switches 480x272 (Original) and 960x544 (Enhanced).
-
-### Changed
-- psc-platform 2.3.0 (`platform.lock`).
-
-## [0.8.0] - 2026-11-14
-
-### Added
 - Launch animations for every system the console runs, with the real hardware modelled
   in millimetres (`src/consoles.inc`, no logos):
   - Cartridges shaped like the real ones: Super Famicom / PAL Super Nintendo, Mega Drive,
@@ -46,6 +20,30 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   - PSP: a UMD keep case; the UMD lifts out in its caddy. DVD keep case (`shape = dvd`).
 - A click when the cartridge seats (synthesised; it plays even with the music off).
 - `systems/gb.ini` (Game Boy / Color, Gambatte).
+
+## [0.8.0] - 2026-11-14
+
+Hardware-rendered cores and a CRT look, for the dashboard and the games.
+
+### Added
+- PlayStation Portable (`systems/psp.ini`, games in `/media/games/psp`: iso, cso, chd, pbp)
+  on PPSSPP, and Nintendo 64 on Mupen64Plus-Next, both drawing with GLES 3 on the console's
+  GPU (psc-platform 2.3.0). The release installs PPSSPP's data in `retroarch/system/PPSSPP`.
+  Graphics → PSP switches 480x272 (Original) and 960x544 (Enhanced).
+- CRT filter (Settings → Display → CRT filter: Off, Soft, Strong; `crt=` in
+  `settings.ini`): scanlines, aperture grille, slight curvature, halation and vignette.
+  The dashboard draws through one extra GLES 3 pass (`src/crt.c`, MSAA kept, applied
+  live, also on the splash, the launch animation and the in-game dialog); games get the
+  same look from `lumen/shaders/crt-lumen-*.glslp`, which `run.sh` hands to RetroArch
+  (`video_shader_enable` in the extra config, `--set-shader`) for software and GLES 3 cores.
+  Launch request: new `crt=` line.
+
+### Changed
+- psc-platform 2.3.0 (`platform.lock`).
+
+### Fixed
+- In-game dialog: a slow first frame could throw the selection pill off screen (its
+  frame step is now capped like the dashboard's).
 
 ## [0.7.0] - 2026-11-14
 
