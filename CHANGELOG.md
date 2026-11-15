@@ -3,6 +3,22 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- Boot: no more long black screen between Sony's animation and the dashboard. The boot
+  splash (the logo with dark letters, the first frame of Lumen's own splash) now carries
+  "Loading" at the bottom right with three dots that light up in turn, in the language
+  set in Settings (`boot.loading` in every `.lang`; `assets/boot/loading-<lang>[-1080].png`
+  for the boot payload, made by `tools/make-boot-text.py`). `boot.sh` keeps the payload's
+  splash up until the compositor is swapped (the package is unpacked before, not after,
+  stopping Sony's Weston), starts it again on the new compositor and closes it when
+  Lumen's splash is on screen; Lumen's splash shows the same text and keeps the dots
+  moving during the library scan. Needs the boot payload of psc-platform that ships
+  `splash.sh`; with an older payload the screen stays black as before.
+- `tools/sim-boot.sh`: the whole boot sequence on the desktop simulator, filmed, with the
+  black stretches listed.
+
 ## [0.9.1] - 2026-11-15
 
 ### Fixed
