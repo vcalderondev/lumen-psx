@@ -1138,7 +1138,7 @@ static const char *FS_TEX =
    "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color; out vec4 frag;\n"
    "void main(){ frag = texture(tex, v_uv) * color; }\n";
 static GLuint g_prog_tex;
-static GLint  ut_mvp, ut_color;
+static GLint  ut_mvp, ut_color, ut_uvw;
 
 /* background crossfade: both layers mixed in one opaque full-screen pass (it was the
  * next layer alpha-blended over the current one: two full-screen passes for the 0.6 s
@@ -1300,7 +1300,8 @@ static void gl_setup(void)
    ut_color = glGetUniformLocation(g_prog_tex, "color");
    glUseProgram(g_prog_tex);
    glUniform1i(glGetUniformLocation(g_prog_tex, "tex"), 0);
-   glUniform4f(glGetUniformLocation(g_prog_tex, "uvw"), 0.0f, 0.0f, 1.0f, 1.0f);
+   ut_uvw = glGetUniformLocation(g_prog_tex, "uvw");
+   glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
    g_prog_mix = link_prog(VS_MIX, FS_MIX);
    um_mvp = glGetUniformLocation(g_prog_mix, "mvp");
    um_ma = glGetUniformLocation(g_prog_mix, "ma");
@@ -1562,6 +1563,170 @@ static void game_free_tex(game_t *g)
 /* drawing                                                                   */
 static mat4 g_proj, g_view, g_vp, g_ortho;
 
+/* Antialiasing for the 3D scene only. The window had 2x MSAA for the edges of the launch
+ * animation's models, and the whole dashboard paid for it on every frame: its shapes
+ * are antialiased by their shaders and its text and art are pixel-aligned textures.
+ * The window now has none. While a launch plays, its 3D is drawn into a transparent
+ * 4x multisampled target (resolved on-chip where the driver has
+ * EXT_multisampled_render_to_texture, as the CRT filter's target, else by a blit) and
+ * put over the dashboard as one premultiplied quad, only the rectangle the scene covered.
+ * In the target, blending keeps a premultiplied colour and a true coverage in alpha
+ * (scene_blend_*), so the quad gives what drawing straight to the screen gave.
+ * Setting scene_aa=0 goes back to the window's MSAA (setting msaa). */
+typedef void (*sc_fbtex_ms_fn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
+typedef void (*sc_rb_ms_fn)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+static struct { int want, samples, mode, active, full; GLuint fbo, tex, depth, msfbo, mscol; float x0, y0, x1, y1; } g_sc;
+static void cost_add(float w, float h, int mode);
+static int g_cost_on;
+
+static void scene_blend_over(void) { glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
+static void scene_blend_add(void)  { glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE); }
+
+static void scene_setup(void)
+{
+   sc_fbtex_ms_fn fbtex_ms = NULL; sc_rb_ms_fn rb_ms = NULL;
+   GLint maxs = 0; int ok, w = g_dw, h = g_dh;
+   if (g_sc.want <= 0) return;
+   glGetIntegerv(GL_MAX_SAMPLES, &maxs);
+   g_sc.samples = g_sc.want < maxs ? g_sc.want : maxs;
+   if (g_sc.samples < 2) { logf_("scene: no multisampling here, launch drawn without antialiasing"); return; }
+   if (settings_get_int("scene_aa", 1, 0, 2) == 1 && SDL_GL_ExtensionSupported("GL_EXT_multisampled_render_to_texture"))
+   {
+      fbtex_ms = (sc_fbtex_ms_fn)SDL_GL_GetProcAddress("glFramebufferTexture2DMultisampleEXT");
+      rb_ms = (sc_rb_ms_fn)SDL_GL_GetProcAddress("glRenderbufferStorageMultisampleEXT");
+   }
+   g_sc.mode = fbtex_ms && rb_ms ? 1 : 2;
+   glGenTextures(1, &g_sc.tex);
+   glBindTexture(GL_TEXTURE_2D, g_sc.tex);
+   glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, w, h);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   glGenFramebuffers(1, &g_sc.fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, g_sc.fbo);
+   glGenRenderbuffers(1, &g_sc.depth);
+   glBindRenderbuffer(GL_RENDERBUFFER, g_sc.depth);
+   if (g_sc.mode == 1)
+   {
+      fbtex_ms(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sc.tex, 0, g_sc.samples);
+      rb_ms(GL_RENDERBUFFER, g_sc.samples, GL_DEPTH_COMPONENT16, w, h);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_sc.depth);
+      ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+   }
+   else
+   {  /* drawn into a multisampled FBO, resolved into g_sc.fbo (colour only) */
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sc.tex, 0);
+      ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+      glGenFramebuffers(1, &g_sc.msfbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, g_sc.msfbo);
+      glGenRenderbuffers(1, &g_sc.mscol);
+      glBindRenderbuffer(GL_RENDERBUFFER, g_sc.mscol);
+      glRenderbufferStorageMultisample(GL_RENDERBUFFER, g_sc.samples, GL_RGBA8, w, h);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, g_sc.mscol);
+      glBindRenderbuffer(GL_RENDERBUFFER, g_sc.depth);
+      glRenderbufferStorageMultisample(GL_RENDERBUFFER, g_sc.samples, GL_DEPTH_COMPONENT16, w, h);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_sc.depth);
+      ok = ok && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+   }
+   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+   glBindRenderbuffer(GL_RENDERBUFFER, 0);
+   if (!ok)
+   {
+      logf_("scene: %dx%d target incomplete (mode %d), launch drawn without antialiasing", w, h, g_sc.mode);
+      g_sc.mode = 0;
+      return;
+   }
+   logf_("scene: 3D target %dx%d, MSAA %d (%s)", w, h, g_sc.samples, g_sc.mode == 1 ? "on-chip resolve" : "blit resolve");
+}
+
+/* what a 3D draw covers on screen: the box lo..hi through mvp */
+static void scene_cover(const mat4 *mvp, const float lo[3], const float hi[3])
+{
+   const float *m = mvp->m;
+   int k;
+   if (!g_sc.active || g_sc.full) return;
+   for (k = 0; k < 8; k++)
+   {
+      const float x = k & 1 ? hi[0] : lo[0], y = k & 2 ? hi[1] : lo[1], z = k & 4 ? hi[2] : lo[2];
+      const float w = m[3] * x + m[7] * y + m[11] * z + m[15];
+      float sx, sy;
+      if (w < 0.05f) { g_sc.full = 1; return; }   /* reaches behind the camera: the whole screen */
+      sx = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / w * 0.5f + 0.5f) * g_dw;
+      sy = ((m[1] * x + m[5] * y + m[9] * z + m[13]) / w * 0.5f + 0.5f) * g_dh;
+      if (sx < g_sc.x0) g_sc.x0 = sx;
+      if (sx > g_sc.x1) g_sc.x1 = sx;
+      if (sy < g_sc.y0) g_sc.y0 = sy;
+      if (sy > g_sc.y1) g_sc.y1 = sy;
+   }
+}
+
+/* the frame's 3D goes to the scene target from here (depth test and blending as set) */
+static void scene_begin(void)
+{
+   if (!g_sc.mode) return;
+   glBindFramebuffer(GL_FRAMEBUFFER, g_sc.mode == 1 ? g_sc.fbo : g_sc.msfbo);
+   glViewport(0, 0, g_dw, g_dh);
+   glClearColor(0, 0, 0, 0);
+   glClearDepthf(1.0f);
+   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+   g_sc.active = 1; g_sc.full = 0;
+   g_sc.x0 = g_sc.y0 = 1e9f; g_sc.x1 = g_sc.y1 = -1e9f;
+}
+
+/* ...to here: resolved and drawn over the frame (2D state on return: no depth test,
+ * blending, g_prog_2d) */
+static void scene_end(void)
+{
+   static const GLenum inv_depth[1] = { GL_DEPTH_ATTACHMENT }, inv_both[2] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
+   const float one[4] = { 1, 1, 1, 1 };
+   int x0, y0, x1, y1;
+   if (!g_sc.active) return;
+   g_sc.active = 0;
+   if (g_sc.full) { x0 = 0; y0 = 0; x1 = g_dw; y1 = g_dh; }
+   else
+   {  /* the covered rectangle, 2 px of margin, in whole pixels (y up, as GL counts) */
+      x0 = (int)floorf(g_sc.x0) - 2; y0 = (int)floorf(g_sc.y0) - 2; x1 = (int)ceilf(g_sc.x1) + 2; y1 = (int)ceilf(g_sc.y1) + 2;
+      if (x0 < 0) x0 = 0;
+      if (y0 < 0) y0 = 0;
+      if (x1 > g_dw) x1 = g_dw;
+      if (y1 > g_dh) y1 = g_dh;
+   }
+   if (g_sc.mode == 2)
+   {
+      if (x1 > x0 && y1 > y0)
+      {
+         glBindFramebuffer(GL_READ_FRAMEBUFFER, g_sc.msfbo);
+         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_sc.fbo);
+         glBlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+      }
+      glBindFramebuffer(GL_FRAMEBUFFER, g_sc.msfbo);
+      glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, inv_both);
+   }
+   else glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, inv_depth);
+   glBindFramebuffer(GL_FRAMEBUFFER, crt_target());
+   glViewport(0, 0, g_dw, g_dh);
+   glDisable(GL_DEPTH_TEST);
+   glEnable(GL_BLEND);
+   if (x1 > x0 && y1 > y0)
+   {
+      const float k = g_ui_scale, lx = x0 / k, ly = (g_dh - y1) / k, lw = (x1 - x0) / k, lh = (y1 - y0) / k;
+      mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(lx + lw * 0.5f, ly + lh * 0.5f, 0), m4_scale(lw, -lh, 1)));
+      if (g_cost_on) cost_add(lw, lh, 0);
+      glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   /* premultiplied */
+      glUseProgram(g_prog_tex);
+      glUniform4f(ut_uvw, (float)x0 / g_dw, (float)y1 / g_dh, (float)(x1 - x0) / g_dw, -(float)(y1 - y0) / g_dh);
+      glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, m.m);
+      glUniform4fv(ut_color, 1, one);
+      glBindTexture(GL_TEXTURE_2D, g_sc.tex);
+      glBindVertexArray(g_vao_quad);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   }
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   glUseProgram(g_prog_2d);
+}
+
 static void cost_add_3d(const mat4 *mvp, int mode);
 /* <home>/debug/launch-shots (a test switch, for the simulator): the launch clock steps
  * exactly 1/30 s per frame and every third frame (0.1 s) is saved to
@@ -1590,7 +1755,9 @@ static void launch_shot(int k)
 }
 static void draw_quad_box(mat4 model, GLuint tex, const float tint[3], float alpha, int mode)
 {
+   static const float qlo[3] = { -0.5f, -0.5f, 0.0f }, qhi[3] = { 0.5f, 0.5f, 0.0f };
    mat4 mvp = m4_mul(g_vp, model);
+   scene_cover(&mvp, qlo, qhi);
    cost_add_3d(&mvp, mode);
    glUniformMatrix4fv(u_mvp, 1, GL_FALSE, mvp.m);
    glUniformMatrix4fv(u_model, 1, GL_FALSE, model.m);
@@ -1860,11 +2027,11 @@ static void draw_marquee(const game_t *g, const platform_t *pl, mat4 base, float
    float tint[3], glow[3];
    tint[0] = tint[1] = tint[2] = lit;
    glow[0] = g->col[0] * lit; glow[1] = g->col[1] * lit; glow[2] = g->col[2] * lit;
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+   scene_blend_add();
    glDepthMask(GL_FALSE);
    case_part(base, 0, 0, -hd - 0.02f, 0, 0, w * 1.6f, h * 2.4f, 0, glow, alpha * 0.55f, 8);
    glDepthMask(GL_TRUE);
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   scene_blend_over();
    case_part(base, 0, 0, hd - 0.002f, 0, 0, w + 0.06f, h + 0.06f, 0, frame, alpha, 1);
    case_part(base, 0, 0, -hd, PI, 0, w + 0.06f, h + 0.06f, 0, frame, alpha, 1);
    case_part(base, 0, 0, hd, 0, 0, w, h, g->tex, tint, alpha, 7);
@@ -2020,6 +2187,9 @@ static void launch_warmup(void)
    glUniform1i(u_tex, 0);
    glUniform3fv(u_light, 1, light);
    glUniform3fv(u_cam, 1, cam);
+   /* into the scene's multisampled target, as the launch draws (the driver's variants
+    * are per target format too), and its quad over the frame */
+   scene_begin(); scene_blend_over();
    glEnable(GL_DEPTH_TEST);
    glDepthFunc(GL_LEQUAL);
    for (p = 0; p < g_nplat * 2; p++)
@@ -2073,6 +2243,7 @@ static void launch_warmup(void)
       }
    }
    glDisable(GL_DEPTH_TEST);
+   scene_end();
    /* 2D: the flash + fade quad (premultiplied blend) */
    glUseProgram(g_prog_2d);
    glUniform1i(u2_tex, 0);
@@ -4266,7 +4437,9 @@ int main(int argc, char **argv)
       SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 5); SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
    }
    {
-      int ms = settings_get_int("msaa", 2, 0, 4);   /* 2x: edges of text, glyphs and the 3D launch */
+      int ms = settings_get_int("msaa", 2, 0, 4);   /* 0 = no antialiasing at all */
+      /* the 3D scene has its own multisampled target (scene_setup): none on the window */
+      if (ms > 0 && settings_get_int("scene_aa", 1, 0, 2)) { g_sc.want = 4; ms = 0; }
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, ms > 0);
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, ms);
    }
@@ -4308,6 +4481,7 @@ int main(int argc, char **argv)
    gl_setup();
    crt_prepare(g_dw, g_dh);   /* CRT filter on: its shader and target now, not on the first frame */
    logf_("shaders: %d from the cache, %d compiled", g_progs_cached, g_progs_built);
+   scene_setup();
    boot_mark("shaders");
    g_ortho = m4_ortho(0, W, H, 0);
    if (!dialog) { g_splash_fill = 0.0f; splash_step(win, 0.0f); }   /* fade in, letters dark */
@@ -4886,6 +5060,7 @@ int main(int argc, char **argv)
             glUniform3fv(u_cam, 1, cam);
          }
          launch_refl(100.0f);   /* reflections off */
+         if (n && play_t >= 0 && !blackout) { scene_begin(); scene_blend_over(); }
          glEnable(GL_DEPTH_TEST);
          glDepthFunc(GL_LEQUAL);
          /* 3D only while launching: the selected game's case / cartridge / marquee */
@@ -5032,6 +5207,8 @@ int main(int argc, char **argv)
             }
          }
          glDisable(GL_DEPTH_TEST);
+         scene_end();
+         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
          /* ---- 2D overlay ---- */
          glUseProgram(g_prog_2d);
