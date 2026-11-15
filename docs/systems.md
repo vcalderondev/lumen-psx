@@ -21,6 +21,7 @@ order     = 10                  ; position of the tab
 [library]
 layout     = psc                ; psc: <path>/<n>/Game.ini folders | files: one file per game
                                 ; | stock: the console's built-in games (below)
+                                ; | apps: native homebrew programs (below)
 paths      = /media/games/psx   ; ';'-separated; default: <root>/games/<id>
 extensions = cue,pbp,chd,m3u    ; for layout = files (and multi-disc detection)
 
@@ -161,3 +162,21 @@ has a default; a minimal declaration only needs `[system] id/name`,
 
 Shapes and animations are code (one renderer each); declarations only choose
 and parametrise them.
+
+## Homebrew apps: `layout = apps`
+
+`systems/apps.ini` ("Homebrew") lists native programs for the console, one folder each:
+
+```
+/media/games/apps/<name>/app.ini      Title=  Exec=  Publisher= (or Author=)  Year=  Players=
+/media/games/apps/<name>/<Exec>       the program (ARM hard-float, glibc 2.24, SDL 2.0.4 /
+                                      GLES like Lumen itself); a shell script works too
+/media/games/apps/<name>/icon.png     (or cover.png / .jpg) tile art
+/media/games/apps/<name>/background.jpg, music.ogg   optional, like a game
+```
+
+`Exec` is relative to the folder (no `/` at the start, no `..`). Lumen writes a launch
+request with `kind=app`; `run.sh` starts the program from its folder with the frontend's
+`SDL_VIDEODRIVER` and `LUMEN_APP_DIR` set, its output in `logs/app.log`. A FAT32 stick
+may not keep the exec bit: the program then runs from a copy in `/tmp`. RESET or OPEN
+quit the app (`lumen-buttons`), which brings the dashboard back.

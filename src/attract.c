@@ -37,6 +37,7 @@ static int is_candidate(int i)
 {
    const game_t *g = &g_games[i];
    const platform_t *p;
+   if (i >= g_nreal_games) return 0;   /* collections repeat library games */
    if (g->platform < 0 || g->platform >= g_nplat || !g->content[0]) return 0;
    p = &g_plat[g->platform];
    return p->demo_allowed && p->core[0];
