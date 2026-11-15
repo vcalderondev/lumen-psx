@@ -224,6 +224,32 @@ static void parse_color(const char *s, float c[3])
    { c[0] = ((v >> 16) & 255) / 255.0f; c[1] = ((v >> 8) & 255) / 255.0f; c[2] = (v & 255) / 255.0f; }
 }
 
+/* [media] shape -> model; unknown or missing names fall back to the kind's generic one */
+static int shape_from_name(const char *v, int kind, int card)
+{
+   static const struct { const char *n; int s; } t[] = {
+      { "jewel", SHAPE_JEWEL }, { "dvd", SHAPE_DVD }, { "umd", SHAPE_UMD },
+      { "cart", SHAPE_CART }, { "cart_snes", SHAPE_CART_SNES }, { "cart_md", SHAPE_CART_MD },
+      { "cart_nes", SHAPE_CART_NES }, { "cart_n64", SHAPE_CART_N64 }, { "cart_gb", SHAPE_CART_GB },
+      { "cart_gbc", SHAPE_CART_GB }, { "cart_gba", SHAPE_CART_GBA }, { "hucard", SHAPE_HUCARD },
+      { "card", SHAPE_HUCARD }, { "marquee", SHAPE_MARQUEE } };
+   size_t i;
+   int s = -1;
+   for (i = 0; i < sizeof(t) / sizeof(t[0]); i++) if (!strcmp(v, t[i].n)) s = t[i].s;
+   /* a shape of another kind (a cartridge model on a disc system...) is ignored */
+   if (kind == KIND_DISC && s > SHAPE_UMD) s = -1;
+   if (kind == KIND_CART && (s < SHAPE_CART || s > SHAPE_HUCARD)) s = -1;
+   if (kind == KIND_ARCADE) s = SHAPE_MARQUEE;
+   if (s < 0) s = kind == KIND_DISC ? SHAPE_JEWEL : (card ? SHAPE_HUCARD : SHAPE_CART);
+   return s;
+}
+static int decl_is_card(const char *ini)
+{
+   char v[32];
+   decl_get(ini, "media", "kind", v, sizeof(v), "");
+   return !strcmp(v, "card");
+}
+
 static void platform_from_decl(platform_t *pl, const char *ini)
 {
    char v[300];
@@ -256,6 +282,12 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    pl->launch = !strcmp(v, "insert_cartridge") ? ANIM_INSERT_CART : (!strcmp(v, "insert_coin") ? ANIM_INSERT_COIN :
                 (!strcmp(v, "open_case_disc") ? ANIM_OPEN_CASE_DISC :
                  (pl->kind == KIND_CART ? ANIM_INSERT_CART : (pl->kind == KIND_ARCADE ? ANIM_INSERT_COIN : ANIM_OPEN_CASE_DISC))));
+   decl_get(ini, "media", "shape", v, sizeof(v), "");
+   pl->shape = shape_from_name(v, pl->kind, decl_is_card(ini));
+   decl_get(ini, "animation", "slot", v, sizeof(v), "");
+   pl->slot = !strcmp(v, "top") ? SLOT_TOP : !strcmp(v, "front") ? SLOT_FRONT : !strcmp(v, "handheld") ? SLOT_HANDHELD :
+              (pl->shape == SHAPE_CART_NES || pl->shape == SHAPE_HUCARD) ? SLOT_FRONT :
+              (pl->shape == SHAPE_CART_GB || pl->shape == SHAPE_CART_GBA) ? SLOT_HANDHELD : SLOT_TOP;
    decl_get(ini, "animation", "idle", v, sizeof(v), "float"); pl->idle_float = strcmp(v, "none") != 0;
    decl_get(ini, "animation", "sound", v, sizeof(v), "");
    if (v[0]) system_asset(pl->sound, sizeof(pl->sound), pl->id, v);
@@ -669,7 +701,7 @@ static void build_platform_index(void)
 /* ------------------------------------------------------------------------ */
 /* GL resources                                                              */
 static GLuint g_prog_box, g_prog_2d, g_vbo_quad, g_vao_quad;
-static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam, u_phase, u_refl;
+static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam, u_phase, u_refl, u_aux, u_aux2, u_aux3;
 static GLint  u2_mvp, u2_tex, u2_color, u2_mode, u2_rect, u2_aux0, u2_aux1, u2_aux2;
 static GLuint g_white;
 TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
@@ -682,13 +714,18 @@ static const char *VS_BOX =
    "void main(){ v_uv=uv; v_n=mat3(model)*nrm; v_w=(model*vec4(pos,1.0)).xyz; gl_Position=mvp*vec4(pos,1.0); }\n";
 
 /* modes: 0 lit texture (insert, back card), 1 lit flat colour (tray plastic),
- *        2 floor reflection, 3 black spine with printed title, 4 clear glass lid */
+ *        2 floor reflection, 3 black spine with printed title, 4 clear glass lid,
+ *        5/6 disc (generic / its art), 7 backlit art, 8 radial glow, 9 coin, 11 cut-out
+ *        photo, 12 matte flat colour, 13 UMD caddy, 14 round button,
+ *        15 round panel with a slot hole, 16/17 rounded rectangle (colour / texture),
+ *        18/19 plastic (meshes.inc), 20 emissive */
 static const char *FS_BOX =
    "#version 300 es\n"
    "precision mediump float;\n"
    "in vec2 v_uv; in vec3 v_n; in vec3 v_w;\n"
    "uniform sampler2D tex; uniform vec3 tint; uniform float alpha; uniform int mode;\n"
    "uniform vec3 light; uniform vec3 cam; uniform float phase; uniform float refl_y;\n"
+   "uniform vec4 aux, aux2, aux3;\n"
    "out vec4 frag;\n"
    "vec4 shade(){\n"
    "  vec3 n = normalize(v_n);\n"
@@ -741,6 +778,53 @@ static const char *FS_BOX =
    "    vec3 c = gold * sh * (1.0 - rim * 0.25 * ridges) + vec3(emboss * 0.25);\n"
    "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 30.0) * 0.8;\n"
    "    return vec4(c + spec, alpha); }\n"
+   /* 13: UMD caddy: smoked plastic shield (rounder at the bottom), a clear window over
+    *     the disc drawn behind it, an opaque hub and a lighter rim */
+   "  if (mode==13) {\n"
+   "    vec2 p = v_uv * 2.0 - 1.0; float rb = p.y > 0.0 ? 0.42 : 0.12;\n"
+   "    vec2 q = abs(p) - vec2(1.0 - rb); float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rb;\n"
+   "    if (d > 0.0) discard;\n"
+   "    float r = length(p - vec2(0.0, 0.04));\n"
+   "    float win = 1.0 - smoothstep(0.84, 0.87, r), hub = 1.0 - smoothstep(0.27, 0.30, r);\n"
+   "    float rim = smoothstep(-0.07, -0.01, d);\n"
+   "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 40.0) * 0.45;\n"
+   "    vec3 c = tint * (0.55 + 0.45 * ndl) + vec3(rim * 0.16 + spec);\n"
+   "    float a = max(mix(0.94, 0.16, win), hub * 0.90); a = max(a, rim * 0.95);\n"
+   "    return vec4(c, a * alpha); }\n"
+   /* 15: flat ring top (a round raised panel) with a rectangular hole: aux.xy hole
+    *     half-size in [-1,1] units, aux.z inner ring radius (a groove) */
+   "  if (mode==15) { vec2 p = v_uv * 2.0 - 1.0; float r = length(p); if (r > 1.0) discard;\n"
+   "    if (abs(p.x) < aux.x && abs(p.y) < aux.y) discard;\n"
+   "    float g = smoothstep(0.012, 0.0, abs(r - aux.z)) * 0.5 + smoothstep(0.96, 1.0, r) * 0.35;\n"
+   "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 40.0) * 0.30;\n"
+   "    return vec4(tint * (0.62 + 0.38 * ndl) * (1.0 - g) + vec3(spec), alpha); }\n"
+   /* 16 / 17: rounded rectangle face (flat colour / texture): aux2.xy its size, aux the
+    *     corner radii (top-left, top-right, bottom-right, bottom-left), a rectangular
+    *     hole of half-size aux2.zw centred at aux3.xy (face units, y up) */
+   "  if (mode==16 || mode==17) { vec2 hs = aux2.xy * 0.5; vec2 p = (v_uv - 0.5) * aux2.xy; p.y = -p.y;\n"
+   "    float r = p.x < 0.0 ? (p.y > 0.0 ? aux.x : aux.w) : (p.y > 0.0 ? aux.y : aux.z);\n"
+   "    vec2 q = abs(p) - (hs - vec2(r)); float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
+   "    if (d > 0.0 || all(lessThan(abs(p - aux3.xy), aux2.zw))) discard;\n"
+   "    vec3 b = mode==17 ? texture(tex, v_uv).rgb * tint : tint;\n"
+   "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 30.0) * (mode==17 ? 0.10 : 0.22);\n"
+   "    return vec4(b * (mode==17 ? 0.55 + 0.45 * ndl : 0.62 + 0.38 * ndl) + vec3(spec), alpha); }\n"
+   /* 18 / 19: plastic (flat colour / texture times colour) for the modelled hardware:
+    *     sky / ground ambient, wrapped diffuse, Fresnel-weighted Blinn specular; aux3.z
+    *     gloss exponent, aux3.w specular strength. 20: emissive (LEDs, lit screens) */
+   "  if (mode==18 || mode==19) {\n"
+   "    vec3 b = mode==19 ? texture(tex, v_uv).rgb * tint : tint;\n"
+   "    vec3 hv = normalize(l + v); float ndv = max(dot(n, v), 0.0);\n"
+   "    float wrap = max((dot(n, l) + 0.35) / 1.35, 0.0);\n"
+   "    vec3 amb = mix(vec3(0.30, 0.29, 0.28), vec3(0.50, 0.54, 0.62), n.y * 0.5 + 0.5);\n"
+   "    float fr = 0.04 + 0.96 * pow(1.0 - ndv, 5.0);\n"
+   "    float sp = pow(max(dot(n, hv), 0.0), aux3.z) * aux3.w * (0.6 + 2.0 * fr);\n"
+   "    float fill = max(dot(n, normalize(vec3(0.8, 0.3, 0.6))), 0.0) * 0.18;\n"
+   "    vec3 c = b * (amb * 0.72 + wrap * 0.58 + fill) + vec3(sp) + vec3(fr * 0.05);\n"
+   "    return vec4(c, alpha); }\n"
+   "  if (mode==20) return vec4(tint, alpha);\n"
+   "  if (mode==14) { vec2 p = v_uv * 2.0 - 1.0; float r2 = dot(p, p); if (r2 > 1.0) discard;\n"
+   "    float dome = sqrt(1.0 - r2) * 0.35 + 0.65;\n"
+   "    return vec4(tint * (0.55 + 0.45 * ndl) * dome + vec3(pow(max(dot(reflect(-l, n), v), 0.0), 30.0) * 0.25), alpha); }\n"
    "  vec3 base;\n"
    "  if (mode==1 || mode==12) base = tint;\n"
    "  else if (mode==3) { float t = texture(tex, vec2(1.0 - v_uv.y, v_uv.x)).a; base = mix(vec3(0.030, 0.030, 0.036), vec3(0.90), t); }\n"
@@ -888,6 +972,9 @@ static void gl_setup(void)
    u_cam = glGetUniformLocation(g_prog_box, "cam");
    u_phase = glGetUniformLocation(g_prog_box, "phase");
    u_refl = glGetUniformLocation(g_prog_box, "refl_y");
+   u_aux = glGetUniformLocation(g_prog_box, "aux");
+   u_aux2 = glGetUniformLocation(g_prog_box, "aux2");
+   u_aux3 = glGetUniformLocation(g_prog_box, "aux3");
    g_prog_2d = link_prog(VS_2D, FS_2D);
    u2_mvp = glGetUniformLocation(g_prog_2d, "mvp");
    u2_tex = glGetUniformLocation(g_prog_2d, "tex");
@@ -1192,6 +1279,8 @@ static void draw_quad_box(mat4 model, GLuint tex, const float tint[3], float alp
    glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
+#include "meshes.inc"
+
 /* PS1 jewel case, height 1.0: 142 x 125 x 10 mm -> width 1.136, depth 0.08.
  * Square paper insert on the right, hinge strip on the left, black tray, glass lid. */
 #define CASE_W  1.136f
@@ -1211,6 +1300,7 @@ static char         g_disc_want[512];  /* main thread: art asked for          */
 static char         g_disc_path[512];  /* main thread: art held in g_disc_tex */
 static int          g_disc_w = 1, g_disc_h = 1;   /* its size (cartridge photos keep their aspect) */
 static mat4   g_disc_start; /* world matrix of the disc in the tray (launch)       */
+static int    g_disc_caddy; /* that disc is a UMD: it flies in its caddy           */
 
 static int    g_detail = 1;  /* 0: skip expensive effects (far cases)               */
 /* effect switches (all on; the bench mode turns them off one at a time) */
@@ -1263,6 +1353,27 @@ static void draw_case(const game_t *g, mat4 base, float alpha, float open, float
    const float hw = CASE_W * 0.5f, hd = CASE_D * 0.5f, PI = (float)M_PI;
    const float ins_l = -hw + HINGE, ins_r = hw - 0.018f, ins_w = ins_r - ins_l, ins_c = (ins_l + ins_r) * 0.5f;
    mat4 lid;
+   const model_t *mdl = mdl_get("case_jewel");
+   if (mdl)
+   {  /* the modelled case (assets/models/case_jewel.lmdl, mm, 125 mm = height 1): the
+       * disc sits on the tray's hub at x +5.5, 0.7 mm in front of the tray */
+      const float k = 1.0f / 125.0f;
+      mpose_t ps;
+      memset(&ps, 0, sizeof(ps));
+      ps.ch[MC_OPEN] = open;
+      if (open > 0.3f)
+      {
+         g_disc_caddy = 0;
+         g_disc_start = m4_mul(base, m4_mul(m4_translate(5.5f * k, 0, 0.7f * k + lift * 0.16f), m4_scale(120.0f * k, 120.0f * k, 1)));
+         if (fly <= 0.0f)
+         {
+            glUniform1f(u_phase, spin);
+            draw_quad_box(m4_mul(g_disc_start, m4_rot_z(-spin)), g_disc_tex, one, alpha, g_disc_tex ? 6 : 5);
+         }
+      }
+      mdl_draw(mdl, m4_mul(base, m4_scale(k, k, k)), g, &ps, alpha);
+      return;
+   }
 
    /* tray: back card, edges, spine, hinge strip, floor */
    if (g->back_tex) case_part(base, 0, 0, -hd, PI, 0, CASE_W, 1.0f, g->back_tex, one, alpha, 0);
@@ -1278,6 +1389,7 @@ static void draw_case(const game_t *g, mat4 base, float alpha, float open, float
    /* disc sitting in the tray and lifting; once it flies it is drawn in world space */
    if (open > 0.3f)
    {
+      g_disc_caddy = 0;
       g_disc_start = m4_mul(base, m4_mul(m4_translate(ins_c, 0, -hd + 0.012f + lift * 0.16f), m4_scale(0.92f, 0.92f, 1)));
       if (fly <= 0.0f)
       {
@@ -1299,6 +1411,99 @@ static void draw_case(const game_t *g, mat4 base, float alpha, float open, float
    }
 }
 
+/* UMD caddy over its disc (drawn after it): smoked plastic, a window on the disc */
+static void draw_caddy(mat4 m, float alpha)
+{
+   static const float smoke[3] = { 0.15f, 0.15f, 0.18f };
+   glDepthMask(GL_FALSE);
+   draw_quad_box(m, 0, smoke, alpha, 13);
+   glDepthMask(GL_TRUE);
+}
+
+/* DVD / UMD keep case (shape dvd | umd): a plastic shell of the declared aspect, the
+ * cover under the front's clear sleeve, the printed spine on the left. It opens like a
+ * book about the spine; the disc (DVD: 120 mm in a 190 mm case) or the UMD in its caddy
+ * (60 mm in 180 mm) sits in the back half and lifts out like the CD. */
+#define KEEP_D 0.072f
+static void draw_keepcase(const game_t *g, const platform_t *pl, mat4 base, float alpha, float open, float lift, float fly, float spin)
+{
+   static const float one[3] = { 1, 1, 1 };
+   const float w = pl->w, h = pl->h, hw = w * 0.5f, hh = h * 0.5f, hd = KEEP_D * 0.5f, PI = (float)M_PI, lt = 0.012f;
+   const int umd = pl->shape == SHAPE_UMD;
+   const float dd = umd ? 0.31f * h : 0.63f * h;
+   float shell[3], inner[3], rim[3], well[3];
+   mat4 lid;
+   int k;
+   const model_t *mdl = mdl_get(umd ? "case_umd" : "case_dvd");
+   if (mdl)
+   {  /* the modelled keep case (mm, its height = h): the disc on the hub beside the spine
+       * (x +7, 4 mm in from the back), the UMD in its pocket (x +7, y +20, 3.5 mm in) */
+      const float km = h / (mdl->hi[1] - mdl->lo[1]);
+      const float dx = 7.0f * km, dy = (umd ? 20.0f : 0.0f) * km, dz = (umd ? -3.5f : -4.0f) * km + lift * 0.16f;
+      const float dm = (umd ? 60.0f : 120.0f) * km;
+      const model_t *um = umd ? mdl_get("umd") : NULL;
+      mpose_t ps;
+      memset(&ps, 0, sizeof(ps));
+      ps.ch[MC_OPEN] = open;
+      if (open > 0.3f)
+      {
+         g_disc_caddy = umd;
+         g_disc_start = m4_mul(base, m4_mul(m4_translate(dx, dy, dz), m4_scale(dm, dm, 1)));
+         if (fly <= 0.0f)
+         {
+            glUniform1f(u_phase, spin);
+            draw_quad_box(m4_mul(g_disc_start, m4_rot_z(-spin)), g_disc_tex, one, alpha, g_disc_tex ? 6 : 5);
+            if (um) mdl_draw(um, m4_mul(base, m4_mul(m4_translate(dx, dy, dz), m4_scale(km, km, km))), g, NULL, alpha);
+            else if (umd) draw_caddy(m4_mul(g_disc_start, m4_mul(m4_translate(0, 0.022f, 0.004f), m4_scale(1.07f, 1.09f, 1))), alpha);
+         }
+      }
+      mdl_draw(mdl, m4_mul(base, m4_scale(km, km, km)), g, &ps, alpha);
+      return;
+   }
+   for (k = 0; k < 3; k++)
+   {
+      shell[k] = pl->color[k]; inner[k] = pl->color[k] * 0.80f + 0.02f;
+      rim[k] = pl->color[k] * 1.30f + 0.06f; well[k] = pl->color[k] * 0.45f;
+   }
+   /* back half: outer face, walls, spine with the printed title */
+   case_part(base, 0, 0, -hd, PI, 0, w, h, 0, shell, alpha, 1);
+   case_part(base, hw, 0, 0, PI / 2, 0, KEEP_D, h, 0, shell, alpha, 1);
+   case_part(base, 0, hh, 0, 0, -PI / 2, w, KEEP_D, 0, shell, alpha, 1);
+   case_part(base, 0, -hh, 0, 0, PI / 2, w, KEEP_D, 0, shell, alpha, 1);
+   case_part(base, -hw, 0, 0, -PI / 2, 0, KEEP_D, h, g->spine_tex, one, alpha, 3);
+   if (open > 0.0f)
+   {  /* inside: floor, the raised rim, the well the disc / caddy sits in */
+      case_part(base, 0, 0, -hd + 0.004f, 0, 0, w - 0.016f, h - 0.016f, 0, inner, alpha, 1);
+      case_part(base, 0, hh - 0.030f, -hd + 0.010f, 0, 0, w - 0.05f, 0.014f, 0, rim, alpha, 1);
+      case_part(base, 0, -hh + 0.030f, -hd + 0.010f, 0, 0, w - 0.05f, 0.014f, 0, rim, alpha, 1);
+      case_part(base, hw - 0.030f, 0, -hd + 0.010f, 0, 0, 0.014f, h - 0.05f, 0, rim, alpha, 1);
+      case_part(base, 0, 0, -hd + 0.006f, 0, 0, dd * 1.14f, dd * 1.16f, 0, well, alpha, 1);
+   }
+   /* the disc (and its caddy) on the floor, lifting; once it flies it is drawn in world space */
+   if (open > 0.3f)
+   {
+      g_disc_caddy = umd;
+      g_disc_start = m4_mul(base, m4_mul(m4_translate(0, 0, -hd + 0.012f + lift * 0.16f), m4_scale(dd, dd, 1)));
+      if (fly <= 0.0f)
+      {
+         glUniform1f(u_phase, spin);
+         draw_quad_box(m4_mul(g_disc_start, m4_rot_z(-spin)), g_disc_tex, one, alpha, g_disc_tex ? 6 : 5);
+         if (umd) draw_caddy(m4_mul(g_disc_start, m4_mul(m4_translate(0, 0.022f, 0.004f), m4_scale(1.07f, 1.09f, 1))), alpha);
+      }
+   }
+   /* front cover: rotates about the spine (left front edge), opening ~145 degrees */
+   lid = m4_mul(base, m4_mul(m4_translate(-hw, 0, hd), m4_mul(m4_rot_y(-open * 2.5f), m4_translate(hw, 0, -hd))));
+   case_part(lid, 0, 0, hd, 0, 0, w, h, 0, shell, alpha, 1);
+   case_part(lid, 0.006f, 0, hd + 0.002f, 0, 0, w - 0.026f, h - 0.018f, g->tex, one, alpha, 0);
+   if (open > 0.0f)
+   {  /* the cover's inside and its edges (it is a thin panel) */
+      case_part(lid, 0, 0, hd - lt, PI, 0, w, h, 0, inner, alpha, 1);
+      case_part(lid, hw, 0, hd - lt * 0.5f, PI / 2, 0, lt, h, 0, rim, alpha, 1);
+      case_part(lid, 0, hh, hd - lt * 0.5f, 0, -PI / 2, w, lt, 0, rim, alpha, 1);
+      case_part(lid, 0, -hh, hd - lt * 0.5f, 0, PI / 2, w, lt, 0, rim, alpha, 1);
+   }
+}
+
 /* The flying disc: from its place in the tray to the centre of the screen,
  * growing to ~80 % of the screen height, spinning. */
 static void draw_flying_disc(float fly, float spin, float alpha)
@@ -1309,32 +1514,20 @@ static void draw_flying_disc(float fly, float spin, float alpha)
    float k = fly * fly * (3 - 2 * fly);
    float x = lerpf(a[12], 0.0f, k), y = lerpf(a[13], -0.22f, k), z = lerpf(a[14], 2.55f, k);
    float d = lerpf(sx, 1.18f, k);
-   mat4 m = m4_mul(m4_translate(x, y, z), m4_mul(m4_rot_z(-spin), m4_scale(d, d, 1)));
+   mat4 m;
+   if (g_disc_caddy) d = lerpf(sx, 0.95f, k);   /* a UMD: smaller, in its caddy */
+   m = m4_mul(m4_translate(x, y, z), m4_mul(m4_rot_z(-spin), m4_scale(d, d, 1)));
    glUniform1f(u_phase, spin);
    draw_quad_box(m, g_disc_tex, one, alpha, g_disc_tex ? 6 : 5);
+   if (g_disc_caddy)
+   {  /* the UMD's shell around it (the model's disc is 60 mm across) */
+      const model_t *um = mdl_get("umd");
+      if (um) mdl_draw(um, m4_mul(m4_translate(x, y, z), m4_scale(d / 60.0f, d / 60.0f, d / 60.0f)), NULL, NULL, alpha);
+      else draw_caddy(m4_mul(m4_translate(x, y + 0.022f * d, z + 0.004f), m4_scale(d * 1.07f, d * 1.09f, 1)), alpha);
+   }
 }
 
-/* Cartridge: plastic shell (declared colour/aspect), label with the game art,
- * grip ridges at the bottom. lift/drop/tilt drive the insert animation. */
-static void draw_cart(const game_t *g, const platform_t *pl, mat4 base, float alpha)
-{
-   static const float one[3] = { 1, 1, 1 };
-   const float w = pl->w, h = pl->h, d = 0.13f, hw = w * 0.5f, hh = h * 0.5f, hd = d * 0.5f, PI = (float)M_PI;
-   float body[3], dark[3], light[3];
-   int k;
-   for (k = 0; k < 3; k++) { body[k] = pl->color[k]; dark[k] = pl->color[k] * 0.62f; light[k] = pl->color[k] * 0.85f + 0.05f; }
-   case_part(base, 0, 0, hd, 0, 0, w, h, 0, body, alpha, 1);                       /* front */
-   case_part(base, 0, 0, -hd, PI, 0, w, h, 0, dark, alpha, 1);                     /* back */
-   case_part(base, hw, 0, 0, PI / 2, 0, d, h, 0, light, alpha, 1);                 /* right */
-   case_part(base, -hw, 0, 0, -PI / 2, 0, d, h, 0, light, alpha, 1);               /* left */
-   case_part(base, 0, hh, 0, 0, -PI / 2, w, d, 0, light, alpha, 1);                /* top */
-   case_part(base, 0, -hh, 0, 0, PI / 2, w, d, 0, dark, alpha, 1);                 /* bottom */
-   /* label: upper part of the front, inset */
-   case_part(base, 0, hh - 0.08f * h - 0.62f * h * 0.5f, hd + 0.002f, 0, 0, w * 0.82f, h * 0.62f, g->tex, one, alpha, 0);
-   /* grip ridges */
-   for (k = 0; k < 4; k++)
-      case_part(base, 0, -hh + 0.06f * h + k * 0.045f * h, hd + 0.003f, 0, 0, w * 0.55f, 0.012f * h, 0, dark, alpha, 1);
-}
+#include "consoles.inc"
 
 /* Arcade marquee: black frame, backlit art (emissive), coloured halo. lit: 0..1.25 */
 static void draw_marquee(const game_t *g, const platform_t *pl, mat4 base, float alpha, float lit)
@@ -1365,7 +1558,7 @@ static float cart_photo_w(const platform_t *pl) { return pl->h * (float)g_disc_w
 static void draw_cart_photo(const game_t *g, const platform_t *pl, mat4 base, float alpha)
 {
    static const float one[3] = { 1, 1, 1 };
-   const float h = pl->h, w = cart_photo_w(pl), d = 0.15f * h, PI = (float)M_PI;
+   const float h = pl->h, w = cart_photo_w(pl), d = cart_depth_k(pl) * h, PI = (float)M_PI;
    const float iw = w * 0.96f, ih = h * 0.97f, hd = d * 0.5f;   /* shell inside the photo's rounded outline */
    float body[3], dark[3], light[3];
    int k;
@@ -1379,71 +1572,6 @@ static void draw_cart_photo(const game_t *g, const platform_t *pl, mat4 base, fl
    case_part(base, 0, 0, hd, 0, 0, w, h, g_disc_tex, one, alpha, 11);         /* front: the photo */
 }
 
-/* Top-loading console for the cartridge launch, in its own frame: the slot opening is
- * centred at the origin of the top surface (y = 0), sw x sd; the body goes down to
- * -CON_H and towards the camera to +CON_Z1. Plastic in the platform colour, a dark slot
- * with walls (the body itself hides what goes in), a power LED on the front. */
-#define CON_H  0.46f
-#define CON_Z0 -0.50f
-#define CON_Z1 0.62f
-static void draw_console(const platform_t *pl, mat4 c, float sw, float sd, float led, float shadow)
-{
-   static const float slot[3] = { 0.025f, 0.025f, 0.03f }, rim[3] = { 0.10f, 0.10f, 0.115f };
-   const float PI = (float)M_PI, bw = sw + 1.00f > 2.1f ? sw + 1.00f : 2.1f, hb = bw * 0.5f;
-   const float dz = CON_Z1 - CON_Z0, sdepth = CON_H * 0.85f, hs = sw * 0.5f, hz = sd * 0.5f, r = 0.05f;
-   float top[3], front[3], side[3], groove[3], ledc[3], glow[3];
-   int k;
-   for (k = 0; k < 3; k++)
-   {
-      top[k] = pl->color[k] * 0.95f; front[k] = pl->color[k] * 0.50f; side[k] = pl->color[k] * 0.62f;
-      groove[k] = pl->color[k] * 0.38f;
-   }
-   ledc[0] = 0.25f + 0.75f * led; ledc[1] = 0.03f + 0.10f * led; ledc[2] = 0.03f + 0.06f * led;
-   glow[0] = 1.0f; glow[1] = 0.22f; glow[2] = 0.12f;
-   /* top surface around the opening (4 strips) */
-   case_part(c, 0, 0, (hz + CON_Z1) * 0.5f, 0, -PI / 2, bw, CON_Z1 - hz, 0, top, 1, 12);
-   case_part(c, 0, 0, (CON_Z0 - hz) * 0.5f, 0, -PI / 2, bw, -hz - CON_Z0, 0, top, 1, 12);
-   case_part(c, -(hb + hs) * 0.5f, 0, 0, 0, -PI / 2, hb - hs, sd, 0, top, 1, 12);
-   case_part(c, (hb + hs) * 0.5f, 0, 0, 0, -PI / 2, hb - hs, sd, 0, top, 1, 12);
-   /* dark rim round the opening, just above the top */
-   case_part(c, 0, 0.002f, hz + r * 0.5f, 0, -PI / 2, sw + 2 * r, r, 0, rim, 1, 1);
-   case_part(c, 0, 0.002f, -hz - r * 0.5f, 0, -PI / 2, sw + 2 * r, r, 0, rim, 1, 1);
-   case_part(c, -hs - r * 0.5f, 0.002f, 0, 0, -PI / 2, r, sd, 0, rim, 1, 1);
-   case_part(c, hs + r * 0.5f, 0.002f, 0, 0, -PI / 2, r, sd, 0, rim, 1, 1);
-   /* grooves on the top behind the slot */
-   for (k = 0; k < 4; k++)
-      case_part(c, 0, 0.002f, CON_Z0 + 0.12f + k * 0.07f, 0, -PI / 2, bw * 0.62f, 0.022f, 0, groove, 1, 12);
-   /* slot walls and floor */
-   case_part(c, 0, -sdepth * 0.5f, hz, PI, 0, sw, sdepth, 0, slot, 1, 1);
-   case_part(c, 0, -sdepth * 0.5f, -hz, 0, 0, sw, sdepth, 0, slot, 1, 1);
-   case_part(c, -hs, -sdepth * 0.5f, 0, PI / 2, 0, sd, sdepth, 0, slot, 1, 1);
-   case_part(c, hs, -sdepth * 0.5f, 0, -PI / 2, 0, sd, sdepth, 0, slot, 1, 1);
-   case_part(c, 0, -sdepth, 0, 0, -PI / 2, sw, sd, 0, slot, 1, 1);
-   /* soft shadow of the cartridge on the top, firmer as it comes down (mode 8: radial) */
-   if (shadow > 0.0f)
-   {
-      static const float black[3] = { 0, 0, 0 };
-      glDepthMask(GL_FALSE);
-      case_part(c, 0, 0.004f, 0, 0, -PI / 2, sw * 1.45f, sd + 0.55f, 0, black, shadow, 8);
-      glDepthMask(GL_TRUE);
-   }
-   /* front, sides */
-   case_part(c, 0, -CON_H * 0.5f, CON_Z1, 0, 0, bw, CON_H, 0, front, 1, 12);
-   case_part(c, 0, -0.06f, CON_Z1 + 0.002f, 0, 0, bw, 0.018f, 0, groove, 1, 12);
-   case_part(c, hb, -CON_H * 0.5f, (CON_Z0 + CON_Z1) * 0.5f, PI / 2, 0, dz, CON_H, 0, side, 1, 12);
-   case_part(c, -hb, -CON_H * 0.5f, (CON_Z0 + CON_Z1) * 0.5f, -PI / 2, 0, dz, CON_H, 0, side, 1, 12);
-   /* power LED and its glow */
-   case_part(c, -hb + 0.30f, -CON_H * 0.55f, CON_Z1 + 0.003f, 0, 0, 0.07f, 0.035f, 0, ledc, 1, 1);
-   if (led > 0.0f)
-   {
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-      glDepthMask(GL_FALSE);
-      case_part(c, -hb + 0.30f, -CON_H * 0.55f, CON_Z1 + 0.004f, 0, 0, 0.30f, 0.30f, 0, glow, 0.70f * led, 8);
-      glDepthMask(GL_TRUE);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-   }
-}
-
 /* dispatcher: one renderer per declared media kind */
 static void draw_media(const game_t *g, const platform_t *pl, mat4 base, float alpha,
                        float open, float lift, float fly, float spin, float lit)
@@ -1451,6 +1579,7 @@ static void draw_media(const game_t *g, const platform_t *pl, mat4 base, float a
    if (pl->kind == KIND_CART && cart_photo_ok(g)) draw_cart_photo(g, pl, base, alpha);
    else if (pl->kind == KIND_CART) draw_cart(g, pl, base, alpha);
    else if (pl->kind == KIND_ARCADE) draw_marquee(g, pl, base, alpha, lit);
+   else if (pl->shape == SHAPE_DVD || pl->shape == SHAPE_UMD) draw_keepcase(g, pl, base, alpha, open, lift, fly, spin);
    else draw_case(g, base, alpha, open, lift, fly, spin);
 }
 
@@ -1552,7 +1681,8 @@ static void launch_warmup(void)
    GLuint wtexs[2] = { 0, 0 }, wtex, keep_disc = g_disc_tex;
    const float light[3] = { -0.5f, 0.7f, 1.0f }, cam[3] = { 0.0f, -0.22f, 4.7f };
    mat4 base = m4_mul(m4_translate(0, 0, 0), m4_scale(0.004f, 0.004f, 0.004f));
-   int p, k, x, done_kind[3] = { 0, 0, 0 };
+   int p, k, x, done_kind[SHAPE_COUNT * 3];
+   memset(done_kind, 0, sizeof(done_kind));
    for (x = 0; x < 2; x++)
    {  /* power-of-two and not (covers are any size): some drivers specialise on it */
       SDL_Surface *ws = SDL_CreateRGBSurface(0, x ? 10 : 8, x ? 6 : 8, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
@@ -1573,8 +1703,9 @@ static void launch_warmup(void)
    for (p = 0; p < g_nplat * 2; p++)
    {
       const platform_t *gp = &g_plat[p % g_nplat];
-      if (done_kind[gp->kind] & (1 << (p / g_nplat))) continue;
-      done_kind[gp->kind] |= 1 << (p / g_nplat);
+      const int dk = gp->shape * 3 + (gp->kind == KIND_CART ? gp->slot : 0);   /* each model and console once */
+      if (done_kind[dk] & (1 << (p / g_nplat))) continue;
+      done_kind[dk] |= 1 << (p / g_nplat);
       wtex = wtexs[p / g_nplat];
       wg.tex = wg.spine_tex = wtex;
       for (k = 0; k < 4; k++)
@@ -1595,7 +1726,21 @@ static void launch_warmup(void)
             glEnable(GL_DEPTH_TEST);
          }
       }
-      if (gp->kind == KIND_CART) draw_console(gp, base, 0.5f, 0.2f, 1.0f, 0.5f);
+      if (gp->kind == KIND_CART)
+      {  /* the console of this system (every model uses the same shader modes, but the
+          * driver may specialise on blend / depth states between them) */
+         const con_spec_t cs = con_spec(gp);
+         mat4 cm = m4_mul(base, m4_scale(0.01f, 0.01f, 0.01f));
+         if (gp->slot == SLOT_TOP) draw_topcon(gp, cm, 60, 10, 0.5f, 1.0f);
+         if (gp->slot == SLOT_FRONT) draw_frontcon(gp, &cs, cm, 60, 10, 50, 0.5f, 1.0f);
+         if (gp->slot == SLOT_HANDHELD) { draw_handheld(&wg, gp, &cs, cm, 60, 10, 0.0f, 1.0f); draw_handheld(&wg, gp, &cs, cm, 60, 10, 1.0f, 1.0f); }
+      }
+      if (gp->shape == SHAPE_UMD)
+      {
+         glDisable(GL_DEPTH_TEST);
+         g_disc_caddy = 1; draw_flying_disc(0.0f, 0.0f, 0.0f); g_disc_caddy = 0;
+         glEnable(GL_DEPTH_TEST);
+      }
       if (gp->kind == KIND_ARCADE)
       {  /* coin plate, slot and coin */
          draw_quad_box(base, 0, one, 0.0f, 1);
@@ -2636,7 +2781,7 @@ static void coll_row_follow(platform_t *row, int gi)
    const platform_t *src;
    if (gi < 0 || gi >= g_ngames) return;
    src = &g_plat[g_games[gi].platform];
-   row->kind = src->kind; row->launch = src->launch; row->idle_float = src->idle_float;
+   row->kind = src->kind; row->launch = src->launch; row->idle_float = src->idle_float; row->shape = src->shape; row->slot = src->slot;
    row->aspect = src->aspect; row->w = src->w; row->h = src->h;
    memcpy(row->color, src->color, sizeof(row->color));
    memcpy(row->art, src->art, sizeof(row->art)); memcpy(row->media_art, src->media_art, sizeof(row->media_art));
@@ -3927,6 +4072,8 @@ int main(int argc, char **argv)
          float zoom = 0.0f, open = 0.0f, lift = 0.0f, fly = 0.0f, spin = 0.0f, flash = 0.0f, launching = 0.0f;
          float drop = 0.0f, tilt = 0.0f, shake = 0.0f, led = 0.0f, lit = 1.0f;
          float con = 0.0f, align = 0.0f, ins = 0.0f;   /* cartridge: console rise, line-up, insertion */
+         float hflip = 0.0f, screen_on = 0.0f;         /* handheld: turn round, screen on */
+         float press = 0.0f, shut = 0.0f, seat_t = -1.0f;  /* NES: push down, door shuts; seat time (click) */
          float coin_x = 0.0f, coin_spin = 0.0f, coin_in = 0.0f, credit = 0.0f, insert = 0.0f;
          int covered, blackout;
          float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
@@ -3950,6 +4097,29 @@ int main(int argc, char **argv)
                if (pt > 1.15f) shake = 0.5f * expf(-(pt - 1.15f) * 14.0f) * sinf((pt - 1.15f) * 60.0f);
                led = clampf((pt - 1.28f) / 0.10f, 0, 1);
                fl_t = 1.65f; end = 2.10f;
+               seat_t = 1.15f;
+               if (pl && pl->slot == SLOT_FRONT)
+               {  /* slides in through the front opening: a longer travel; the NES then
+                   * pushes the cartridge down (it locks there) and its door shuts */
+                  const int nes = pl->shape != SHAPE_HUCARD;
+                  u = clampf((pt - 0.85f) / 0.42f, 0, 1); ins = SMOOTH(u);
+                  seat_t = nes ? 1.39f : 1.27f;
+                  if (nes) press = SMOOTH(clampf((pt - 1.29f) / 0.10f, 0, 1));
+                  if (nes) shut = SMOOTH(clampf((pt - 1.50f) / 0.20f, 0, 1));
+                  shake = pt > seat_t ? 0.5f * expf(-(pt - seat_t) * 14.0f) * sinf((pt - seat_t) * 60.0f) : 0.0f;
+                  led = clampf((pt - seat_t - 0.12f) / 0.10f, 0, 1);
+                  fl_t = seat_t + 0.55f; end = fl_t + 0.45f;
+               }
+               else if (pl && pl->slot == SLOT_HANDHELD)
+               {  /* into the back of the handheld, which turns round and lights its screen */
+                  hflip = SMOOTH(clampf((pt - 1.25f) / 0.55f, 0, 1));
+                  led = clampf((pt - 1.35f) / 0.10f, 0, 1);
+                  screen_on = SMOOTH(clampf((pt - 1.75f) / 0.22f, 0, 1));
+                  fl_t = 2.20f; end = 2.65f;
+               }
+               /* the click, the moment the cartridge seats */
+               if (pdt > 0.0f && play_pt - pdt < seat_t && play_pt >= seat_t)
+                  music_click(pl && pl->slot == SLOT_FRONT ? 1 : (pl && pl->slot == SLOT_HANDHELD ? 2 : 0));
             }
             else if (anim == ANIM_INSERT_COIN)
             {
@@ -4128,18 +4298,62 @@ int main(int argc, char **argv)
                base = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x),
                       m4_mul(m4_rot_y(g->ry.x + sway), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
                if (o == 0 && play_t >= 0 && anim == ANIM_INSERT_CART)
-               {  /* the console, and the cartridge in the console's frame: from where the
-                   * carousel left it to above the slot (align), then down into it (ins) */
-                  const float tc = 0.55f, ph = gp->h;
-                  const float cw = cart_photo_ok(g) ? cart_photo_w(gp) : gp->w, cd = (cart_photo_ok(g) ? 0.15f : 0.13f) * ph;
-                  const float sc = 1.0f / ph, yh = ph * sc * 0.5f + 0.30f, yi = ph * sc * (0.5f - 0.55f);
-                  const float yl = lerpf(yh, yi, ins), cy = -0.92f - (1.0f - con) * 1.1f, cz = -0.25f;
-                  const float px = lerpf(g->x.x, 0.0f, align), py = lerpf(bob + ty, cy + yl * cosf(tc), align);
-                  const float pz = lerpf(g->z.x, cz + yl * sinf(tc), align), ss = lerpf(g->sc.x, sc, align);
-                  mat4 cm = m4_mul(m4_translate(0, cy, cz), m4_rot_x(tc));
-                  base = m4_mul(m4_translate(px, py, pz), m4_mul(m4_rot_y((g->ry.x + sway) * (1.0f - align)),
-                         m4_mul(m4_rot_x(tc * align), m4_scale(ss, ss, ss))));
-                  if (con > 0.0f) draw_console(gp, cm, cw * sc + 0.10f, cd * sc + 0.07f, led, 0.65f * align * (1.0f - 0.4f * ins));
+               {  /* the console (consoles.inc, real size in mm: k world units per mm) and
+                   * the cartridge at the same scale, from where the carousel left it to its
+                   * slot (align), then in (ins) */
+                  const float PI = (float)M_PI, ph = gp->h;
+                  const con_spec_t cs = con_spec(gp);
+                  const float k = cs.k, cw = cart_photo_ok(g) ? cart_photo_w(gp) : gp->w, cd = cart_depth_k(gp) * ph;
+                  const float sc = k * cs.cart_w / cw, L = ph * sc, T = cd * sc;
+                  const float ry0 = (g->ry.x + sway) * (1.0f - align);
+                  mat4 tgt;
+                  if (gp->slot == SLOT_FRONT)
+                  {  /* lies down (label up), lines up with the opening, slides in; the NES
+                      * then pushes it down and shuts its door */
+                     const int nes = gp->shape != SHAPE_HUCARD;
+                     const float tc = 0.60f, seat = nes ? 1.03f : cs.seat, zf = cs.BD * 0.5f * k;
+                     const float sw_mm = cs.cart_w + 6, sh_mm = T / k + (nes ? 14.0f : 4.0f), tl_mm = seat * L / k + 8;
+                     const float zh = zf + L * 0.5f + 0.25f, zi = zf + L * 0.5f - seat * L, zc = lerpf(zh, zi, ins);
+                     const float yc = (cs.slot_y + (nes ? 4.5f - 9.0f * press : 0.0f)) * k;
+                     const float ins0 = 0.25f / (0.25f + seat * L), flap = clampf((ins - ins0) / 0.12f, 0, 1) * (1.0f - shut);
+                     const float cy = 0.10f - (1.0f - con) * 1.4f, cz = -0.80f;
+                     mat4 cm = m4_mul(m4_translate(0, cy, cz), m4_rot_x(tc));
+                     tgt = m4_mul(cm, m4_mul(m4_translate(cs.slot_x * k, yc, zc), m4_mul(m4_rot_x(-PI / 2), m4_scale(sc, sc, sc))));
+                     base = m4_mul(m4_translate(lerpf(g->x.x, tgt.m[12], align), lerpf(bob + ty, tgt.m[13], align), lerpf(g->z.x, tgt.m[14], align)),
+                            m4_mul(m4_rot_y(ry0), m4_mul(m4_rot_x((tc - PI / 2) * align), m4_scale(lerpf(g->sc.x, sc, align), lerpf(g->sc.x, sc, align), lerpf(g->sc.x, sc, align)))));
+                     if (con > 0.0f) draw_frontcon(gp, &cs, m4_mul(cm, m4_scale(k, k, k)), sw_mm, sh_mm, tl_mm, flap, led);
+                  }
+                  else if (gp->slot == SLOT_HANDHELD)
+                  {  /* it rises showing its back, the cartridge (label to the camera) goes
+                      * into the slot at the top, then it turns round and lights its screen */
+                     const float tilt = 0.18f, top = cs.BH * 0.5f * k, zs = cs.slot_z * k;
+                     const int gba = gp->shape == SHAPE_CART_GBA;
+                     const float hy = lerpf(gba ? -0.42f : -0.62f, gba ? -0.16f : -0.24f, hflip) - (1.0f - con) * 2.4f, hz = 0.30f;
+                     const float yc = lerpf(top + L * 0.5f + 0.22f, top + L * 0.5f - cs.seat * L, ins);
+                     mat4 hm = m4_mul(m4_translate(0, hy, hz), m4_mul(m4_rot_x(tilt), m4_rot_y(PI * (1.0f - hflip))));
+                     tgt = m4_mul(hm, m4_mul(m4_translate(0, yc, zs), m4_mul(m4_rot_y(PI), m4_scale(sc, sc, sc))));
+                     if (hflip > 0.0f) base = tgt;
+                     else
+                     {
+                        const float ss = lerpf(g->sc.x, sc, align);
+                        base = m4_mul(m4_translate(lerpf(g->x.x, tgt.m[12], align), lerpf(bob + ty, tgt.m[13], align), lerpf(g->z.x, tgt.m[14], align)),
+                               m4_mul(m4_rot_y(ry0), m4_mul(m4_rot_x(tilt * align), m4_scale(ss, ss, ss))));
+                     }
+                     if (con > 0.0f) draw_handheld(g, gp, &cs, m4_mul(hm, m4_scale(k, k, k)), cs.cart_w + 3, T / k + 2, screen_on, led);
+                  }
+                  else
+                  {  /* top loader: over the slot, then down into it */
+                     const float tc = 0.55f, cy = -0.78f - (1.0f - con) * 1.1f, cz = -0.60f;
+                     const float yl = lerpf(L * 0.5f + 0.30f, L * (0.5f - cs.seat), ins);
+                     mat4 cm = m4_mul(m4_translate(0, cy, cz), m4_rot_x(tc));
+                     tgt = m4_mul(cm, m4_mul(m4_translate(0, yl, 0), m4_scale(sc, sc, sc)));
+                     {
+                        const float ss = lerpf(g->sc.x, sc, align);
+                        base = m4_mul(m4_translate(lerpf(g->x.x, tgt.m[12], align), lerpf(bob + ty, tgt.m[13], align), lerpf(g->z.x, tgt.m[14], align)),
+                               m4_mul(m4_rot_y(ry0), m4_mul(m4_rot_x(tc * align), m4_scale(ss, ss, ss))));
+                     }
+                     if (con > 0.0f) draw_topcon(gp, m4_mul(cm, m4_scale(k, k, k)), cs.cart_w + 5, T / k + 5, clampf(ins / 0.12f, 0, 1), led);
+                  }
                }
                draw_media(g, gp, base, g->al.x, op, o == 0 && gp->kind == KIND_DISC ? lift : 0.0f,
                           o == 0 ? fly : 0.0f, o == 0 ? spin : 0.0f, o == 0 ? lit : 1.0f);
