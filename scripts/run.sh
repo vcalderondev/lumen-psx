@@ -317,6 +317,21 @@ lumen_run_app() {
 SYNCER=$!
 echo "${SYNCER}" >> /tmp/lumen-usb-writers.pids
 echo "lumen session $(date)" > "${LOG}/session.log"
+# Kernel read-ahead of the stick: 2 MB instead of the default 128 KB. A game that streams
+# from a disc image asks for it in small reads a second or two apart, and on a slow stick
+# each of them takes ~200 ms (plus ~500 ms behind any small write): the emulation stopped
+# ~300 ms every couple of seconds. With 2 MB the kernel reads ahead in long bursts, before
+# the game needs the data. LUMEN_MOUNTS / LUMEN_SYS: for tests.
+usb_readahead() {
+  dev=$(awk -v h="${LUMEN_HOME}/" '$2 != "/" && index(h, $2 "/") == 1 && length($2) > n { n = length($2); d = $1 }
+        END { print d }' "${LUMEN_MOUNTS:-/proc/mounts}" 2>/dev/null)
+  blk=$(echo "${dev#/dev/}" | sed 's/[0-9]*$//')
+  ra="${LUMEN_SYS:-/sys}/block/${blk}/queue/read_ahead_kb"
+  [ -n "${blk}" ] && [ -w "${ra}" ] || return 0
+  [ "$(cat "${ra}")" -ge 2048 ] 2>/dev/null && return 0
+  echo 2048 > "${ra}" && slog "usb: read-ahead of ${blk} set to 2048 kB"
+}
+usb_readahead
 # profiles deleted in the frontend whose background removal did not finish
 rm -rf "${LUMEN_HOME}"/profiles/.trash-* 2>/dev/null
 
