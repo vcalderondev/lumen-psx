@@ -2,8 +2,9 @@
 
 Models are built in millimetres, Blender's axes: X right, Y towards the BACK (the
 front of a model faces -Y, as in Blender's front view), Z up. The exporter converts to
-Lumen's frame (x right, y up, z towards the viewer) and writes <out>/<key>.lmdl (see
-src/meshes.inc for the format) plus <key>.glb to look at in any viewer, and renders
+Lumen's frame (x right, y up, z towards the viewer) and writes <out>/<key>.lmdl (v1,
+full detail: optimize.py turns it into the v2 that Lumen loads, see src/meshes.inc) plus
+<key>.glb to look at in any viewer, and renders
 previews (<key>-front.png, -34.png, -top.png, -back.png) with tools/models/preview.
 
 Every mesh object is one part; its custom properties say how Lumen draws it:
