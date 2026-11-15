@@ -11,15 +11,17 @@
 #     the stock Sony menu so it always stays usable; the power button works there.
 LUMEN_HOME="/media/lumen"
 LOG="${LUMEN_HOME}/logs"
-# POWER test path (<home>/debug/power-suspend). Sony's power manager unmounts the stick
-# before its suspend to RAM, and after the resume the stick may be a new device: whatever
+# POWER. Sony's power manager unmounts the stick before its suspend to RAM, and at the
+# resume the kernel disconnects the stick and finds it again a few seconds later: whatever
 # has to live through a suspend must not run from the stick or hold a file open on it
-# (a shell reading its script from it, a binary paged in from it, an open log). With the
-# switch this script, run.sh, power.sh and lumen-buttons run from copies in RAM
-# (/tmp/lumen-run) and log there; logsync.sh appends those logs to the stick. Without
-# the switch nothing changes: everything runs from the stick and POWER is ignored.
+# (a shell reading its script from it, a binary paged in from it, an open log). So this
+# script, run.sh, power.sh and lumen-buttons run from copies in RAM (/tmp/lumen-run) and
+# log there; logsync.sh appends those logs to the stick. Verified on the console with a
+# FAT32 stick (three suspend / resume cycles, 2026-11-15).
+# <home>/debug/no-power-suspend turns it off: everything runs from the stick as before
+# 0.14.1 and POWER is ignored.
 RUN=/tmp/lumen-run
-if [ -f "${LUMEN_HOME}/debug/power-suspend" ] && [ "${LUMEN_RAM}" != 1 ]; then
+if [ ! -f "${LUMEN_HOME}/debug/no-power-suspend" ] && [ "${LUMEN_RAM}" != 1 ]; then
   rm -rf "${RUN}"; mkdir -p "${RUN}"
   if cp "${LUMEN_HOME}/boot.sh" "${LUMEN_HOME}/run.sh" "${LUMEN_HOME}/power.sh" "${LUMEN_HOME}/lumen-buttons" "${RUN}/" 2>/dev/null &&
      chmod 755 "${RUN}/lumen-buttons"; then
@@ -316,15 +318,13 @@ fi
 # so without this the LED stayed orange for the whole Lumen session.
 echo 0 > /sys/class/leds/red/brightness 2>/dev/null
 if [ -n "${BUTTONS_PID}" ] && grep -q ready /tmp/lumen-buttons.out 2>/dev/null; then
-  # POWER: Sony's suspend, only with <home>/debug/power-suspend (test switch) until the
-  # resume is verified on the console, and only when the session runs from RAM (above);
-  # otherwise POWER is ignored
-  if [ -f "${LUMEN_HOME}/debug/power-suspend" ] && [ "${LUMEN_RAM}" = 1 ]; then
+  # POWER: Sony's suspend, when the session runs from RAM (above); otherwise ignored
+  if [ "${LUMEN_RAM}" = 1 ]; then
     echo 1 > /data/power/disable      # power manager suspends after our apps_okay
     echo "POWER: suspend enabled (session in RAM: ${RUN})"
   else
     echo 2 > /data/power/disable      # ignored: unplug to turn off
-    [ -f "${LUMEN_HOME}/debug/power-suspend" ] && echo "POWER: test switch present but the session is not in RAM: ignored"
+    echo "POWER: ignored (session not in RAM: debug/no-power-suspend, or the copy to RAM failed)"
   fi
   echo "buttons daemon running (${BUTTONS_PID})"
 else
