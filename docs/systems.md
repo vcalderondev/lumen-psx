@@ -30,14 +30,15 @@ core = pcsx_rearmed_libretro.so ; <home>/cores/<core>
 
 [media]
 kind   = disc                   ; disc | cartridge | arcade | card | floppy | tape
-shape  = jewel                  ; 3D model: jewel | dvd | cart_snes | cart_md | cart_gba | cart_nes | marquee ...
+shape  = jewel                  ; 3D model: jewel | dvd | umd | cart_snes | cart_md | cart_n64 | cart_nes | cart_gb | cart_gba | hucard | marquee
 aspect = 1.136                  ; width / height of the front face
 color  = #141217                ; shell / tray colour
 art    = cover                  ; image on the front: cover | label | marquee
 media_art = disc                ; per-game image of the medium: <game>/disc.png, <game>/cart.png ...
 
 [animation]
-launch = open_case_disc         ; open_case_disc | insert_cartridge | insert_coin | ...
+launch = open_case_disc         ; open_case_disc | insert_cartridge | insert_coin
+slot   = top                    ; insert_cartridge: top | front | handheld (default from the shape)
 idle   = float                  ; float | none
 sound  = launch.wav             ; optional, <home>/assets/systems/<id>/launch.wav
 ```
@@ -155,10 +156,23 @@ has a default; a minimal declaration only needs `[system] id/name`,
 
 | kind | shapes | launch animation |
 |---|---|---|
-| disc | `jewel` (PS1/CD), `dvd` | `open_case_disc`: the lid opens with the cover, the disc lifts and flies to the camera |
-| cartridge | `cart_snes`, `cart_md`, `cart_nes`, `cart_gba`, `cart_gb` | `insert_cartridge`: the cartridge drops into a slot, the power LED lights up |
+| disc | `jewel` (PS1/CD), `dvd` (keep case), `umd` (small keep case, the disc in its caddy) | `open_case_disc`: the jewel lid / keep-case cover opens, the disc (or the UMD) lifts and flies to the camera |
+| cartridge | `cart_snes`, `cart_md`, `cart_n64`, `cart_nes`, `cart_gb` (`cart_gbc`), `cart_gba`, `cart` (generic) | `insert_cartridge`: into the console's slot, by `[animation] slot` (default from the shape): `top` (SNES, Mega Drive, N64, generic) the cartridge drops into a top-loader; `front` (NES, cards) it lies down and slides in through the front flap; `handheld` (GB, GBA) it slides into the back of the handheld, which turns round and lights its screen. Then the power LED |
 | arcade | `marquee` (backlit marquee panel) | `insert_coin`: a coin rolls into the slot, "CREDIT 1" blinks, the marquee flickers on |
-| card | `hucard` | `insert_cartridge` |
+| card | `hucard` (default for `kind = card`) | `insert_cartridge` (slot `front`) |
+
+A shape of another kind is ignored (the kind's generic one is used). With a photo of the
+game's own cartridge (`media_art`) the photo replaces the modelled cartridge; its
+thickness still follows the shape.
+
+The cartridges, cases and consoles are 3D models of the real hardware
+(`assets/models/<key>.lmdl`, built by the scripts in `tools/models/`; see its README):
+Nintendo 64, Super Famicom / PAL Super Nintendo, Mega Drive (model 1), NES, PC Engine,
+Game Boy and Game Boy Advance, in their original plastics, without logos. A console and
+its cartridge share one scale, and each cartridge goes in as deep as on the real console.
+A missing model falls back to a simpler procedural one. The moment the cartridge seats,
+a click plays (synthesised: a firm latch on top loaders, a latch with a spring on front
+loaders, a small snap on handhelds), over the music and independent of its volume.
 
 Shapes and animations are code (one renderer each); declarations only choose
 and parametrise them.
