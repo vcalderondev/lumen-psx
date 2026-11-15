@@ -3594,7 +3594,8 @@ int main(int argc, char **argv)
                             * t - play_t: a 560 ms stall on the first frame jumped 0.6 s ahead)
                             * and anything from 10 fps up plays in real time (clamped to 50 ms
                             * like the springs, it ran slow under 20 fps) */
-   float launch_dt = 0.0f;
+   float launch_dt = 0.0f, lt_sum = 0.0f, lt_max = 0.0f;   /* launch frame times (real, unclamped) */
+   int lt_n = 0, lt_slow = 0;
    int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0, crt_on = 0;
    int held_dir = 0; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
@@ -3843,6 +3844,12 @@ int main(int argc, char **argv)
       int n = pl ? pl->count : 0, move = 0, plat_move = 0, page = 0, play = 0, att_swallow, restore = -1, want_menu = 0;
       ui_nav_t fnav;   /* one navigation frame shared by the panel and the game menu (auto-repeat state) */
       launch_dt = dt > 0.10f ? 0.10f : dt;   /* a stall (>= 100 ms) still does not skip the animation */
+      if (play_t >= 0 && t > play_t)
+      {  /* how the launch ran on this machine: one line in the log when it ends */
+         lt_n++; lt_sum += dt;
+         if (dt > lt_max) lt_max = dt;
+         if (dt > 0.025f) lt_slow++;
+      }
       if (dt > 0.05f) dt = 0.05f;
       last = t;
       if (g_cost_on) mc_frame();
@@ -4170,7 +4177,12 @@ int main(int argc, char **argv)
             }
             flash = clampf(1.0f - fabsf(pt - fl_t) / 0.22f, 0, 1);
             fade = clampf((pt - fl_t) / 0.30f, 0, 1);
-            if (pt > end) { exit_code = 10; running = 0; }
+            if (pt > end)
+            {
+               exit_code = 10; running = 0;
+               if (lt_n) logf_("launch: %d frames in %.2f s (%.1f fps), worst %.0f ms, %d over 25 ms; animation %.2f s",
+                               lt_n, lt_sum, lt_n / lt_sum, lt_max * 1000.0f, lt_slow, end);
+            }
 #undef SMOOTH
          }
          else
