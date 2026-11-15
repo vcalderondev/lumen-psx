@@ -33,9 +33,10 @@ else
   copy_file assets/splash.png "$VOL/lumen/assets/splash.png"
   copy_file assets/splash-1080.png "$VOL/lumen/assets/splash-1080.png"
   for f in assets/boot/*.png; do copy_file "$f" "$VOL/lumen/assets/boot/$(basename "$f")"; done
-  for d in icons glyphs fonts models; do
+  for d in glyphs fonts; do
     for f in assets/$d/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/assets/$d/$(basename "$f")"; done
   done
+  for f in assets/launch/*/*; do [ -f "$f" ] || continue; t=${f#assets/launch/}; mkdir -p "$VOL/lumen/assets/launch/${t%/*}"; copy_file "$f" "$VOL/lumen/assets/launch/$t"; done
   for f in assets/brand/*.png; do copy_file "$f" "$VOL/lumen/assets/brand/$(basename "$f")"; done
   mkdir -p "$VOL/lumen/profiles"
   if [ "$1" = "--cores" ] && [ -d "$2" ]; then

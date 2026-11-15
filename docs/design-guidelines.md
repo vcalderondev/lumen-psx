@@ -160,7 +160,7 @@ a 34 px rise; closes the same way.
 | Background | 0.6 s smoothstep crossfade; changes queue, never cut |
 | Music | in after 0.8 s, 1 s fades, ducked 55 % under settings |
 | Section open/close | fade + rise, spring (k 170, c 18) |
-| Launch | UI fades in 0.35 s, then the 3D media animation, flash, fade |
+| Launch | UI fades in 0.35 s under the field of the game's colour, the flat machine and its medium, fade (no flash) |
 
 ## 8. Content and copy
 

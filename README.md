@@ -1,14 +1,15 @@
 # Lumen
 
-A lightweight 3D game frontend for the PlayStation Classic.
+A lightweight game frontend for the PlayStation Classic.
 
 **Website, screenshots and library manager: [lpsx.vcalderon.dev](https://lpsx.vcalderon.dev/)** ·
 made by [Víctor Calderón](https://vcalderon.dev/)
 
-- 3D jewel-case carousel (OpenGL ES 3.0): spring physics, idle float, lighting,
-  floor reflections, ambient colour taken from the selected cover
+- flat dashboard (OpenGL ES 3.0): full-screen game art, system tabs, a row of cover tiles
+  moved by springs, ambient colour taken from the selected cover
 - platform pills with an animated platform switch (L1/R1)
-- "play" animation: the case flips to show its back, zooms in and fades out
+- "play" animation: a flat illustration of the system's machine, the game's disc or
+  cartridge goes into it, and it fades out
 - per-game background image (`games/<n>/background.jpg|png`) at ~30 % opacity,
   crossfaded and decoded on a worker thread so browsing never stutters
 - launches games in RetroArch and comes back to the same game afterwards
@@ -87,9 +88,10 @@ USB layout:
 /lumen/lumen.conf             optional: RETROARCH=..., LUMEN_MAIN_SAVES/STATES,
                               LUMEN_CORE_OPT_DIR, run_retroarch() override
 /lumen/gamecontrollerdb.txt   controller mappings
-/lumen/assets/                runtime art (assets/README.md): splash.png, icons/<name>.png,
+/lumen/assets/                runtime art (assets/README.md): splash.png, glyphs/<name>.png,
                               fonts/{regular,bold}.ttf (optional, default: the system
-                              Liberation Sans), systems/<id>/logo.png and sounds;
+                              Liberation Sans), launch/<key>/ (the launch's illustrations),
+                              systems/<id>/logo.png and sounds;
                               installs that keep icons/, fonts/ and systems/<id>/ art
                               directly under /lumen still work (fallback)
 /lumen/cores/*.so             libretro cores (PlayStation: pcsx_rearmed_libretro.so)

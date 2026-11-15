@@ -40,7 +40,7 @@ slot; arcade: coin + "CREDIT 1".
 - 1 draw per visible tile (~8), or one instanced/batched draw; rounded corners and
   focus ring antialiased in the fragment shader (no MSAA needed for flat UI).
 - Text: cached textures (already cheap).
-- 3D only for the launch animation (one case/disc), where MSAA can stay off.
+- No 3D: since 0.15 the launch is flat too (illustrations as textured quads, docs/systems.md).
 
 ## Profiles, avatars, achievements
 
@@ -94,7 +94,7 @@ the cover colours (computed when the cover is decoded, worker thread):
 ## Implementation notes
 
 - Render order per frame: background layer(s) -> overlay (mode 8) -> dashboard UI ->
-  3D media (only while launching) -> help bar, panel, attract text, flash/fade.
+  help bar, panel, attract text -> the launch (its opaque field covers all of it) -> fade.
 - Tiles: `tile_x()/tile_size()` are continuous in the selection spring `dpos`, so the
   row slides and the focused tile grows smoothly; a wrap-around (last -> first) snaps.
 - Background layers (`bgtex_t`): an image or `gen` = game index + 1 (generated); a new
@@ -111,4 +111,5 @@ the cover colours (computed when the cover is decoded, worker thread):
   Set from Settings > Profile > Avatar: the file picker (`src/filepicker.h`, reusable for
   any other "choose a file" need) returns an image from the stick and
   `profiles_set_avatar()` writes its centre square at 256 px.
-- MSAA default 2x (`msaa` setting, 0..4; the log line "MSAA samples" shows what the driver gave).
+- No multisampling since 0.15 (the `msaa` and `scene_aa` settings are ignored): shapes are
+  antialiased by their shaders; text, art and the launch's illustrations are textures.
