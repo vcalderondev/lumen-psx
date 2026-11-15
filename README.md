@@ -2,6 +2,9 @@
 
 A lightweight 3D game frontend for the PlayStation Classic.
 
+**Website, screenshots and library manager: [lpsx.vcalderon.dev](https://lpsx.vcalderon.dev/)** ·
+made by [Víctor Calderón](https://vcalderon.dev/)
+
 - 3D jewel-case carousel (OpenGL ES 3.0): spring physics, idle float, lighting,
   floor reflections, ambient colour taken from the selected cover
 - platform pills with an animated platform switch (L1/R1)
