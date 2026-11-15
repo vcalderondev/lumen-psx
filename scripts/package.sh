@@ -58,6 +58,8 @@ cp psc/retroarch.cfg "$L/retroarch/retroarch.cfg"
 sed -n 's/^retroarch=//p' "$PF/versions.txt" | head -1 > "$L/retroarch/VERSION"
 [ -s "$L/retroarch/VERSION" ] || echo "RetroArch 1.22" > "$L/retroarch/VERSION"
 cp "$PF"/*_libretro.so "$L/cores/"
+# PPSSPP reads its fonts and data from RetroArch's system folder (psc-platform 2.3.0)
+if [ -f "$PF/ppsspp-assets.tar.gz" ]; then mkdir -p "$L/retroarch/system"; tar xzf "$PF/ppsspp-assets.tar.gz" -C "$L/retroarch/system"; fi
 # crash reporter: RetroArch crashes leave logs/crash.log (symbols: retroarch.debug in the
 # psc-platform release)
 [ -f "$PF/psc-crash.so" ] && { mkdir -p "$L/debug"; cp "$PF/psc-crash.so" "$L/debug/"; }
