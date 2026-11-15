@@ -3,6 +3,22 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Changed
+- Launch animations: several times cheaper for the console's GPU, same picture. The
+  solid parts of the 3D models are drawn with blending off (the PowerVR then shades each
+  pixel once instead of every layer of every part), with their own small shader (lighting
+  per vertex) instead of the general one, and the models ship optimised
+  (`tools/models/optimize.py`: parts merged by material, 16-bit indices, decimated within
+  0.05 - 0.10 mm; 134,000 -> 104,000 triangles, 402,000 -> 86,000 vertices, 12.6 -> 2.3 MB
+  to read from the USB stick at start-up).
+- The launch runs on real time down to 10 fps (it ran slow under 20 fps).
+
+### Fixed
+- Stripes across cartridge labels and case covers in the launch (the print fought with
+  the paper behind it for the depth test; the depth buffer is also ten times finer now).
+
 ## [0.9.1] - 2026-11-15
 
 ### Fixed
