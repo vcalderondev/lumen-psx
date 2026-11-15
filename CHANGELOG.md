@@ -3,7 +3,7 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.7.0] - 2026-11-14
 
 ### Added
 - Game menu: Start on the dashboard opens a card over the selected game with Play, Add to /
