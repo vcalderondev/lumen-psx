@@ -3,6 +3,12 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.9.1] - 2026-11-15
+
+### Fixed
+- PlayStation, PSP and DVD cases: the cover art no longer shows mirrored on the inside of
+  the booklet and through the clear case; the paper's other faces are plain paper.
+
 ## [0.9.0] - 2026-11-15
 
 The real hardware in every launch: 3D models of each console, cartridge and case.
