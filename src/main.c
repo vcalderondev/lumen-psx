@@ -297,7 +297,11 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "graphics", "retroarch", v, sizeof(v), "");   /* alias of retroarch_enhanced */
    decl_get(ini, "graphics", "retroarch_enhanced", pl->gfx_ra_enh, sizeof(pl->gfx_ra_enh), v);
    decl_get(ini, "graphics", "retroarch_original", pl->gfx_ra_orig, sizeof(pl->gfx_ra_orig), "");
+   decl_get(ini, "graphics", "native_720", pl->gfx_nat720, sizeof(pl->gfx_nat720), "");
+   decl_get(ini, "graphics", "native_1080", pl->gfx_nat1080, sizeof(pl->gfx_nat1080), "");
+   decl_get(ini, "graphics", "retroarch_native", pl->gfx_ra_nat, sizeof(pl->gfx_ra_nat), pl->gfx_ra_enh);
    pl->has_gfx = pl->gfx_enh[0] || pl->gfx_ra_enh[0];
+   pl->has_native = pl->has_gfx && (pl->gfx_nat720[0] || pl->gfx_nat1080[0]);
    decl_get(ini, "demo", "allowed", v, sizeof(v), "0");  pl->demo_allowed = atoi(v) != 0;
    decl_get(ini, "demo", "seconds", v, sizeof(v), "0");  pl->demo_seconds = atoi(v);
    if (pl->demo_seconds < 0) pl->demo_seconds = 0;
@@ -2739,7 +2743,7 @@ static void coll_row_add(const char *id, const char *name, int folder)
    snprintf(p->id, sizeof(p->id), "%s", id);
    snprintf(p->name, sizeof(p->name), "%s", name);
    p->logo[0] = 0; p->logo_tex = 0; p->label = 0; p->show_name = 1;
-   p->has_gfx = 0; p->demo_allowed = 0;
+   p->has_gfx = 0; p->has_native = 0; p->demo_allowed = 0;
    p->first = g_ngames; p->count = n;
    p->label = text_tex(g_font_tab ? g_font_tab : g_font_small, p->name, &p->label_w, &p->label_h);
    for (k = 0; k < n; k++)
@@ -4628,13 +4632,20 @@ int main(int argc, char **argv)
       if (lp->has_gfx)
       {
          char gkey[48];
+         const char *gv, *nat;
          int enh;
          snprintf(gkey, sizeof(gkey), "graphics.%s", lp->id);
-         enh = !strcmp(settings_get(gkey, "original"), "enhanced");
-         req.graphics = enh ? "enhanced" : "original";
+         gv = settings_get(gkey, "original");
+         enh = !strcmp(gv, "enhanced");
+         /* native: the list for this output (1080p, else 720p), the other one if only
+          * one is declared; a system without it falls back to enhanced */
+         nat = g_dh >= 1080 ? (lp->gfx_nat1080[0] ? lp->gfx_nat1080 : lp->gfx_nat720)
+                            : (lp->gfx_nat720[0] ? lp->gfx_nat720 : lp->gfx_nat1080);
+         if (!strcmp(gv, "native")) { if (lp->has_native) enh = 2; else enh = 1; }
+         req.graphics = enh == 2 ? "native" : (enh ? "enhanced" : "original");
          req.opt_core_name = lp->gfx_core;
-         req.opt_list = enh ? lp->gfx_enh : lp->gfx_orig;
-         req.ra_list = enh ? lp->gfx_ra_enh : lp->gfx_ra_orig;
+         req.opt_list = enh == 2 ? nat : (enh ? lp->gfx_enh : lp->gfx_orig);
+         req.ra_list = enh == 2 ? lp->gfx_ra_nat : (enh ? lp->gfx_ra_enh : lp->gfx_ra_orig);
       }
       if (demo)
       {  /* --focus-demo reads it back when a button interrupts the demo */
