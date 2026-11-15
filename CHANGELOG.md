@@ -18,6 +18,9 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   mounts it and only then starts the compositor and the frontend. If the stick does not
   come back the console restarts instead of staying on a black screen.
   Without the switch nothing changes: POWER is ignored, as before.
+- The power LED no longer stays orange during a Lumen session: Sony's start-up leaves the
+  red LED on next to the green one and nothing turned it off; `boot.sh` now does. Seen
+  fixed on the console with the POWER test switch on; not checked without it.
 - To test on the console: create an empty file `lumen/debug/power-suspend` on the stick,
   boot, press POWER (red LED), press it again. Whatever happens, `lumen/logs/suspend.log`
   and `lumen/logs/boot.log` on the stick now tell the story (who held the stick, how it

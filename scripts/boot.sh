@@ -311,6 +311,10 @@ if [ -x "${SCRIPTS}/lumen-buttons" ] || chmod +x "${SCRIPTS}/lumen-buttons" 2>/d
   # stayed disabled for the whole session)
   i=0; while [ $i -lt 50 ] && ! grep -q ready /tmp/lumen-buttons.out 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
 fi
+# Power LED: Sony's start-up leaves green and red both on (orange, its "standby" colour) and
+# only its power manager turns the red one off. lumen-buttons drives the green one alone,
+# so without this the LED stayed orange for the whole Lumen session.
+echo 0 > /sys/class/leds/red/brightness 2>/dev/null
 if [ -n "${BUTTONS_PID}" ] && grep -q ready /tmp/lumen-buttons.out 2>/dev/null; then
   # POWER: Sony's suspend, only with <home>/debug/power-suspend (test switch) until the
   # resume is verified on the console, and only when the session runs from RAM (above);
