@@ -3,9 +3,14 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.12.2] - 2026-11-15
+
+Games start again and no longer stall on a slow stick. psc-platform 2.4.1.
 
 ### Fixed
+- Every game closed a few seconds after starting (`retroarch exit=139`) since 0.12.0:
+  RetroArch crashed on the `GET_STATUS` question of `lumen-buttons`' watchdog. Fixed in
+  psc-platform 2.4.1 (`platform.lock`), verified on the console.
 - Games on a disc image no longer stop for ~300 ms every couple of seconds on a slow USB
   stick. `run.sh` sets the kernel read-ahead of the stick to 2 MB (default: 128 KB), so
   the image is read ahead in long bursts instead of small reads that each took ~200 ms.
