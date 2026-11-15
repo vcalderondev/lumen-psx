@@ -2633,9 +2633,11 @@ static void hints_draw(int set, float y, float alpha)
  * game's cover (gen, palette copied when the layer is made). The next layer crossfades
  * over the current one in 0.6 s; a layer pushed meanwhile waits (only the newest), so a
  * crossfade is never cut short. */
-typedef struct { GLuint tex; int w, h; int gen; float a[3], acc[3]; GLuint gfbo, gtex; } bgtex_t;
+typedef struct { GLuint tex; int w, h; int gen; float a[3], acc[3]; GLuint gfbo, gtex; double gen_t; } bgtex_t;
 #define GEN_W 640    /* generated backgrounds render at 640x360 and are scaled up: */
 #define GEN_H 360    /* smooth gradients, a tenth of the pixels of a 1080p pass */
+#define GEN_DT 0.05  /* and are redrawn 20 times a second: the lights drift under 1 % of the
+                      * screen per second, so a frame's step is below one of its pixels */
 static bgtex_t bg_cur, bg_next, bg_pending;
 static float   bg_mix = 1.0f;          /* 0 -> showing cur, 1 -> next done */
 static char    bg_shown[512];          /* key of the background we want: path or "gen:<i>" */
@@ -2708,6 +2710,8 @@ static void bg_gen_render(bgtex_t *b, double t)
    const float one[4] = { 1, 1, 1, 1 };
    float a[3], acc[3], base[3];
    int k;
+   if (b->gfbo && t >= b->gen_t && t - b->gen_t < GEN_DT) return;   /* its picture is recent enough */
+   b->gen_t = t;
    if (!b->gfbo)
    {
       glGenTextures(1, &b->gtex);
