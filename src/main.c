@@ -25,6 +25,7 @@
 #include <SDL2/SDL_ttf.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,12 +58,21 @@
 /* logging                                                                   */
 /* The log lives on the USB stick (exFAT through FUSE): a file's size is only committed
  * on close/fsync, so a power-off would leave the log of the running frontend empty.
- * Every line is flushed; fsync runs at most once per second (log_tick() catches up on
- * pending lines), immediately for lines that report an error, and at exit. Lines can
- * come from the worker threads, so the stream lock guards the bookkeeping. */
+ * Every line is written and flushed at once; fsync runs at most once per second,
+ * immediately for lines that report an error, and at exit.
+ * None of that happens on the caller's thread: a write goes through the FUSE daemon and
+ * an fsync waits for the stick, and logf_() is called from the render loop (the fps line
+ * every 5 s, key presses, the perf probes). Lines are queued and a writer thread does the
+ * I/O. Before the writer starts (and for stderr) lines are written directly. */
 static FILE  *g_log;
 static double g_log_synced = -10.0;   /* monotonic time of the last fsync */
-static int    g_log_pending;          /* lines written since that fsync */
+static int    g_log_pending;          /* lines written since that fsync (writer thread) */
+static pthread_mutex_t g_log_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_log_cv = PTHREAD_COND_INITIALIZER;
+static pthread_t       g_log_thread;
+static int    g_log_async, g_log_quit, g_log_force;
+static char   g_log_q[16384];         /* queued lines, '\n' terminated */
+static size_t g_log_qn;
 
 static double log_clock(void)
 {
@@ -71,8 +81,8 @@ static double log_clock(void)
    return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-/* call with the stream locked */
-static void log_sync_locked(int force)
+/* writer thread, or any thread before it exists */
+static void log_sync(int force)
 {
    double t;
    if (!g_log || g_log == stderr || !g_log_pending) return;
@@ -89,30 +99,87 @@ static int log_is_error(const char *s)
    return 0;
 }
 
+static void *log_writer(void *unused)
+{
+   static char out[sizeof(g_log_q)];
+   (void)unused;
+   pthread_mutex_lock(&g_log_mx);
+   for (;;)
+   {
+      size_t n; int force, quit;
+      while (!g_log_qn && !g_log_quit)
+      {
+         if (g_log_pending)
+         {  /* lines not yet synced: wake up when the 1 s limit allows it */
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 250000000L;
+            if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+            pthread_cond_timedwait(&g_log_cv, &g_log_mx, &ts);
+            if (!g_log_qn && !g_log_quit) { pthread_mutex_unlock(&g_log_mx); log_sync(0); pthread_mutex_lock(&g_log_mx); }
+         }
+         else pthread_cond_wait(&g_log_cv, &g_log_mx);
+      }
+      n = g_log_qn; force = g_log_force; quit = g_log_quit;
+      memcpy(out, g_log_q, n);
+      g_log_qn = 0; g_log_force = 0;
+      pthread_mutex_unlock(&g_log_mx);
+      if (n) { fwrite(out, 1, n, g_log); fflush(g_log); g_log_pending = 1; }
+      log_sync(force || quit);
+      pthread_mutex_lock(&g_log_mx);
+      if (quit && !g_log_qn) break;
+   }
+   pthread_mutex_unlock(&g_log_mx);
+   return NULL;
+}
+
+/* after the log file is open: lines go through the writer thread from here on */
+static void log_start_writer(void)
+{
+   if (!g_log || g_log == stderr) return;
+   if (pthread_create(&g_log_thread, NULL, log_writer, NULL) == 0) g_log_async = 1;
+}
+
 void logf_(const char *fmt, ...)
 {
    va_list ap;
    char line[1024];
+   size_t n;
    if (!g_log) g_log = stderr;
-   va_start(ap, fmt); vsnprintf(line, sizeof(line), fmt, ap); va_end(ap);
+   va_start(ap, fmt); vsnprintf(line, sizeof(line) - 1, fmt, ap); va_end(ap);
+   n = strlen(line);
+   line[n++] = '\n';
+   pthread_mutex_lock(&g_log_mx);
+   if (g_log_async && n <= sizeof(g_log_q) - g_log_qn)
+   {
+      memcpy(g_log_q + g_log_qn, line, n);
+      g_log_qn += n;
+      if (log_is_error(line)) g_log_force = 1;
+      pthread_cond_signal(&g_log_cv);
+      pthread_mutex_unlock(&g_log_mx);
+      return;
+   }
+   pthread_mutex_unlock(&g_log_mx);
+   /* no writer (startup, stderr), or its queue is full: write here */
    flockfile(g_log);
-   fputs(line, g_log); fputc('\n', g_log); fflush(g_log);
-   g_log_pending = 1;
-   log_sync_locked(log_is_error(line));
+   fwrite(line, 1, n, g_log); fflush(g_log);
+   if (!g_log_async) { g_log_pending = 1; log_sync(log_is_error(line)); }
    funlockfile(g_log);
-}
-
-/* once per frame: fsync lines left pending by the 1 s limit */
-static void log_tick(void)
-{
-   if (!g_log_pending || !g_log) return;
-   flockfile(g_log); log_sync_locked(0); funlockfile(g_log);
 }
 
 static void log_sync_atexit(void)
 {
    if (!g_log) return;
-   flockfile(g_log); fflush(g_log); log_sync_locked(1); funlockfile(g_log);
+   if (g_log_async)
+   {
+      pthread_mutex_lock(&g_log_mx);
+      g_log_quit = 1;
+      pthread_cond_signal(&g_log_cv);
+      pthread_mutex_unlock(&g_log_mx);
+      pthread_join(g_log_thread, NULL);
+      g_log_async = 0;
+   }
+   flockfile(g_log); fflush(g_log); g_log_pending = 1; log_sync(1); funlockfile(g_log);
 }
 
 double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
@@ -3673,6 +3740,7 @@ int main(int argc, char **argv)
    snprintf(font_r_old, sizeof(font_r_old), "%s/fonts/regular.ttf", g_home);
    snprintf(padb, sizeof(padb), "%s/gamecontrollerdb.txt", g_home);
    if (log_path) g_log = fopen(log_path, "w");
+   log_start_writer();
    atexit(log_sync_atexit);
    logf_("lumen %s start", LUMEN_VERSION);
    boot_mark("");
@@ -4592,7 +4660,6 @@ int main(int argc, char **argv)
                play_pt, dt * 1000.0, (t_upd - t) * 1000.0, (t_pre - t_upd) * 1000.0, (now_s() - t_pre) * 1000.0,
                (fpx - lp_px) / 1e6, (fh - lp_heavy) / 1e6);
       }
-      log_tick();
       {  /* bench: <home>/bench present -> two rounds (vsync on, then off: frame rates
           * not quantised to 60/30/20), each turning one more thing off per step; per
           * step: fps, CPU ms spent issuing the frame, ms blocked in the swap */
