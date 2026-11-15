@@ -24,6 +24,7 @@ typedef struct {
    float col[3];               /* average cover colour */
    float acc[3];               /* accent: most saturated hue cluster of the cover */
    int tex_w, tex_h;           /* size of the cover texture (tile cover-fit) */
+   double tex_used;            /* last time it was near the selection (cover cache) */
 } game_t;
 
 /* System declaration: <home>/systems/<id>.ini (see docs/systems.md). */
