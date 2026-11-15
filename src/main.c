@@ -598,6 +598,8 @@ static void dirlist_first(const dirlist_t *dl, char *out, size_t n, const char *
 }
 
 /* PSC/BleemSync layout: <path>/<n>/Game.ini + <disc>.cue|pbp|... + <disc>.png */
+static void splash_pulse(void);   /* startup splash: keeps "Loading" alive while the scan blocks */
+
 static void scan_psc(int pi, const char *dir)
 {
    char path[700], buf[4096], discs[512], gdir[700], name[600];
@@ -612,6 +614,7 @@ static void scan_psc(int pi, const char *dir)
    {
       FILE *f; size_t n; game_t *g; char *c; char exts[160], *tok, *save = NULL;
       if (de->d_name[0] == '.') continue;
+      splash_pulse();
       snprintf(path, sizeof(path), "%s/%s/Game.ini", dir, de->d_name);
       if (!(f = fopen(path, "rb"))) continue;
       snprintf(gdir, sizeof(gdir), "%s/%s", dir, de->d_name);
@@ -802,6 +805,7 @@ static void scan_stock(int pi, const char *dir)
       line[strcspn(line, "\r\n")] = 0;
       if (!strncmp(p, "\xEF\xBB\xBF", 3)) p += 3;
       if (!*p || *p == '#') continue;
+      splash_pulse();
       for (k = 0; k < 6; k++) { fld[k] = p; if ((c = strchr(p, '|'))) { *c = 0; p = c + 1; } else p += strlen(p); }
       for (k = 0; k < 6; k++) trim(fld[k]);
       snprintf(discs, sizeof(discs), "%s", fld[5]);
@@ -854,6 +858,7 @@ static void scan_all(void)
       for (tok = strtok_r(paths, ";", &save); tok; tok = strtok_r(NULL, ";", &save))
       {
          trim(tok);
+         splash_pulse();
          if (!strcmp(g_plat[pi].layout, "psc")) scan_psc(pi, tok);
          else if (!strcmp(g_plat[pi].layout, "stock")) scan_stock(pi, tok);
          else if (!strcmp(g_plat[pi].layout, "apps")) scan_apps(pi, tok);
@@ -3423,6 +3428,7 @@ static void platforms_load_art(void)
       }
       if (!p->logo_tex) p->show_name = 1;
       if (p->show_name) p->label = text_tex(g_font_tab ? g_font_tab : g_font_small, p->name, &p->label_w, &p->label_h);
+      splash_pulse();
    }
 }
 
@@ -3687,9 +3693,10 @@ static float glyph_w(const char *name, float h)
  *    L, P, S, X drop into place with a fade, 90 ms apart;
  *  - logo-front-splash[-1080].png, the startup splash: the logo fades in from black with
  *    its letters dark, and they fill with colour voxel row by voxel row, L to X, as
- *    startup goes on; then the splash fades into the dashboard. (The boot payload's
- *    splash.png stays black: boot.sh closes it to restart the compositor, and a logo
- *    there, a black gap, then the logo again looked like two starts.)
+ *    startup goes on; then the splash fades into the dashboard. The boot payload's
+ *    splash.png is this same first frame (the dark logo, same place: tools/make-brand.py),
+ *    and boot.sh keeps it up until Lumen draws, so the two read as one splash: after a
+ *    console boot the fade-in is skipped (see splash_step).
  * Missing PNG: nothing is drawn (plain black splash, the top bar as it was). */
 #define LOGO_W_VOX   28.5f   /* content width of logo-front.svg in voxels: 4 x 6 + 3 x 1.5 */
 #define LOGO_H_VOX   8.0f    /* letter height in voxels (the extrusion hangs below) */
@@ -3804,15 +3811,81 @@ static void splash_logo_draw(float fill, float a)
    }
 }
 
+/* "Loading" at the bottom right of the startup splash, followed by three square dots
+ * that light up one after another: the proof that the console is alive while startup
+ * blocks. The boot payload's splash (psc-platform boot/splash/lumen-splash.c) draws the
+ * same thing in the same place from pre-rendered text (assets/boot/loading-<lang>.png,
+ * tools/make-boot-text.py), so the picture does not jump when Lumen takes over: keep the
+ * numbers below equal to that file's. Layout px (1280x720). */
+#define LOADING_RIGHT   60.0f    /* right margin of the last dot */
+#define LOADING_TOP     650.0f   /* top of the text's line box */
+#define LOADING_DOT     6.0f     /* dot side, and the gap between dots */
+#define LOADING_GAP     10.0f    /* text to first dot */
+#define LOADING_DOT_Y   14.0f    /* dot top below LOADING_TOP: the dots sit on the baseline */
+#define LOADING_STEP    0.35     /* seconds per dot */
+static void splash_loading_draw(double t, float a)
+{
+   static label_t l_loading;
+   const float txt[4] = { 0.84f, 0.84f, 0.88f, 0.85f * a };
+   float x = W - LOADING_RIGHT - 3 * LOADING_DOT - 2 * LOADING_DOT;
+   int i, lit = (int)(t / LOADING_STEP) % 4;   /* 0: none, then one more each step */
+   TTF_Font *f = g_font_sub;
+   if (a <= 0.003f) return;
+   if (f) label_set(&l_loading, f, tr("boot.loading"));
+   if (l_loading.tex)
+      draw_2d(l_loading.tex, x - LOADING_GAP - l_loading.w, LOADING_TOP, l_loading.w, l_loading.h, txt, 0);
+   for (i = 0; i < 3; i++)
+   {
+      const float c[4] = { 0.84f, 0.84f, 0.88f, (i < lit ? 0.95f : 0.28f) * a };
+      draw_2d(0, x + i * 2 * LOADING_DOT, LOADING_TOP + LOADING_DOT_Y, LOADING_DOT, LOADING_DOT, c, 0);
+   }
+}
+
 /* Startup splash: show the logo filled up to `target` (loading progress), animating the
  * fill from where it is at ~2.5 logos per second (whole frames, vsync). Blocking work
- * runs between calls, so each call is one step of progress; it costs ~0.4 s in all. */
+ * runs between calls, so each call is one step of progress; it costs ~0.4 s in all.
+ * splash_pulse() draws one more frame from inside the long blocking steps (at most ~4 a
+ * second), so the dots keep moving. */
 static float g_splash_fill = -1.0f;   /* < 0: no splash (in-game dialog) */
 static float g_splash_a;               /* the splash fades in from black first (0.25 s) */
+static SDL_Window *g_splash_win;
+static double g_splash_last;           /* time of the last splash frame */
+static void splash_frame(void)
+{
+   static int frames;
+   SDL_PumpEvents();
+   crt_begin(g_dw, g_dh);   /* the splash goes through the CRT filter too: no jump into the dashboard */
+   glViewport(0, 0, g_dw, g_dh);
+   glDisable(GL_DEPTH_TEST);
+   glDisable(GL_SCISSOR_TEST);
+   glClearColor(0, 0, 0, 1);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glEnable(GL_BLEND);
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   glUseProgram(g_prog_2d);
+   splash_logo_draw(g_splash_fill, g_splash_a);
+   splash_loading_draw(now_s(), g_splash_a);
+   crt_end();
+   SDL_GL_SwapWindow(g_splash_win);
+   g_splash_last = now_s();
+   if (++frames == 2)
+   {  /* boot.sh: Lumen's own splash is on screen, the boot payload's can go */
+      FILE *pf = fopen("/tmp/lumen-splash-shown", "w");
+      if (pf) fclose(pf);
+   }
+}
+
+static void splash_pulse(void)
+{
+   if (g_splash_fill < 0.0f || !g_splash_win || now_s() - g_splash_last < 0.25) return;
+   splash_frame();
+}
+
 static void splash_step(SDL_Window *win, float target)
 {
    double last = now_s();
    if (g_splash_fill < 0.0f) return;
+   g_splash_win = win;
    for (;;)
    {
       double t = now_s();
@@ -3820,19 +3893,7 @@ static void splash_step(SDL_Window *win, float target)
       last = t;
       if (g_splash_a < 1.0f) g_splash_a = fminf(1.0f, g_splash_a + dt / 0.25f);
       else g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
-      SDL_PumpEvents();
-      crt_begin(g_dw, g_dh);   /* the splash goes through the CRT filter too: no jump into the dashboard */
-      glViewport(0, 0, g_dw, g_dh);
-      glDisable(GL_DEPTH_TEST);
-      glDisable(GL_SCISSOR_TEST);
-      glClearColor(0, 0, 0, 1);
-      glClear(GL_COLOR_BUFFER_BIT);
-      glEnable(GL_BLEND);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      glUseProgram(g_prog_2d);
-      splash_logo_draw(g_splash_fill, g_splash_a);
-      crt_end();
-      SDL_GL_SwapWindow(win);
+      splash_frame();
       if ((g_splash_a >= 1.0f && g_splash_fill >= target) || !g_logo_big.tex[0]) break;
    }
 }
@@ -4506,7 +4567,14 @@ int main(int argc, char **argv)
    scene_setup();
    boot_mark("shaders");
    g_ortho = m4_ortho(0, W, H, 0);
-   if (!dialog) { g_splash_fill = 0.0f; splash_step(win, 0.0f); }   /* fade in, letters dark */
+   if (!dialog)
+   {  /* fade in, letters dark. Right after a console boot the boot payload's splash is
+       * showing this very frame (boot.sh leaves /tmp/lumen-boot-splash): no fade then */
+      g_font_sub = open_font(fonts_reg, 21);
+      g_splash_fill = 0.0f;
+      if (remove("/tmp/lumen-boot-splash") == 0) g_splash_a = 1.0f;
+      splash_step(win, 0.0f);
+   }
    make_fx_textures();
    make_tile_shadow();
    bg_mx = SDL_CreateMutex();
@@ -4520,7 +4588,7 @@ int main(int argc, char **argv)
    SDL_CreateThread(disc_worker, "disc", NULL);
 
    g_font_title = open_font(fonts_semi, 34);
-   g_font_sub   = open_font(fonts_reg, 21);
+   if (!g_font_sub) g_font_sub = open_font(fonts_reg, 21);
    g_font_small = open_font(fonts_reg, 17);
    g_font_cover = open_font(fonts_bold, 22);
    g_font_hero  = open_font(fonts_semi, 50);
@@ -5320,6 +5388,7 @@ int main(int argc, char **argv)
             glUseProgram(g_prog_2d);
             draw_2d(0, 0, 0, W, H, black, 0);
             splash_logo_draw(1.0f, sa);
+            splash_loading_draw(t, sa);
          }
          else
          {

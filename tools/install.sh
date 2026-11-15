@@ -31,6 +31,8 @@ else
   for f in dist/systems/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/systems/$(basename "$f")"; done
   for f in dist/themes/*/*; do [ -f "$f" ] || continue; t=${f#dist/themes/}; mkdir -p "$VOL/lumen/themes/${t%/*}"; copy_file "$f" "$VOL/lumen/themes/$t"; done
   copy_file assets/splash.png "$VOL/lumen/assets/splash.png"
+  copy_file assets/splash-1080.png "$VOL/lumen/assets/splash-1080.png"
+  for f in assets/boot/*.png; do copy_file "$f" "$VOL/lumen/assets/boot/$(basename "$f")"; done
   for d in icons glyphs fonts models; do
     for f in assets/$d/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/assets/$d/$(basename "$f")"; done
   done
