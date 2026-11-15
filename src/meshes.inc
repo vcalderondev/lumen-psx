@@ -445,6 +445,7 @@ static void mdl_draw(const model_t *m, mat4 base, const game_t *g, const mpose_t
             glUniform1f(mp->alpha, d.alpha);
             if (cur == 1) glBindTexture(GL_TEXTURE_2D, d.tex);
          }
+         scene_cover(&mvp, m->lo, m->hi);   /* the model's box: every part is inside it */
          if (g_cost_on) mc_part(m, p, &mvp);
          glDrawElements(GL_TRIANGLES, p->count, GL_UNSIGNED_SHORT, (void *)(size_t)(p->first * 2));
          if (printed)
