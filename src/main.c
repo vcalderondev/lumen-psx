@@ -414,11 +414,16 @@ static void platform_from_decl(platform_t *pl, const char *ini)
       decl_get(ini, "animation", "launch", an, sizeof(an), "");
       decl_get(ini, "media", "shape", v, sizeof(v), "");
       known = v[0] != 0;
+      const int flat = !strcmp(an, "flat");
+      if (flat) an[0] = 0;   /* its fallback: what the system would do without a declared animation */
       pl->launch = !strcmp(an, "insert_cartridge") ? ANIM_INSERT_CART : !strcmp(an, "insert_coin") ? ANIM_INSERT_COIN :
                    !strcmp(an, "open_case_disc") ? ANIM_OPEN_CASE_DISC : !strcmp(an, "cover") ? ANIM_COVER :
                    !known ? ANIM_COVER :
                    pl->kind == KIND_CART ? ANIM_INSERT_CART : pl->kind == KIND_ARCADE ? ANIM_INSERT_COIN : ANIM_OPEN_CASE_DISC;
       if (an[0] && pl->launch == ANIM_COVER && strcmp(an, "cover")) logf_("system %s: unknown launch animation '%s', using cover", pl->id, an);
+      pl->launch_alt = pl->launch;
+      if (flat) pl->launch = ANIM_FLAT;
+      decl_get(ini, "animation", "flat", pl->flat, sizeof(pl->flat), pl->id);
    }
    pl->shape = shape_from_name(v, pl->kind, decl_is_card(ini));
    decl_get(ini, "animation", "slot", v, sizeof(v), "");
@@ -2495,6 +2500,8 @@ static void draw_text(const label_t *l, float x, float y, const float c[4])
    draw_2d(l->tex, floorf(x) + 1, floorf(y) + 2, l->w, l->h, sh, 0);
    draw_2d(l->tex, floorf(x), floorf(y), l->w, l->h, c, 0);
 }
+
+#include "flat.inc"
 
 /* The focused tile's shadow, baked once: same falloff as FS_2D mode 10 for a 220 px
  * tile (radius 14, blur 22), drawn as a plain texture (a blurred shape needs no
@@ -5021,7 +5028,11 @@ int main(int argc, char **argv)
          pg->sc.x = 0.9f; pg->al.x = 0.0f; pg->al.v = 0;
          disc_want(pg->disc);   /* normally decoded already (selection settled) */
          play_pt = 0.0f;
+         if (pl->launch == ANIM_FLAT && !flat_begin(pl, pg)) logf_("flat launch: no illustration '%s', using the system's own animation", pl->flat);
       }
+      /* flat launch: the system's illustration and the game's painted cover, ready before Play */
+      if (n && pl->launch == ANIM_FLAT && play_t < 0 && t - sel_t > 0.4) flat_want(pl, &g_games[pl->first + sel], 0);
+      flat_poll();
       /* disc art of the settled selection, ready before Play */
       if (n && pl->kind != KIND_ARCADE && play_t < 0 && t - sel_t > 0.4) disc_want(g_games[pl->first + sel].disc);
       { double ps = now_s(); disc_poll_upload(); perf_stall("disc upload", ps); }
@@ -5132,6 +5143,7 @@ int main(int argc, char **argv)
          float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
          float pdt = 0.0f;   /* launch clock step this frame */
+         if (anim == ANIM_FLAT && !g_flat.ok) anim = pl->launch_alt;
          /* the launch runs on real time (launch_dt): at 15 fps it lasts what it lasts at
           * 60, it does not stretch with the frame time like the dashboard's springs */
          if (play_t >= 0 && t > play_t) { pdt = g_launch_shots ? 1.0f / 30.0f : launch_dt; play_pt += pdt; }
@@ -5141,7 +5153,13 @@ int main(int argc, char **argv)
 #define SMOOTH(x) ((x) * (x) * (3 - 2 * (x)))
             launching = 1.0f;
             zoom = SMOOTH(clampf(pt / 0.5f, 0, 1));
-            if (anim == ANIM_COVER)
+            if (anim == ANIM_FLAT)
+            {  /* flat.inc draws it from pt alone; here: when it ends, and the click */
+               fl_t = FLAT_FADE; end = FLAT_END;
+               if (pdt > 0.0f && play_pt - pdt < FLAT_SEAT && play_pt >= FLAT_SEAT)
+                  music_click(g_flat.medium == FM_FRONT ? 1 : (g_flat.medium == FM_BEHIND ? 2 : 0));
+            }
+            else if (anim == ANIM_COVER)
             {
                /* generic: the cover rises a little and turns once about itself while its
                 * halo brightens, then accelerates into the camera until it fills the
@@ -5218,7 +5236,7 @@ int main(int argc, char **argv)
                   spin = disc_spin;
                }
             }
-            flash = clampf(1.0f - fabsf(pt - fl_t) / 0.22f, 0, 1);
+            flash = anim == ANIM_FLAT ? 0.0f : clampf(1.0f - fabsf(pt - fl_t) / 0.22f, 0, 1);   /* flat: no white flash */
             fade = clampf((pt - fl_t) / 0.30f, 0, 1);
             if (pt > end)
             {
@@ -5290,7 +5308,8 @@ int main(int argc, char **argv)
 
          glUseProgram(g_prog_2d);
          glUniform1i(u2_tex, 0);
-         covered = welcome_amount() > 0.995f || blackout;   /* a full-screen section is open */
+         covered = welcome_amount() > 0.995f || blackout ||   /* a full-screen section is open */
+                   (play_t >= 0 && anim == ANIM_FLAT && play_pt > 0.44f);   /* or the flat launch's opaque field covers it all */
          if (!covered)
          {  /* full-screen art (current layer, next one crossfading over it), then the
              * legibility overlay (left side, top and bottom bands) in one pass */
@@ -5317,11 +5336,11 @@ int main(int argc, char **argv)
             glUniform3fv(u_cam, 1, cam);
          }
          launch_refl(100.0f);   /* reflections off */
-         if (n && play_t >= 0 && !blackout) { scene_begin(); scene_blend_over(); }
+         if (n && play_t >= 0 && !blackout && anim != ANIM_FLAT) { scene_begin(); scene_blend_over(); }
          glEnable(GL_DEPTH_TEST);
          glDepthFunc(GL_LEQUAL);
          /* 3D only while launching: the selected game's case / cartridge / marquee */
-         for (i = 0; i >= 0 && n && play_t >= 0 && !blackout; i--)
+         for (i = 0; i >= 0 && n && play_t >= 0 && !blackout && anim != ANIM_FLAT; i--)
          {
             int s;
             for (s = -1; s <= 1; s += 2)
@@ -5529,6 +5548,7 @@ int main(int argc, char **argv)
                welcome_draw(t);
                hints_draw(hs, 672, welcome_amount());
             }
+            if (n && play_t >= 0 && anim == ANIM_FLAT && !blackout) flat_draw(play_pt, &g_games[pl->first + sel], pl);
             if ((flash > 0.001f || fade > 0.001f) && !blackout)
             {  /* the white flash under the fade to black, in one full-screen pass:
                 * premultiplied, dst * (1 - w) * (1 - f) + w * (1 - f) */
@@ -5542,7 +5562,8 @@ int main(int argc, char **argv)
             {
                if (play_t >= 0)
                {
-                  const float st[4] = { 0.93f, 0.92f, 0.97f, fade };
+                  /* flat launch: the machine is in the middle of the screen until the black has it */
+                  const float st[4] = { 0.93f, 0.92f, 0.97f, anim == ANIM_FLAT ? clampf((fade - 0.6f) / 0.4f, 0, 1) : fade };
                   label_set(&l_start, g_font_sub, tr("launch.starting"));
                   draw_2d(l_start.tex, (W - l_start.w) * 0.5f, (H - l_start.h) * 0.5f, l_start.w, l_start.h, st, 0);
                }

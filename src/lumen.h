@@ -13,7 +13,8 @@
 
 enum { KIND_DISC, KIND_CART, KIND_ARCADE };
 enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN,
-       ANIM_COVER };   /* generic: no hardware simulated, the game's cover turns and flies to the camera */
+       ANIM_COVER,     /* generic: no hardware simulated, the game's cover turns and flies to the camera */
+       ANIM_FLAT };    /* a flat illustration of the machine, its medium goes into it (flat.inc) */
 /* [media] shape: the 3D model of the medium (docs/systems.md, "Built-in shapes") */
 enum { SHAPE_JEWEL, SHAPE_DVD, SHAPE_UMD,
        SHAPE_CART, SHAPE_CART_SNES, SHAPE_CART_MD, SHAPE_CART_NES, SHAPE_CART_N64, SHAPE_CART_GB, SHAPE_CART_GBA,
@@ -41,6 +42,8 @@ typedef struct {
    char layout[8], paths[512], exts[128], art[16], media_art[16], sound[300];
    char meta[300];             /* layout = stock: metadata file next to the declaration */
    int order, show_name, kind, launch, idle_float, shape, slot;
+   int launch_alt;             /* launch = flat: the animation used when its illustration is missing */
+   char flat[32];              /* launch = flat: <home>/assets/launch/<flat>/ ([animation] flat, default the id) */
    float aspect, w, h, color[3];
    /* [graphics]: per-core options and RetroArch overrides, "k=v, k=v" lists */
    char gfx_core[48], gfx_enh[640], gfx_orig[640], gfx_ra_enh[160], gfx_ra_orig[160];
