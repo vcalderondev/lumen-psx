@@ -103,11 +103,11 @@ static void front_round(mat4 c, float x, float y, float z, float dia, const floa
 static void glow_at(mat4 c, float x, float y, float z, int up, float size, const float col[3], float a)
 {
    if (a <= 0.0f) return;
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+   scene_blend_add();
    glDepthMask(GL_FALSE);
    case_part(c, x, y, z, 0, up ? -PI_F * 0.5f : 0.0f, size, size, 0, col, a, 8);
    glDepthMask(GL_TRUE);
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   scene_blend_over();
 }
 static void mulc(float out[3], const float c[3], float k) { out[0] = c[0] * k; out[1] = c[1] * k; out[2] = c[2] * k; }
 static const float R0[4] = { 0, 0, 0, 0 };

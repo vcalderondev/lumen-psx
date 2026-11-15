@@ -25,6 +25,7 @@
 #include <SDL2/SDL_ttf.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,12 +58,22 @@
 /* logging                                                                   */
 /* The log lives on the USB stick (exFAT through FUSE): a file's size is only committed
  * on close/fsync, so a power-off would leave the log of the running frontend empty.
- * Every line is flushed; fsync runs at most once per second (log_tick() catches up on
- * pending lines), immediately for lines that report an error, and at exit. Lines can
- * come from the worker threads, so the stream lock guards the bookkeeping. */
+ * Every line is written and flushed at once; fsync runs at most once per second,
+ * immediately for lines that report an error, and at exit.
+ * None of that happens on the caller's thread: a write goes through the FUSE daemon and
+ * an fsync waits for the stick, and logf_() is called from the render loop (the fps line
+ * every 5 s, key presses, the perf probes). Lines are queued and a writer thread does the
+ * I/O. Before the writer starts (and for stderr) lines are written directly. */
 static FILE  *g_log;
 static double g_log_synced = -10.0;   /* monotonic time of the last fsync */
-static int    g_log_pending;          /* lines written since that fsync */
+static int    g_log_pending;          /* lines written since that fsync (writer thread) */
+static pthread_mutex_t g_log_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_log_cv = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  g_log_room = PTHREAD_COND_INITIALIZER;   /* the writer took the queue */
+static pthread_t       g_log_thread;
+static int    g_log_async, g_log_quit, g_log_force;
+static char   g_log_q[16384];         /* queued lines, '\n' terminated */
+static size_t g_log_qn;
 
 static double log_clock(void)
 {
@@ -71,8 +82,8 @@ static double log_clock(void)
    return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-/* call with the stream locked */
-static void log_sync_locked(int force)
+/* writer thread, or any thread before it exists */
+static void log_sync(int force)
 {
    double t;
    if (!g_log || g_log == stderr || !g_log_pending) return;
@@ -89,33 +100,149 @@ static int log_is_error(const char *s)
    return 0;
 }
 
+static void *log_writer(void *unused)
+{
+   static char out[sizeof(g_log_q)];
+   (void)unused;
+   pthread_mutex_lock(&g_log_mx);
+   for (;;)
+   {
+      size_t n; int force, quit;
+      while (!g_log_qn && !g_log_quit)
+      {
+         if (g_log_pending)
+         {  /* lines not yet synced: wake up when the 1 s limit allows it */
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 250000000L;
+            if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+            pthread_cond_timedwait(&g_log_cv, &g_log_mx, &ts);
+            if (!g_log_qn && !g_log_quit) { pthread_mutex_unlock(&g_log_mx); log_sync(0); pthread_mutex_lock(&g_log_mx); }
+         }
+         else pthread_cond_wait(&g_log_cv, &g_log_mx);
+      }
+      n = g_log_qn; force = g_log_force; quit = g_log_quit;
+      memcpy(out, g_log_q, n);
+      g_log_qn = 0; g_log_force = 0;
+      pthread_cond_broadcast(&g_log_room);
+      pthread_mutex_unlock(&g_log_mx);
+      if (n) { fwrite(out, 1, n, g_log); fflush(g_log); g_log_pending = 1; }
+      log_sync(force || quit);
+      pthread_mutex_lock(&g_log_mx);
+      if (quit && !g_log_qn) break;
+   }
+   pthread_mutex_unlock(&g_log_mx);
+   return NULL;
+}
+
+/* after the log file is open: lines go through the writer thread from here on */
+static void log_start_writer(void)
+{
+   if (!g_log || g_log == stderr) return;
+   if (pthread_create(&g_log_thread, NULL, log_writer, NULL) == 0) g_log_async = 1;
+}
+
 void logf_(const char *fmt, ...)
 {
    va_list ap;
    char line[1024];
+   size_t n;
    if (!g_log) g_log = stderr;
-   va_start(ap, fmt); vsnprintf(line, sizeof(line), fmt, ap); va_end(ap);
+   va_start(ap, fmt); vsnprintf(line, sizeof(line) - 1, fmt, ap); va_end(ap);
+   n = strlen(line);
+   line[n++] = '\n';
+   pthread_mutex_lock(&g_log_mx);
+   /* a burst that fills the queue waits for the writer to take it (lines stay in order) */
+   while (g_log_async && n > sizeof(g_log_q) - g_log_qn) pthread_cond_wait(&g_log_room, &g_log_mx);
+   if (g_log_async)
+   {
+      memcpy(g_log_q + g_log_qn, line, n);
+      g_log_qn += n;
+      if (log_is_error(line)) g_log_force = 1;
+      pthread_cond_signal(&g_log_cv);
+      pthread_mutex_unlock(&g_log_mx);
+      return;
+   }
+   pthread_mutex_unlock(&g_log_mx);
+   /* no writer (startup, stderr, exit): write here */
    flockfile(g_log);
-   fputs(line, g_log); fputc('\n', g_log); fflush(g_log);
-   g_log_pending = 1;
-   log_sync_locked(log_is_error(line));
+   fwrite(line, 1, n, g_log); fflush(g_log);
+   if (!g_log_async) { g_log_pending = 1; log_sync(log_is_error(line)); }
    funlockfile(g_log);
-}
-
-/* once per frame: fsync lines left pending by the 1 s limit */
-static void log_tick(void)
-{
-   if (!g_log_pending || !g_log) return;
-   flockfile(g_log); log_sync_locked(0); funlockfile(g_log);
 }
 
 static void log_sync_atexit(void)
 {
    if (!g_log) return;
-   flockfile(g_log); fflush(g_log); log_sync_locked(1); funlockfile(g_log);
+   if (g_log_async)
+   {
+      pthread_mutex_lock(&g_log_mx);
+      g_log_quit = 1;
+      pthread_cond_signal(&g_log_cv);
+      pthread_mutex_unlock(&g_log_mx);
+      pthread_join(g_log_thread, NULL);
+      pthread_mutex_lock(&g_log_mx);
+      g_log_async = 0;
+      if (g_log_qn) { fwrite(g_log_q, 1, g_log_qn, g_log); g_log_qn = 0; }   /* queued as the writer left */
+      pthread_cond_broadcast(&g_log_room);
+      pthread_mutex_unlock(&g_log_mx);
+   }
+   flockfile(g_log); fflush(g_log); g_log_pending = 1; log_sync(1); funlockfile(g_log);
 }
 
 double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
+
+/* perf probes. Startup: one "boot:" line per phase (always; the splash's own frames are
+ * part of the phase they follow). With LUMEN_COST=1 or <home>/debug/perf, once per
+ * second: the frame's CPU time (update = input, logic, uploads; draw = issuing GL), the
+ * time blocked in the swap, their worst frame, and the latency of the button presses of
+ * that second (SDL event timestamp -> the swap of the frame that shows it returned). */
+static int    g_perf_on;
+static double g_boot_last;
+static void boot_mark(const char *what)
+{
+   double n = now_s();
+   if (g_boot_last > 0.0) logf_("boot: %-10s %5.0f ms", what, (n - g_boot_last) * 1000.0);
+   g_boot_last = n;
+}
+/* main-thread work that can hold a frame back (uploads, text rendering): logged when a
+ * single piece takes over 2 ms */
+static void perf_stall(const char *what, double since)
+{
+   double ms = (now_s() - since) * 1000.0;
+   if (g_perf_on && ms > 2.0) logf_("perf: stall %s %.1f ms", what, ms);
+}
+static struct { int frames, slow, nin; double upd, draw, swap, upd_max, draw_max, swap_max, in_sum, in_max; Uint32 in_ts[8]; int in_n; } g_pf;
+static void perf_input(Uint32 ts) { if (g_perf_on && g_pf.in_n < 8) g_pf.in_ts[g_pf.in_n++] = ts; }
+static void perf_frame(double t, double t_upd, double t_pre, double t_end)
+{
+   static double last;
+   const double u = t_upd - t, d = t_pre - t_upd, w = t_end - t_pre;
+   int i;
+   if (!g_perf_on) return;
+   g_pf.frames++; g_pf.upd += u; g_pf.draw += d; g_pf.swap += w;
+   if (u > g_pf.upd_max) g_pf.upd_max = u;
+   if (d > g_pf.draw_max) g_pf.draw_max = d;
+   if (w > g_pf.swap_max) g_pf.swap_max = w;
+   if (t_end - t > 0.025) g_pf.slow++;
+   for (i = 0; i < g_pf.in_n; i++)
+   {
+      double l = (double)(Uint32)(SDL_GetTicks() - g_pf.in_ts[i]);
+      g_pf.in_sum += l; g_pf.nin++;
+      if (l > g_pf.in_max) g_pf.in_max = l;
+   }
+   g_pf.in_n = 0;
+   if (t - last < 1.0) return;
+   if (last > 0.0 && g_pf.frames)
+   {
+      const double k = 1000.0 / g_pf.frames;
+      logf_("perf: %d frames (%d over 25 ms), update %.2f ms (max %.1f), draw %.2f ms (max %.1f), swap %.1f ms (max %.1f)",
+            g_pf.frames, g_pf.slow, g_pf.upd * k, g_pf.upd_max * 1000.0, g_pf.draw * k, g_pf.draw_max * 1000.0,
+            g_pf.swap * k, g_pf.swap_max * 1000.0);
+      if (g_pf.nin) logf_("perf: input latency %.0f ms avg, %.0f ms max (%d presses)", g_pf.in_sum / g_pf.nin, g_pf.in_max, g_pf.nin);
+   }
+   memset(&g_pf, 0, sizeof(g_pf)); last = t;
+}
 
 static long rss_kb(void)
 {
@@ -387,17 +514,102 @@ static void find_first(char *out, size_t n, const char *base, const char *const 
    out[0] = 0;
 }
 
+/* A folder's file names, read once. The scans looked every candidate file up with
+ * stat() (up to 12 per game: cover, media art, background and music under several
+ * names). The stick is exFAT through FUSE: every lookup is a round trip to its daemon,
+ * which walks the folder's entries, so a folder of n games cost n * 12 walks. Now the
+ * names are listed once and looked up in memory, ignoring ASCII case like the file
+ * system does; the path returned carries the name as it is on disk. */
+typedef struct { char **name; int *sorted; int n, cap; } dirlist_t;
+static const dirlist_t *s_dl_cmp;
+static int dirlist_cmp(const void *a, const void *b)
+{
+   return strcasecmp(s_dl_cmp->name[*(const int *)a], s_dl_cmp->name[*(const int *)b]);
+}
+static void dirlist_free(dirlist_t *dl)
+{
+   int i;
+   for (i = 0; i < dl->n; i++) free(dl->name[i]);
+   free(dl->name); free(dl->sorted);
+   memset(dl, 0, sizeof(*dl));
+}
+/* names in readdir order (name[]), plus an index sorted for the lookups; 0 = no folder */
+static int dirlist_read(dirlist_t *dl, const char *dir)
+{
+   DIR *d; struct dirent *de; int i;
+   memset(dl, 0, sizeof(*dl));
+   if (!(d = opendir(dir))) return 0;
+   while ((de = readdir(d)))
+   {
+      if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+      if (dl->n == dl->cap)
+      {
+         int cap = dl->cap ? dl->cap * 2 : 64;
+         char **nn = realloc(dl->name, sizeof(char *) * cap);
+         if (!nn) break;
+         dl->name = nn; dl->cap = cap;
+      }
+      if (!(dl->name[dl->n] = strdup(de->d_name))) break;
+      dl->n++;
+   }
+   closedir(d);
+   dl->sorted = malloc(sizeof(int) * (dl->n ? dl->n : 1));
+   if (!dl->sorted) { dirlist_free(dl); return 1; }
+   for (i = 0; i < dl->n; i++) dl->sorted[i] = i;
+   s_dl_cmp = dl;
+   qsort(dl->sorted, dl->n, sizeof(int), dirlist_cmp);
+   return 1;
+}
+/* the entry called `name` (ASCII case ignored) as it is on disk, or NULL */
+static const char *dirlist_find(const dirlist_t *dl, const char *name)
+{
+   int lo = 0, hi = dl->n - 1;
+   while (lo <= hi)
+   {
+      int mid = (lo + hi) / 2, c = strcasecmp(name, dl->name[dl->sorted[mid]]);
+      if (!c) return dl->name[dl->sorted[mid]];
+      if (c < 0) hi = mid - 1; else lo = mid + 1;
+   }
+   return NULL;
+}
+/* <dir>/<name> when the folder has it, else "". A name with non-ASCII letters that is
+ * not listed is still asked to the file system (its own case folding decides) */
+static int dirlist_path(const dirlist_t *dl, char *out, size_t n, const char *dir, const char *name)
+{
+   const char *hit = dirlist_find(dl, name);
+   const unsigned char *c;
+   if (hit) { snprintf(out, n, "%s/%s", dir, hit); return 1; }
+   for (c = (const unsigned char *)name; *c; c++)
+      if (*c >= 0x80) { snprintf(out, n, "%s/%s", dir, name); if (file_exists(out)) return 1; break; }
+   out[0] = 0;
+   return 0;
+}
+/* find_first() over a listed folder: the first existing <dir>/<stem><suffix> */
+static void dirlist_first(const dirlist_t *dl, char *out, size_t n, const char *dir, const char *stem, const char *const *suffixes)
+{
+   char name[600];
+   int b;
+   for (b = 0; suffixes[b]; b++)
+   {
+      snprintf(name, sizeof(name), "%s%s", stem, suffixes[b]);
+      if (dirlist_path(dl, out, n, dir, name)) return;
+   }
+   out[0] = 0;
+}
+
 /* PSC/BleemSync layout: <path>/<n>/Game.ini + <disc>.cue|pbp|... + <disc>.png */
 static void splash_pulse(void);   /* startup splash: keeps "Loading" alive while the scan blocks */
 
 static void scan_psc(int pi, const char *dir)
 {
-   char path[700], buf[4096], discs[512], base[700];
+   char path[700], buf[4096], discs[512], gdir[700], name[600];
    static const char *const media_sfx[] = { ".png", ".jpg", NULL };
    static const char *const bg_sfx[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
    static const char *const music_sfx[] = { "music.ogg", "music.wav", NULL };
    DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
+   dirlist_t dl;
    if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
+   memset(&dl, 0, sizeof(dl));
    while ((de = readdir(d)) && g_ngames < MAX_GAMES)
    {
       FILE *f; size_t n; game_t *g; char *c; char exts[160], *tok, *save = NULL;
@@ -405,6 +617,9 @@ static void scan_psc(int pi, const char *dir)
       splash_pulse();
       snprintf(path, sizeof(path), "%s/%s/Game.ini", dir, de->d_name);
       if (!(f = fopen(path, "rb"))) continue;
+      snprintf(gdir, sizeof(gdir), "%s/%s", dir, de->d_name);
+      dirlist_free(&dl);
+      dirlist_read(&dl, gdir);   /* the game's folder, listed once for every file below */
       buf[0] = '\n';
       n = fread(buf + 1, 1, sizeof(buf) - 2, f); fclose(f);
       buf[n + 1] = 0;
@@ -423,50 +638,50 @@ static void scan_psc(int pi, const char *dir)
       for (tok = strtok_r(exts, ",", &save); tok && !g->content[0]; tok = strtok_r(NULL, ",", &save))
       {
          trim(tok);
-         snprintf(g->content, sizeof(g->content), "%s/%s/%s.%s", dir, de->d_name, discs, tok);
-         if (!file_exists(g->content)) g->content[0] = 0;
+         snprintf(name, sizeof(name), "%s.%s", discs, tok);
+         dirlist_path(&dl, g->content, sizeof(g->content), gdir, name);
       }
       if (!g->content[0]) continue;
-      snprintf(g->cover, sizeof(g->cover), "%s/%s/%s.png", dir, de->d_name, discs);
-      g->has_cover = file_exists(g->cover);
-      snprintf(base, sizeof(base), "%s/%s/%s", dir, de->d_name, pl->media_art);
-      find_first(g->disc, sizeof(g->disc), base, media_sfx);
-      snprintf(base, sizeof(base), "%s/%s/", dir, de->d_name);
-      find_first(g->bg, sizeof(g->bg), base, bg_sfx);
-      find_first(g->music, sizeof(g->music), base, music_sfx);
+      snprintf(name, sizeof(name), "%s.png", discs);
+      g->has_cover = dirlist_path(&dl, g->cover, sizeof(g->cover), gdir, name);
+      if (!g->has_cover) snprintf(g->cover, sizeof(g->cover), "%s/%s", gdir, name);
+      dirlist_first(&dl, g->disc, sizeof(g->disc), gdir, pl->media_art, media_sfx);
+      dirlist_first(&dl, g->bg, sizeof(g->bg), gdir, "", bg_sfx);
+      dirlist_first(&dl, g->music, sizeof(g->music), gdir, "", music_sfx);
       if (!g->title[0]) snprintf(g->title, sizeof(g->title), "%s", discs);
       g->platform = pi;
       g_ngames++;
    }
    closedir(d);
+   dirlist_free(&dl);
 }
 
 /* Files layout: <path>/<name>.<ext>, art next to it: <name>.png|jpg,
  * <name>-<media_art>.png|jpg, <name>-background.jpg|png */
 static void scan_files(int pi, const char *dir)
 {
-   DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
+   platform_t *pl = &g_plat[pi];
+   dirlist_t dl; int k;
    static const char *const img_sfx[] = { ".png", ".jpg", NULL };
    static const char *const bg_sfx[] = { "-background.jpg", "-background.png", "-bg.jpg", "-bg.png", NULL };
    static const char *const music_sfx[] = { "-music.ogg", "-music.wav", NULL };
-   if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
-   while ((de = readdir(d)) && g_ngames < MAX_GAMES)
+   if (!dirlist_read(&dl, dir)) { logf_("[%s] no dir %s", pl->id, dir); return; }
+   for (k = 0; k < dl.n && g_ngames < MAX_GAMES; k++)
    {
+      const char *fname = dl.name[k];
       game_t *g; char base[700], stem[256], *dot, *p;
-      if (de->d_name[0] == '.' || !ext_ok(pl, de->d_name)) continue;
+      if (fname[0] == '.' || !ext_ok(pl, fname)) continue;
       g = &g_games[g_ngames];
       memset(g, 0, sizeof(*g));
-      snprintf(g->content, sizeof(g->content), "%s/%s", dir, de->d_name);
-      snprintf(stem, sizeof(stem), "%s", de->d_name);
+      snprintf(g->content, sizeof(g->content), "%s/%s", dir, fname);
+      snprintf(stem, sizeof(stem), "%s", fname);
       if ((dot = strrchr(stem, '.'))) *dot = 0;
-      snprintf(base, sizeof(base), "%s/%s", dir, stem);
-      find_first(g->cover, sizeof(g->cover), base, img_sfx);
+      dirlist_first(&dl, g->cover, sizeof(g->cover), dir, stem, img_sfx);
       g->has_cover = g->cover[0] != 0;
-      snprintf(base, sizeof(base), "%s/%s-%s", dir, stem, pl->media_art);
-      find_first(g->disc, sizeof(g->disc), base, img_sfx);
-      snprintf(base, sizeof(base), "%s/%s", dir, stem);
-      find_first(g->bg, sizeof(g->bg), base, bg_sfx);
-      find_first(g->music, sizeof(g->music), base, music_sfx);
+      snprintf(base, sizeof(base), "%s-%s", stem, pl->media_art);
+      dirlist_first(&dl, g->disc, sizeof(g->disc), dir, base, img_sfx);
+      dirlist_first(&dl, g->bg, sizeof(g->bg), dir, stem, bg_sfx);
+      dirlist_first(&dl, g->music, sizeof(g->music), dir, stem, music_sfx);
       /* title: file name without "(...)" / "[...]" tags */
       snprintf(g->title, sizeof(g->title), "%s", stem);
       if ((p = strpbrk(g->title, "([")) && p > g->title) *p = 0;
@@ -474,7 +689,7 @@ static void scan_files(int pi, const char *dir)
       g->platform = pi;
       g_ngames++;
    }
-   closedir(d);
+   dirlist_free(&dl);
 }
 
 /* Apps layout (homebrew): <path>/<name>/app.ini, Game.ini style lines:
@@ -711,7 +926,7 @@ static void build_platform_index(void)
 /* GL resources                                                              */
 static GLuint g_prog_box, g_prog_2d, g_vbo_quad, g_vao_quad;
 static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam, u_phase, u_refl, u_aux, u_aux2, u_aux3;
-static GLint  u2_mvp, u2_tex, u2_color, u2_mode, u2_rect, u2_aux0, u2_aux1, u2_aux2;
+static GLint  u2_mvp, u2_tex, u2_color, u2_mode, u2_rect, u2_aux0, u2_aux1, u2_aux2, u2_uvw;
 static GLuint g_white;
 TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
 
@@ -759,25 +974,30 @@ static const char *FS_BOX =
    "    return vec4(vec3(0.93, 0.96, 1.0), clamp(a, 0.0, 0.92) * alpha); }\n"
    "  if (mode==5 || mode==6) {\n"
    "    vec2 p = v_uv * 2.0 - 1.0; float r = length(p);\n"
-   "    if (r > 1.0 || r < 0.15) discard;\n"
+   /* the rim and the hole are cut by the shader, where multisampling does nothing: their
+    * coverage, from how fast r changes across a pixel, goes into the alpha instead */
+   "    float aw = max(fwidth(r), 0.0001);\n"
+   "    float cov = clamp((1.0 - r) / aw + 0.5, 0.0, 1.0) * clamp((r - 0.15) / aw + 0.5, 0.0, 1.0);\n"
+   "    if (cov <= 0.0) discard;\n"
    "    float ang = atan(p.y, p.x) + phase;\n"
    "    float ndv = abs(dot(n, v));\n"
    "    float spokes = pow(abs(cos(ang - 0.6)), 36.0) * 0.55 + pow(abs(cos(ang + 0.9)), 90.0) * 0.25;\n"
    "    vec3 rainbow = 0.5 + 0.5 * cos(6.2832 * (fract(ang * 0.318 + r * 1.7 + ndv * 0.8) + vec3(0.0, 0.33, 0.67)));\n"
    "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 50.0) * 0.6;\n"
    "    if (r < 0.34) { float ring = smoothstep(0.32, 0.335, r) * (1.0 - smoothstep(0.345, 0.36, r));\n"
-   "      return vec4(vec3(0.86, 0.88, 0.92) + ring * 0.4 + spec, (0.30 + ring * 0.6) * alpha); }\n"
+   "      return vec4(vec3(0.86, 0.88, 0.92) + ring * 0.4 + spec, (0.30 + ring * 0.6) * alpha * cov); }\n"
    "    vec3 c;\n"
    "    if (mode==6) { c = texture(tex, v_uv).rgb * (0.55 + 0.45 * ndl) + rainbow * spokes * 0.25; }\n"
    "    else { vec3 silver = vec3(0.74, 0.75, 0.79) * (0.6 + 0.4 * ndl);\n"
    "           c = mix(silver, rainbow, 0.28 + spokes * 0.5) + vec3(spokes * 0.35); }\n"
    "    float rim = smoothstep(0.965, 0.99, r);\n"
    "    c = mix(c, vec3(0.55, 0.56, 0.60), rim * 0.6);\n"
-   "    return vec4(c + spec, alpha); }\n"
+   "    return vec4(c + spec, alpha * cov); }\n"
    "  if (mode==7) { vec3 c = texture(tex, v_uv).rgb * tint; return vec4(c + vec3(pow(max(dot(reflect(-l, n), v), 0.0), 60.0) * 0.25), alpha); }\n"
    "  if (mode==8) { float d = length(v_uv - 0.5) * 2.0; return vec4(tint, alpha * pow(clamp(1.0 - d, 0.0, 1.0), 2.0)); }\n"
    "  if (mode==9) {\n"
-   "    vec2 p = v_uv * 2.0 - 1.0; float r = length(p); if (r > 1.0) discard;\n"
+   "    vec2 p = v_uv * 2.0 - 1.0; float r = length(p);\n"
+   "    float cov = clamp((1.0 - r) / max(fwidth(r), 0.0001) + 0.5, 0.0, 1.0); if (cov <= 0.0) discard;\n"
    "    float ang = atan(p.y, p.x);\n"
    "    vec3 gold = vec3(0.95, 0.74, 0.28);\n"
    "    float rim = smoothstep(0.80, 0.84, r);\n"
@@ -786,7 +1006,7 @@ static const char *FS_BOX =
    "    float sh = 0.55 + 0.45 * ndl + p.y * 0.15;\n"
    "    vec3 c = gold * sh * (1.0 - rim * 0.25 * ridges) + vec3(emboss * 0.25);\n"
    "    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 30.0) * 0.8;\n"
-   "    return vec4(c + spec, alpha); }\n"
+   "    return vec4(c + spec, alpha * cov); }\n"
    /* 13: UMD caddy: smoked plastic shield (rounder at the bottom), a clear window over
     *     the disc drawn behind it, an opaque hub and a lighter rim */
    "  if (mode==13) {\n"
@@ -853,8 +1073,8 @@ static const char *FS_BOX =
 static const char *VS_2D =
    "#version 300 es\n"
    "layout(location=0) in vec3 pos; layout(location=1) in vec2 uv;\n"
-   "uniform mat4 mvp; out vec2 v_uv;\n"
-   "void main(){ v_uv=uv; gl_Position=mvp*vec4(pos,1.0); }\n";
+   "uniform mat4 mvp; uniform vec4 uvw; out vec2 v_uv;\n"   /* uvw: the part of the shape this quad is (offset, size) */
+   "void main(){ v_uv=uvw.xy+uv*uvw.zw; gl_Position=mvp*vec4(pos,1.0); }\n";
 
 static const char *FS_2D =
    "#version 300 es\n"
@@ -932,7 +1152,23 @@ static const char *FS_TEX =
    "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color; out vec4 frag;\n"
    "void main(){ frag = texture(tex, v_uv) * color; }\n";
 static GLuint g_prog_tex;
-static GLint  ut_mvp, ut_color;
+static GLint  ut_mvp, ut_color, ut_uvw;
+
+/* background crossfade: both layers mixed in one opaque full-screen pass (it was the
+ * next layer alpha-blended over the current one: two full-screen passes for the 0.6 s
+ * of every change of background). ma / mb: uv scale (xy) and offset (zw) of each layer */
+static const char *VS_MIX =
+   "#version 300 es\n"
+   "layout(location=0) in vec3 pos; layout(location=1) in vec2 uv;\n"
+   "uniform mat4 mvp; uniform vec4 ma, mb; out highp vec2 v_a; out highp vec2 v_b;\n"
+   "void main(){ v_a=uv*ma.xy+ma.zw; v_b=uv*mb.xy+mb.zw; gl_Position=mvp*vec4(pos,1.0); }\n";
+static const char *FS_MIX =
+   "#version 300 es\n"
+   "precision mediump float;\n"
+   "in highp vec2 v_a; in highp vec2 v_b; uniform sampler2D ta, tb; uniform float k; out vec4 frag;\n"
+   "void main(){ frag = vec4(mix(texture(ta, v_a).rgb, texture(tb, v_b).rgb, k), 1.0); }\n";
+static GLuint g_prog_mix;
+static GLint  um_mvp, um_ma, um_mb, um_k;
 static int    g_fx_bgflat;   /* bench: draw the background as a flat colour (fill without the fetch) */
 
 static GLuint compile(GLenum type, const char *src)
@@ -946,15 +1182,90 @@ static GLuint compile(GLenum type, const char *src)
    return s;
 }
 
+/* Program binaries: compiling and linking the shaders is paid at every start, and Lumen
+ * starts again after every game. The driver's linked program is kept in
+ * <home>/cache/shaders/<key>.bin (key: the driver's version and renderer strings and both
+ * sources), loaded with glProgramBinary on the next start; a binary the driver refuses
+ * (another driver, a cut-short file) is compiled from source and written again.
+ * Setting shader_cache=0 turns it off. */
+static int g_progs_cached, g_progs_built;
+static unsigned fnv1a(unsigned h, const char *s) { while (*s) h = (h ^ (unsigned char)*s++) * 16777619u; return h; }
+static void prog_cache_path(char *out, size_t n, const char *vs, const char *fs)
+{
+   unsigned a = 2166136261u, b = 0x9747b28cu;
+   const char *ver = (const char *)glGetString(GL_VERSION), *ren = (const char *)glGetString(GL_RENDERER);
+   a = fnv1a(fnv1a(fnv1a(fnv1a(a, ver ? ver : ""), ren ? ren : ""), vs), fs);
+   b = fnv1a(fnv1a(fnv1a(fnv1a(b, fs), vs), ren ? ren : ""), LUMEN_VERSION);
+   snprintf(out, n, "%s/cache/shaders/%08x%08x.bin", g_home, a, b);
+}
+
+static int prog_cache_load(GLuint p, const char *path)
+{
+   FILE *f = fopen(path, "rb");
+   unsigned hdr[2]; unsigned char *buf; GLint ok = 0;
+   if (!f) return 0;
+   if (fread(hdr, sizeof(unsigned), 2, f) == 2 && hdr[1] > 0 && hdr[1] < (8u << 20) && (buf = malloc(hdr[1])))
+   {
+      if (fread(buf, 1, hdr[1], f) == hdr[1])
+      {
+         while (glGetError() != GL_NO_ERROR) { }
+         glProgramBinary(p, (GLenum)hdr[0], buf, (GLsizei)hdr[1]);
+         if (glGetError() == GL_NO_ERROR) glGetProgramiv(p, GL_LINK_STATUS, &ok);
+      }
+      free(buf);
+   }
+   fclose(f);
+   return ok;
+}
+
+static void prog_cache_save(GLuint p, const char *path)
+{
+   char tmp[420], dir[420]; GLint len = 0; GLsizei got = 0; unsigned hdr[2]; GLenum fmt = 0; unsigned char *buf; FILE *f;
+   glGetProgramiv(p, GL_PROGRAM_BINARY_LENGTH, &len);
+   if (len <= 0 || !(buf = malloc((size_t)len))) return;
+   while (glGetError() != GL_NO_ERROR) { }
+   glGetProgramBinary(p, len, &got, &fmt, buf);
+   if (glGetError() == GL_NO_ERROR && got > 0)
+   {
+      snprintf(dir, sizeof(dir), "%s/cache", g_home); mkdir(dir, 0755);
+      snprintf(dir, sizeof(dir), "%s/cache/shaders", g_home); mkdir(dir, 0755);
+      snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+      if ((f = fopen(tmp, "wb")))
+      {
+         hdr[0] = (unsigned)fmt; hdr[1] = (unsigned)got;
+         int okw = fwrite(hdr, sizeof(unsigned), 2, f) == 2 && fwrite(buf, 1, (size_t)got, f) == (size_t)got;
+         if (fclose(f) != 0) okw = 0;
+         if (okw) rename(tmp, path); else unlink(tmp);
+      }
+   }
+   free(buf);
+}
+
 static GLuint link_prog(const char *vs, const char *fs)
 {
-   GLint ok; char info[1024];
-   GLuint p = glCreateProgram();
-   glAttachShader(p, compile(GL_VERTEX_SHADER, vs));
-   glAttachShader(p, compile(GL_FRAGMENT_SHADER, fs));
+   static int use = -1;
+   GLint ok; char info[1024], path[400];
+   GLuint p = glCreateProgram(), v, f;
+   if (use < 0)
+   {
+      GLint nf = 0;
+      glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nf);
+      use = nf > 0 && settings_get_int("shader_cache", 1, 0, 1);
+   }
+   if (use)
+   {
+      prog_cache_path(path, sizeof(path), vs, fs);
+      if (prog_cache_load(p, path)) { g_progs_cached++; return p; }
+      glDeleteProgram(p); p = glCreateProgram();   /* a refused binary leaves no state behind */
+   }
+   v = compile(GL_VERTEX_SHADER, vs); f = compile(GL_FRAGMENT_SHADER, fs);
+   glAttachShader(p, v);
+   glAttachShader(p, f);
    glLinkProgram(p);
    glGetProgramiv(p, GL_LINK_STATUS, &ok);
    if (!ok) { glGetProgramInfoLog(p, sizeof(info), NULL, info); logf_("link error: %s", info); }
+   else if (use) prog_cache_save(p, path);
+   g_progs_built++;
    return p;
 }
 
@@ -995,11 +1306,24 @@ static void gl_setup(void)
    u2_aux0 = glGetUniformLocation(g_prog_2d, "aux0");
    u2_aux1 = glGetUniformLocation(g_prog_2d, "aux1");
    u2_aux2 = glGetUniformLocation(g_prog_2d, "aux2");
+   u2_uvw = glGetUniformLocation(g_prog_2d, "uvw");
+   glUseProgram(g_prog_2d);
+   glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
    g_prog_tex = link_prog(VS_2D, FS_TEX);
    ut_mvp = glGetUniformLocation(g_prog_tex, "mvp");
    ut_color = glGetUniformLocation(g_prog_tex, "color");
    glUseProgram(g_prog_tex);
    glUniform1i(glGetUniformLocation(g_prog_tex, "tex"), 0);
+   ut_uvw = glGetUniformLocation(g_prog_tex, "uvw");
+   glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   g_prog_mix = link_prog(VS_MIX, FS_MIX);
+   um_mvp = glGetUniformLocation(g_prog_mix, "mvp");
+   um_ma = glGetUniformLocation(g_prog_mix, "ma");
+   um_mb = glGetUniformLocation(g_prog_mix, "mb");
+   um_k = glGetUniformLocation(g_prog_mix, "k");
+   glUseProgram(g_prog_mix);
+   glUniform1i(glGetUniformLocation(g_prog_mix, "ta"), 0);
+   glUniform1i(glGetUniformLocation(g_prog_mix, "tb"), 1);
 
    glGenVertexArrays(1, &g_vao_quad);
    glBindVertexArray(g_vao_quad);
@@ -1053,7 +1377,9 @@ static void surface_avg(SDL_Surface *c, float *avg, float *acc)
 /* Upload an SDL surface as RGBA (ABGR8888 == R,G,B,A bytes on little endian). */
 static GLuint surface_to_tex(SDL_Surface *s, int mip, float *avg)
 {
-   GLuint t; SDL_Surface *c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0);
+   /* the workers hand over ABGR8888 already: no second copy of it on the render thread */
+   const int ready = s->format->format == SDL_PIXELFORMAT_ABGR8888 && s->pitch == s->w * 4;
+   GLuint t; SDL_Surface *c = ready ? s : SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0);
    if (!c) return 0;
    if (avg)
    {
@@ -1075,7 +1401,7 @@ static GLuint surface_to_tex(SDL_Surface *s, int mip, float *avg)
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
    if (mip) glGenerateMipmap(GL_TEXTURE_2D);
-   SDL_FreeSurface(c);
+   if (c != s) SDL_FreeSurface(c);
    return t;
 }
 
@@ -1251,6 +1577,170 @@ static void game_free_tex(game_t *g)
 /* drawing                                                                   */
 static mat4 g_proj, g_view, g_vp, g_ortho;
 
+/* Antialiasing for the 3D scene only. The window had 2x MSAA for the edges of the launch
+ * animation's models, and the whole dashboard paid for it on every frame: its shapes
+ * are antialiased by their shaders and its text and art are pixel-aligned textures.
+ * The window now has none. While a launch plays, its 3D is drawn into a transparent
+ * 4x multisampled target (resolved on-chip where the driver has
+ * EXT_multisampled_render_to_texture, as the CRT filter's target, else by a blit) and
+ * put over the dashboard as one premultiplied quad, only the rectangle the scene covered.
+ * In the target, blending keeps a premultiplied colour and a true coverage in alpha
+ * (scene_blend_*), so the quad gives what drawing straight to the screen gave.
+ * Setting scene_aa=0 goes back to the window's MSAA (setting msaa). */
+typedef void (*sc_fbtex_ms_fn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
+typedef void (*sc_rb_ms_fn)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+static struct { int want, samples, mode, active, full; GLuint fbo, tex, depth, msfbo, mscol; float x0, y0, x1, y1; } g_sc;
+static void cost_add(float w, float h, int mode);
+static int g_cost_on;
+
+static void scene_blend_over(void) { glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
+static void scene_blend_add(void)  { glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE); }
+
+static void scene_setup(void)
+{
+   sc_fbtex_ms_fn fbtex_ms = NULL; sc_rb_ms_fn rb_ms = NULL;
+   GLint maxs = 0; int ok, w = g_dw, h = g_dh;
+   if (g_sc.want <= 0) return;
+   glGetIntegerv(GL_MAX_SAMPLES, &maxs);
+   g_sc.samples = g_sc.want < maxs ? g_sc.want : maxs;
+   if (g_sc.samples < 2) { logf_("scene: no multisampling here, launch drawn without antialiasing"); return; }
+   if (settings_get_int("scene_aa", 1, 0, 2) == 1 && SDL_GL_ExtensionSupported("GL_EXT_multisampled_render_to_texture"))
+   {
+      fbtex_ms = (sc_fbtex_ms_fn)SDL_GL_GetProcAddress("glFramebufferTexture2DMultisampleEXT");
+      rb_ms = (sc_rb_ms_fn)SDL_GL_GetProcAddress("glRenderbufferStorageMultisampleEXT");
+   }
+   g_sc.mode = fbtex_ms && rb_ms ? 1 : 2;
+   glGenTextures(1, &g_sc.tex);
+   glBindTexture(GL_TEXTURE_2D, g_sc.tex);
+   glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, w, h);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   glGenFramebuffers(1, &g_sc.fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, g_sc.fbo);
+   glGenRenderbuffers(1, &g_sc.depth);
+   glBindRenderbuffer(GL_RENDERBUFFER, g_sc.depth);
+   if (g_sc.mode == 1)
+   {
+      fbtex_ms(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sc.tex, 0, g_sc.samples);
+      rb_ms(GL_RENDERBUFFER, g_sc.samples, GL_DEPTH_COMPONENT16, w, h);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_sc.depth);
+      ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+   }
+   else
+   {  /* drawn into a multisampled FBO, resolved into g_sc.fbo (colour only) */
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sc.tex, 0);
+      ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+      glGenFramebuffers(1, &g_sc.msfbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, g_sc.msfbo);
+      glGenRenderbuffers(1, &g_sc.mscol);
+      glBindRenderbuffer(GL_RENDERBUFFER, g_sc.mscol);
+      glRenderbufferStorageMultisample(GL_RENDERBUFFER, g_sc.samples, GL_RGBA8, w, h);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, g_sc.mscol);
+      glBindRenderbuffer(GL_RENDERBUFFER, g_sc.depth);
+      glRenderbufferStorageMultisample(GL_RENDERBUFFER, g_sc.samples, GL_DEPTH_COMPONENT16, w, h);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_sc.depth);
+      ok = ok && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+   }
+   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+   glBindRenderbuffer(GL_RENDERBUFFER, 0);
+   if (!ok)
+   {
+      logf_("scene: %dx%d target incomplete (mode %d), launch drawn without antialiasing", w, h, g_sc.mode);
+      g_sc.mode = 0;
+      return;
+   }
+   logf_("scene: 3D target %dx%d, MSAA %d (%s)", w, h, g_sc.samples, g_sc.mode == 1 ? "on-chip resolve" : "blit resolve");
+}
+
+/* what a 3D draw covers on screen: the box lo..hi through mvp */
+static void scene_cover(const mat4 *mvp, const float lo[3], const float hi[3])
+{
+   const float *m = mvp->m;
+   int k;
+   if (!g_sc.active || g_sc.full) return;
+   for (k = 0; k < 8; k++)
+   {
+      const float x = k & 1 ? hi[0] : lo[0], y = k & 2 ? hi[1] : lo[1], z = k & 4 ? hi[2] : lo[2];
+      const float w = m[3] * x + m[7] * y + m[11] * z + m[15];
+      float sx, sy;
+      if (w < 0.05f) { g_sc.full = 1; return; }   /* reaches behind the camera: the whole screen */
+      sx = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / w * 0.5f + 0.5f) * g_dw;
+      sy = ((m[1] * x + m[5] * y + m[9] * z + m[13]) / w * 0.5f + 0.5f) * g_dh;
+      if (sx < g_sc.x0) g_sc.x0 = sx;
+      if (sx > g_sc.x1) g_sc.x1 = sx;
+      if (sy < g_sc.y0) g_sc.y0 = sy;
+      if (sy > g_sc.y1) g_sc.y1 = sy;
+   }
+}
+
+/* the frame's 3D goes to the scene target from here (depth test and blending as set) */
+static void scene_begin(void)
+{
+   if (!g_sc.mode) return;
+   glBindFramebuffer(GL_FRAMEBUFFER, g_sc.mode == 1 ? g_sc.fbo : g_sc.msfbo);
+   glViewport(0, 0, g_dw, g_dh);
+   glClearColor(0, 0, 0, 0);
+   glClearDepthf(1.0f);
+   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+   g_sc.active = 1; g_sc.full = 0;
+   g_sc.x0 = g_sc.y0 = 1e9f; g_sc.x1 = g_sc.y1 = -1e9f;
+}
+
+/* ...to here: resolved and drawn over the frame (2D state on return: no depth test,
+ * blending, g_prog_2d) */
+static void scene_end(void)
+{
+   static const GLenum inv_depth[1] = { GL_DEPTH_ATTACHMENT }, inv_both[2] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
+   const float one[4] = { 1, 1, 1, 1 };
+   int x0, y0, x1, y1;
+   if (!g_sc.active) return;
+   g_sc.active = 0;
+   if (g_sc.full) { x0 = 0; y0 = 0; x1 = g_dw; y1 = g_dh; }
+   else
+   {  /* the covered rectangle, 2 px of margin, in whole pixels (y up, as GL counts) */
+      x0 = (int)floorf(g_sc.x0) - 2; y0 = (int)floorf(g_sc.y0) - 2; x1 = (int)ceilf(g_sc.x1) + 2; y1 = (int)ceilf(g_sc.y1) + 2;
+      if (x0 < 0) x0 = 0;
+      if (y0 < 0) y0 = 0;
+      if (x1 > g_dw) x1 = g_dw;
+      if (y1 > g_dh) y1 = g_dh;
+   }
+   if (g_sc.mode == 2)
+   {
+      if (x1 > x0 && y1 > y0)
+      {
+         glBindFramebuffer(GL_READ_FRAMEBUFFER, g_sc.msfbo);
+         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_sc.fbo);
+         glBlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+      }
+      glBindFramebuffer(GL_FRAMEBUFFER, g_sc.msfbo);
+      glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, inv_both);
+   }
+   else glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, inv_depth);
+   glBindFramebuffer(GL_FRAMEBUFFER, crt_target());
+   glViewport(0, 0, g_dw, g_dh);
+   glDisable(GL_DEPTH_TEST);
+   glEnable(GL_BLEND);
+   if (x1 > x0 && y1 > y0)
+   {
+      const float k = g_ui_scale, lx = x0 / k, ly = (g_dh - y1) / k, lw = (x1 - x0) / k, lh = (y1 - y0) / k;
+      mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(lx + lw * 0.5f, ly + lh * 0.5f, 0), m4_scale(lw, -lh, 1)));
+      if (g_cost_on) cost_add(lw, lh, 0);
+      glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   /* premultiplied */
+      glUseProgram(g_prog_tex);
+      glUniform4f(ut_uvw, (float)x0 / g_dw, (float)y1 / g_dh, (float)(x1 - x0) / g_dw, -(float)(y1 - y0) / g_dh);
+      glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, m.m);
+      glUniform4fv(ut_color, 1, one);
+      glBindTexture(GL_TEXTURE_2D, g_sc.tex);
+      glBindVertexArray(g_vao_quad);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   }
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   glUseProgram(g_prog_2d);
+}
+
 static void cost_add_3d(const mat4 *mvp, int mode);
 /* <home>/debug/launch-shots (a test switch, for the simulator): the launch clock steps
  * exactly 1/30 s per frame and every third frame (0.1 s) is saved to
@@ -1279,7 +1769,9 @@ static void launch_shot(int k)
 }
 static void draw_quad_box(mat4 model, GLuint tex, const float tint[3], float alpha, int mode)
 {
+   static const float qlo[3] = { -0.5f, -0.5f, 0.0f }, qhi[3] = { 0.5f, 0.5f, 0.0f };
    mat4 mvp = m4_mul(g_vp, model);
+   scene_cover(&mvp, qlo, qhi);
    cost_add_3d(&mvp, mode);
    glUniformMatrix4fv(u_mvp, 1, GL_FALSE, mvp.m);
    glUniformMatrix4fv(u_model, 1, GL_FALSE, model.m);
@@ -1549,11 +2041,11 @@ static void draw_marquee(const game_t *g, const platform_t *pl, mat4 base, float
    float tint[3], glow[3];
    tint[0] = tint[1] = tint[2] = lit;
    glow[0] = g->col[0] * lit; glow[1] = g->col[1] * lit; glow[2] = g->col[2] * lit;
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+   scene_blend_add();
    glDepthMask(GL_FALSE);
    case_part(base, 0, 0, -hd - 0.02f, 0, 0, w * 1.6f, h * 2.4f, 0, glow, alpha * 0.55f, 8);
    glDepthMask(GL_TRUE);
-   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   scene_blend_over();
    case_part(base, 0, 0, hd - 0.002f, 0, 0, w + 0.06f, h + 0.06f, 0, frame, alpha, 1);
    case_part(base, 0, 0, -hd, PI, 0, w + 0.06f, h + 0.06f, 0, frame, alpha, 1);
    case_part(base, 0, 0, hd, 0, 0, w, h, g->tex, tint, alpha, 7);
@@ -1709,6 +2201,9 @@ static void launch_warmup(void)
    glUniform1i(u_tex, 0);
    glUniform3fv(u_light, 1, light);
    glUniform3fv(u_cam, 1, cam);
+   /* into the scene's multisampled target, as the launch draws (the driver's variants
+    * are per target format too), and its quad over the frame */
+   scene_begin(); scene_blend_over();
    glEnable(GL_DEPTH_TEST);
    glDepthFunc(GL_LEQUAL);
    for (p = 0; p < g_nplat * 2; p++)
@@ -1762,6 +2257,7 @@ static void launch_warmup(void)
       }
    }
    glDisable(GL_DEPTH_TEST);
+   scene_end();
    /* 2D: the flash + fade quad (premultiplied blend) */
    glUseProgram(g_prog_2d);
    glUniform1i(u2_tex, 0);
@@ -1778,13 +2274,26 @@ static void launch_warmup(void)
    logf_("launch warm-up: %.0f ms", (now_s() - t0) * 1000.0);
 }
 
+/* A shape antialiased by its shader (modes 5, 6, 9) fades over the pixel its edge
+ * crosses, but a quad the size of the shape stops at the edge: on its straight sides
+ * the outer half of that fade was never drawn (the window's multisampling used to cover
+ * for it). The quad is one device pixel larger on every side, the shape's own
+ * coordinates unchanged (uvw). */
+static void draw_sdf(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
+{
+   const float p = 1.0f / g_ui_scale;
+   glUniform4f(u2_uvw, -p / w, -p / h, (w + 2 * p) / w, (h + 2 * p) / h);
+   draw_2d(tex, x - p, y - p, w + 2 * p, h + 2 * p, rgba, mode);
+   glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+}
+
 /* glass rounded rectangle (mode 5): the shader needs the size in pixels for its distance field */
 void draw_round_rect(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha)
 {
    const float k = g_ui_scale;   /* shape maths in device px: 1-px antialiased edges */
    glUniform4f(u2_rect, w * k, h * k, radius * k, border_alpha);
    glUniform4f(u2_aux0, 2.0f * k, 0.0f, 0.0f, 0.0f);   /* border band: 2 logical px */
-   draw_2d(0, x, y, w, h, rgba, 5);
+   draw_sdf(0, x, y, w, h, rgba, 5);
 }
 
 /* flat rounded rectangle (mode 9): filled, or stroked inside with width `stroke` */
@@ -1793,16 +2302,144 @@ static void draw_shape(float x, float y, float w, float h, float radius, float s
    const float k = g_ui_scale;
    glUniform4f(u2_rect, w * k, h * k, radius * k, 0.0f);
    glUniform4f(u2_aux0, stroke * k, 0.0f, 0.0f, 0.0f);
-   draw_2d(0, x, y, w, h, rgba, 9);
+   draw_sdf(0, x, y, w, h, rgba, 9);
 }
 
 /* soft shadow under a rounded rectangle x,y,w,h: blur radius, offset dy, opacity a;
  * cut = 1 leaves the area under the shape itself clear (translucent shapes) */
+/* Baked shadows. FS_2D mode 10 evaluates one or two distance fields and a smoothstep
+ * per pixel over the whole blurred quad (1.3 Mpx for the game menu's card at 1080p,
+ * every frame). The falloff of a shape only depends on its size, so it is computed once
+ * on the CPU with the shader's own formula, kept as a texture and drawn as a plain
+ * textured quad. A soft shadow needs no resolution: its texels are up to 4 device px
+ * (at least 15 across the blur radius). One with the shape cut out has the cut's 1 px
+ * edge: it is baked on the device's own pixel grid for where the quad sits (fx, fy: the
+ * fraction of a pixel its corner is at) and drawn texel for pixel. A size is baked the second frame in a row
+ * it is asked for: one that is animating (the card growing) uses the shader meanwhile. */
+typedef struct { float w, h, r, blur, dy, fx, fy; int cut; } shadow_key_t;
+typedef struct { shadow_key_t k; GLuint tex; unsigned used; } shadow_tex_t;
+static shadow_tex_t g_shadow_tex[32];
+static struct { shadow_key_t k; unsigned frame; } g_shadow_miss[16];
+static unsigned g_frame_id = 1;        /* frames presented (main loop and dialog) */
+static unsigned g_shadow_bake_frame;   /* texels baked during g_frame_id == this */
+static int      g_shadow_baked_px;
+
+static int shadow_key_eq(const shadow_key_t *a, const shadow_key_t *b)
+{
+   return fabsf(a->w - b->w) < 0.126f && fabsf(a->h - b->h) < 0.126f && a->r == b->r && a->blur == b->blur &&
+          a->cut == b->cut && (!a->cut || (a->dy == b->dy && fabsf(a->fx - b->fx) < 0.01f && fabsf(a->fy - b->fy) < 0.01f));
+}
+
+/* key in device px: quad size, corner radius, blur, offset of the cut */
+static GLuint shadow_bake(const shadow_key_t *q)
+{
+   const float f = q->cut ? 1.0f : clampf(q->blur / 15.0f, 1.0f, 4.0f);
+   const int tw = (int)ceilf(q->cut ? q->fx + q->w : q->w / f), th = (int)ceilf(q->cut ? q->fy + q->h : q->h / f);
+   const float hx = q->w * 0.5f - q->blur, hy = q->h * 0.5f - q->blur;
+   const float r = q->r < (hx < hy ? hx : hy) ? q->r : (hx < hy ? hx : hy);
+   unsigned char *px;
+   GLuint t;
+   int x, y;
+   if (tw < 2 || th < 2 || tw > 1024 || th > 1024 || !(px = malloc((size_t)tw * th * 4))) return 0;
+   for (y = 0; y < th; y++)
+      for (x = 0; x < tw; x++)
+      {
+         const float ppx = q->cut ? x + 0.5f - q->fx - q->w * 0.5f : ((x + 0.5f) / tw - 0.5f) * q->w;
+         const float ppy = q->cut ? y + 0.5f - q->fy - q->h * 0.5f : ((y + 0.5f) / th - 0.5f) * q->h;
+         float qx = fabsf(ppx) - (hx - r), qy = fabsf(ppy) - (hy - r);
+         float ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0, in = qx > qy ? qx : qy;
+         float d = sqrtf(ox * ox + oy * oy) + (in < 0 ? in : 0) - r;
+         float k = 1.0f - smooth01(-q->blur * 0.35f, q->blur, d);
+         unsigned char *o = px + ((size_t)y * tw + x) * 4;
+         k *= k;
+         if (q->cut)
+         {
+            float d2;
+            qx = fabsf(ppx) - (hx - r); qy = fabsf(ppy + q->dy) - (hy - r);
+            ox = qx > 0 ? qx : 0; oy = qy > 0 ? qy : 0; in = qx > qy ? qx : qy;
+            d2 = sqrtf(ox * ox + oy * oy) + (in < 0 ? in : 0) - r;
+            k *= clampf(d2 + 0.5f, 0.0f, 1.0f);
+            if (fabsf(ppx) > q->w * 0.5f || fabsf(ppy) > q->h * 0.5f) k = 0.0f;   /* pixel outside the quad */
+         }
+         o[0] = o[1] = o[2] = 255; o[3] = (unsigned char)(255.0f * k + 0.5f);
+      }
+   glGenTextures(1, &t);
+   glBindTexture(GL_TEXTURE_2D, t);
+   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   free(px);
+   g_shadow_baked_px += tw * th;
+   return t;
+}
+
+/* the baked texture of a shadow, 0 while it has none (the shader draws it) */
+static GLuint shadow_lookup(const shadow_key_t *q)
+{
+   const int NT = (int)(sizeof(g_shadow_tex) / sizeof(g_shadow_tex[0])), NM = (int)(sizeof(g_shadow_miss) / sizeof(g_shadow_miss[0]));
+   int i, slot = 0, seen = 0, ms = 0;
+   for (i = 0; i < NT; i++)
+      if (g_shadow_tex[i].tex && shadow_key_eq(&g_shadow_tex[i].k, q)) { g_shadow_tex[i].used = g_frame_id; return g_shadow_tex[i].tex; }
+   for (i = 0; i < NM; i++)
+   {
+      if (g_shadow_miss[i].frame && shadow_key_eq(&g_shadow_miss[i].k, q))
+      {
+         if (g_shadow_miss[i].frame + 1 == g_frame_id) seen = 1;
+         if (g_shadow_miss[i].frame == g_frame_id) return 0;   /* asked twice this frame, noted already */
+         ms = i; break;
+      }
+      if (g_shadow_miss[i].frame < g_shadow_miss[ms].frame) ms = i;   /* else the oldest note is replaced */
+   }
+   if (g_shadow_bake_frame != g_frame_id) { g_shadow_bake_frame = g_frame_id; g_shadow_baked_px = 0; }
+   if (!seen || g_shadow_baked_px > 150000)
+   {  /* first frame of this size, or enough baked for one frame: note it, try the next */
+      g_shadow_miss[ms].k = *q; g_shadow_miss[ms].frame = g_frame_id;
+      return 0;
+   }
+   g_shadow_miss[ms].frame = 0;
+   for (i = 0; i < NT; i++)
+   {
+      if (!g_shadow_tex[i].tex) { slot = i; break; }
+      if (g_shadow_tex[i].used < g_shadow_tex[slot].used) slot = i;
+   }
+   if (g_shadow_tex[slot].tex) glDeleteTextures(1, &g_shadow_tex[slot].tex);
+   g_shadow_tex[slot].k = *q; g_shadow_tex[slot].used = g_frame_id;
+   g_shadow_tex[slot].tex = shadow_bake(q);
+   return g_shadow_tex[slot].tex;
+}
+
 static void draw_shadow_ex(float x, float y, float w, float h, float radius, float blur, float dy, float a, int cut)
 {
    const float c[4] = { 0, 0, 0, a };
-   if (!g_fx_shadows) return;
    const float k = g_ui_scale;
+   shadow_key_t q;
+   GLuint tex;
+   if (!g_fx_shadows || a <= 0.003f) return;
+   q.w = (w + 2 * blur) * k; q.h = (h + 2 * blur) * k; q.r = radius * k; q.blur = blur * k; q.dy = dy * k; q.cut = cut;
+   q.fx = q.fy = 0.0f;
+   if (cut)
+   {
+      q.fx = (x - blur) * k; q.fx -= floorf(q.fx);
+      q.fy = (y - blur + dy) * k; q.fy -= floorf(q.fy);
+   }
+   if ((tex = shadow_lookup(&q)))
+   {  /* draw_2d() mode 0 without its snap to device pixels (a shadow follows its shape);
+       * a cut one covers whole device pixels from the one its corner is in */
+      const float qx = cut ? floorf((x - blur) * k) / k : x - blur, qy = cut ? floorf((y - blur + dy) * k) / k : y - blur + dy;
+      const float qw = cut ? ceilf(q.fx + q.w) / k : w + 2 * blur, qh = cut ? ceilf(q.fy + q.h) / k : h + 2 * blur;
+      mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(qx + qw * 0.5f, qy + qh * 0.5f, 0), m4_scale(qw, -qh, 1)));
+      if (g_cost_on) cost_add(qw, qh, 0);
+      glUseProgram(g_prog_tex);
+      glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, m.m);
+      glUniform4fv(ut_color, 1, c);
+      glBindTexture(GL_TEXTURE_2D, tex);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      glUseProgram(g_prog_2d);
+      return;
+   }
    glUniform4f(u2_rect, (w + 2 * blur) * k, (h + 2 * blur) * k, radius * k, 0.0f);
    glUniform4f(u2_aux0, blur * k, cut ? 1.0f : 0.0f, dy * k, 0.0f);
    draw_2d(0, x - blur, y - blur + dy, w + 2 * blur, h + 2 * blur, c, 10);
@@ -1854,8 +2491,26 @@ static void make_tile_shadow(void)
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
+/* one rectangle (px, py, pw, ph inside the w x h tile) of a tile, same pixels as the
+ * whole tile would give there */
+static void tile_part(GLuint tex, float x, float y, float w, float h, float px, float py, float pw, float ph,
+                      const float rgba[4], int opaque)
+{
+   glUniform4f(u2_uvw, px / w, py / h, pw / w, ph / h);
+   if (opaque) glDisable(GL_BLEND);
+   draw_2d(tex, x + px, y + py, pw, ph, rgba, 6);
+   if (opaque) glEnable(GL_BLEND);
+}
+
 /* textured rounded tile (mode 6), the texture (tw x th) cover-fitted into w x h;
- * sheen < -1 = none */
+ * sheen < -1 = none.
+ * A fully opaque tile is drawn in parts: its inside (everything but the rounded sides
+ * and a 1 px rim) without blending, then the four edge strips blended as before. The
+ * GPU is a tile-based deferred renderer: pixels under an unblended quad are never shaded,
+ * so the full-screen background (the most expensive pass of the frame) and the focused
+ * tile's shadow are skipped under the covers; a blended tile made it shade both.
+ * Setting tile_split=0 draws them whole again (to compare frame rates on the console). */
+static int g_tile_split = -1;
 static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, float h, float radius,
                       float sheen, float light, const float rgba[4])
 {
@@ -1869,7 +2524,19 @@ static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, flo
    glUniform4f(u2_rect, w * g_ui_scale, h * g_ui_scale, radius * g_ui_scale, 0.0f);
    glUniform4f(u2_aux0, u0, v0, us, vs);
    glUniform4f(u2_aux1, sheen, light, 0.0f, 0.0f);
-   draw_2d(tex, x, y, w, h, rgba, 6);
+   if (g_tile_split < 0) g_tile_split = settings_get_int("tile_split", 1, 0, 1);
+   if (g_tile_split && rgba[3] >= 0.999f && w > 2.0f * radius + 12.0f && h > 12.0f)
+   {
+      const float ix = radius + 1.0f, iy = 1.0f, p = 1.0f / g_ui_scale;   /* p: the edge's fade, see draw_sdf() */
+      tile_part(tex, x, y, w, h, ix, iy, w - 2 * ix, h - 2 * iy, rgba, 1);
+      tile_part(tex, x, y, w, h, -p, -p, ix + p, h + 2 * p, rgba, 0);
+      tile_part(tex, x, y, w, h, w - ix, -p, ix + p, h + 2 * p, rgba, 0);
+      tile_part(tex, x, y, w, h, ix, -p, w - 2 * ix, iy + p, rgba, 0);
+      tile_part(tex, x, y, w, h, ix, h - iy, w - 2 * ix, iy + p, rgba, 0);
+      glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+      return;
+   }
+   draw_sdf(tex, x, y, w, h, rgba, 6);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2172,7 +2839,10 @@ static void in_event(const SDL_Event *e)
 {
    if (e->type == SDL_KEYDOWN || e->type == SDL_CONTROLLERBUTTONDOWN || e->type == SDL_JOYBUTTONDOWN ||
        (e->type == SDL_JOYHATMOTION && e->jhat.value != SDL_HAT_CENTERED))
+   {
       in_last_activity = now_s();
+      if (e->type != SDL_KEYDOWN || !e->key.repeat) perf_input(e->common.timestamp);
+   }
    switch (e->type)
    {
    case SDL_JOYDEVICEADDED:
@@ -2501,9 +3171,11 @@ static void hints_draw(int set, float y, float alpha)
  * game's cover (gen, palette copied when the layer is made). The next layer crossfades
  * over the current one in 0.6 s; a layer pushed meanwhile waits (only the newest), so a
  * crossfade is never cut short. */
-typedef struct { GLuint tex; int w, h; int gen; float a[3], acc[3]; GLuint gfbo, gtex; } bgtex_t;
+typedef struct { GLuint tex; int w, h; int gen; float a[3], acc[3]; GLuint gfbo, gtex; double gen_t; } bgtex_t;
 #define GEN_W 640    /* generated backgrounds render at 640x360 and are scaled up: */
 #define GEN_H 360    /* smooth gradients, a tenth of the pixels of a 1080p pass */
+#define GEN_DT 0.05  /* and are redrawn 20 times a second: the lights drift under 1 % of the
+                      * screen per second, so a frame's step is below one of its pixels */
 static bgtex_t bg_cur, bg_next, bg_pending;
 static float   bg_mix = 1.0f;          /* 0 -> showing cur, 1 -> next done */
 static char    bg_shown[512];          /* key of the background we want: path or "gen:<i>" */
@@ -2546,27 +3218,125 @@ static bgtex_t bg_gen_layer(int gi)
    return l;
 }
 
+/* A decoded background goes to the GPU a strip per frame (about 2 MB): the whole 1080p
+ * image is 8 MB, and copying it in one call held the frame it landed on. */
+static struct { SDL_Surface *s; GLuint tex; int row; char path[512]; } bg_up;
+static void bg_up_cancel(void)
+{
+   if (bg_up.s) SDL_FreeSurface(bg_up.s);
+   if (bg_up.tex) glDeleteTextures(1, &bg_up.tex);
+   memset(&bg_up, 0, sizeof(bg_up));
+}
+
 static void bg_poll_upload(void)
 {
    SDL_Surface *s = NULL; char path[512] = "";
-   int failed;
-   bgtex_t l;
+   int failed, got;
    SDL_LockMutex(bg_mx);
    s = bg_done; bg_done = NULL;
    failed = bg_done_failed; bg_done_failed = 0;
-   snprintf(path, sizeof(path), "%s", bg_done_path);
+   got = s || failed;
+   if (got) snprintf(path, sizeof(path), "%s", bg_done_path);
    SDL_UnlockMutex(bg_mx);
-   if (!s)
-   {  /* unreadable image: the generated background of that game instead */
-      if (failed && !strcmp(path, bg_shown)) bg_push(bg_gen_layer(bg_game));
-      return;
+   if (got)
+   {
+      bg_up_cancel();   /* a newer result replaces an upload in progress */
+      if (!s)
+      {  /* unreadable image: the generated background of that game instead */
+         if (!strcmp(path, bg_shown)) bg_push(bg_gen_layer(bg_game));
+         return;
+      }
+      if (strcmp(path, bg_shown)) { SDL_FreeSurface(s); return; } /* stale */
+      if (s->format->format != SDL_PIXELFORMAT_ABGR8888 || s->pitch != s->w * 4)
+      {  /* not the worker's format (never happens): the plain upload */
+         bgtex_t l;
+         memset(&l, 0, sizeof(l));
+         l.tex = surface_to_tex(s, 0, NULL);
+         l.w = s->w; l.h = s->h;
+         SDL_FreeSurface(s);
+         bg_push(l);
+         return;
+      }
+      bg_up.s = s;
+      snprintf(bg_up.path, sizeof(bg_up.path), "%s", path);
+      glGenTextures(1, &bg_up.tex);
+      glBindTexture(GL_TEXTURE_2D, bg_up.tex);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, s->w, s->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
    }
-   if (strcmp(path, bg_shown)) { SDL_FreeSurface(s); return; } /* stale */
-   memset(&l, 0, sizeof(l));
-   l.tex = surface_to_tex(s, 0, NULL);
-   l.w = s->w; l.h = s->h;
-   SDL_FreeSurface(s);
-   bg_push(l);
+   if (!bg_up.s) return;
+   if (strcmp(bg_up.path, bg_shown)) { bg_up_cancel(); return; }   /* the selection moved on */
+   {
+      SDL_Surface *u = bg_up.s;
+      int rows = (2 * 1024 * 1024) / (u->w * 4 > 0 ? u->w * 4 : 1);
+      if (rows < 16) rows = 16;
+      if (rows > u->h - bg_up.row) rows = u->h - bg_up.row;
+      glBindTexture(GL_TEXTURE_2D, bg_up.tex);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, bg_up.row, u->w, rows, GL_RGBA, GL_UNSIGNED_BYTE,
+                      (const unsigned char *)u->pixels + (size_t)bg_up.row * u->pitch);
+      bg_up.row += rows;
+      if (bg_up.row >= u->h)
+      {
+         bgtex_t l;
+         memset(&l, 0, sizeof(l));
+         l.tex = bg_up.tex; l.w = u->w; l.h = u->h;
+         bg_up.tex = 0;
+         bg_up_cancel();
+         bg_push(l);
+      }
+   }
+}
+
+/* a generated layer's picture: its palette and the scrim rendered into its small FBO
+ * (g_prog_2d bound on entry and on return, the frame's target and viewport restored) */
+static void bg_gen_render(bgtex_t *b, double t)
+{
+   const float one[4] = { 1, 1, 1, 1 };
+   float a[3], acc[3], base[3];
+   int k;
+   if (b->gfbo && t >= b->gen_t && t - b->gen_t < GEN_DT) return;   /* its picture is recent enough */
+   b->gen_t = t;
+   if (!b->gfbo)
+   {
+      glGenTextures(1, &b->gtex);
+      glBindTexture(GL_TEXTURE_2D, b->gtex);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GEN_W, GEN_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glGenFramebuffers(1, &b->gfbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, b->gtex, 0);
+      if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) logf_("bg: generated FBO incomplete");
+   }
+   memcpy(a, b->a, sizeof(a)); memcpy(acc, b->acc, sizeof(acc));
+   for (k = 0; k < 3; k++)
+   {  /* A a bit more saturated around its mean; base = A darkened */
+      float m = (a[0] + a[1] + a[2]) / 3.0f;
+      a[k] = clampf(m + (a[k] - m) * 1.35f, 0.0f, 1.0f);
+      base[k] = a[k] * 0.22f + 0.015f;
+   }
+   for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
+   glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
+   glViewport(0, 0, GEN_W, GEN_H);
+   glDisable(GL_BLEND);
+   glUniform4f(u2_rect, (float)(0.80 + 0.06 * sin(t * 0.314)), (float)(0.20 + 0.06 * cos(t * 0.271)),
+                        (float)(0.22 + 0.06 * cos(t * 0.231)), (float)(0.88 + 0.05 * sin(t * 0.293)));
+   glUniform4f(u2_aux0, base[0], base[1], base[2], 0);
+   glUniform4f(u2_aux1, a[0], a[1], a[2], 0);
+   glUniform4f(u2_aux2, acc[0], acc[1], acc[2], 0);
+   draw_2d(0, 0, 0, W, H, one, 7);
+   glEnable(GL_BLEND);
+   glUniform4f(u2_aux0, g_bg_dim, 0, 0, 0);
+   draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
+   glBindFramebuffer(GL_FRAMEBUFFER, crt_target());   /* the window, or the CRT filter's target */
+   glViewport(0, 0, g_dw, g_dh);
 }
 
 /* draw a layer: images "cover"-fitted with a slow drift (scrim already baked in);
@@ -2586,49 +3356,59 @@ static void bg_draw(bgtex_t *b, float alpha, double t)
    }
    else if (b->gen)
    {
-      const float one[4] = { 1, 1, 1, 1 };
-      float a[3], acc[3], base[3];
-      int k;
-      if (!b->gfbo)
-      {
-         glGenTextures(1, &b->gtex);
-         glBindTexture(GL_TEXTURE_2D, b->gtex);
-         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GEN_W, GEN_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-         glGenFramebuffers(1, &b->gfbo);
-         glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
-         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, b->gtex, 0);
-         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) logf_("bg: generated FBO incomplete");
-      }
-      memcpy(a, b->a, sizeof(a)); memcpy(acc, b->acc, sizeof(acc));
-      for (k = 0; k < 3; k++)
-      {  /* A a bit more saturated around its mean; base = A darkened */
-         float m = (a[0] + a[1] + a[2]) / 3.0f;
-         a[k] = clampf(m + (a[k] - m) * 1.35f, 0.0f, 1.0f);
-         base[k] = a[k] * 0.22f + 0.015f;
-      }
-      for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
-      glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
-      glViewport(0, 0, GEN_W, GEN_H);
-      glDisable(GL_BLEND);
-      glUniform4f(u2_rect, (float)(0.80 + 0.06 * sin(t * 0.314)), (float)(0.20 + 0.06 * cos(t * 0.271)),
-                           (float)(0.22 + 0.06 * cos(t * 0.231)), (float)(0.88 + 0.05 * sin(t * 0.293)));
-      glUniform4f(u2_aux0, base[0], base[1], base[2], 0);
-      glUniform4f(u2_aux1, a[0], a[1], a[2], 0);
-      glUniform4f(u2_aux2, acc[0], acc[1], acc[2], 0);
-      draw_2d(0, 0, 0, W, H, one, 7);
-      glEnable(GL_BLEND);
-      glUniform4f(u2_aux0, g_bg_dim, 0, 0, 0);
-      draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
-      glBindFramebuffer(GL_FRAMEBUFFER, crt_target());   /* the window, or the CRT filter's target */
-      glViewport(0, 0, g_dw, g_dh);
+      bg_gen_render(b, t);
       if (opaque) glDisable(GL_BLEND);
       draw_2d(b->gtex, 0, H, W, -H, c, 0);   /* FBO rows are bottom-up */
    }
    if (opaque) glEnable(GL_BLEND);
+}
+
+/* the texture of a layer and the uv scale / offset (m) that puts it on a full-screen
+ * quad exactly as bg_draw() does */
+static GLuint bg_layer_tex(bgtex_t *b, double t, float m[4])
+{
+   if (b->tex)
+   {
+      float sx = (float)W / b->w, sy = (float)H / b->h, sc = sx > sy ? sx : sy, w = b->w * sc, h = b->h * sc;
+      m[0] = W / w; m[1] = H / h; m[2] = (w - W) * 0.5f / w; m[3] = (h - H) * 0.5f / h;
+      return b->tex;
+   }
+   bg_gen_render(b, t);
+   m[0] = 1.0f; m[1] = -1.0f; m[2] = 0.0f; m[3] = 1.0f;   /* FBO rows are bottom-up */
+   return b->gtex;
+}
+
+/* the background of the frame: the current layer, the next one crossfading over it
+ * (e: 0 -> 1). While both show, one opaque pass samples the two (FS_MIX) */
+static void bg_draw_layers(float e, double t)
+{
+   float ma[4], mb[4];
+   GLuint ta, tb;
+   mat4 m;
+   if (!g_fx_bg) return;
+   if (bg_empty(&bg_next) || e <= 0.001f) { bg_draw(&bg_cur, 1.0f, t); return; }
+   if (e >= 0.999f) { bg_draw(&bg_next, 1.0f, t); return; }   /* covers the current one */
+   if (bg_empty(&bg_cur) || g_fx_bgflat)
+   {  /* nothing under it yet (startup: over the clear colour), or the bench's flat fill */
+      bg_draw(&bg_cur, 1.0f, t);
+      bg_draw(&bg_next, e, t);
+      return;
+   }
+   ta = bg_layer_tex(&bg_cur, t, ma);
+   tb = bg_layer_tex(&bg_next, t, mb);
+   if (g_cost_on) { glDisable(GL_BLEND); cost_add(W, H, 0); }
+   m = m4_mul(g_ortho, m4_mul(m4_translate(W * 0.5f, H * 0.5f, 0), m4_scale(W, -H, 1)));
+   glDisable(GL_BLEND);
+   glUseProgram(g_prog_mix);
+   glUniformMatrix4fv(um_mvp, 1, GL_FALSE, m.m);
+   glUniform4fv(um_ma, 1, ma);
+   glUniform4fv(um_mb, 1, mb);
+   glUniform1f(um_k, e);
+   glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tb);
+   glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, ta);
+   glDrawArrays(GL_TRIANGLES, 0, 6);
+   glUseProgram(g_prog_2d);
+   glEnable(GL_BLEND);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3414,6 +4194,11 @@ static void test_parse(void)
       }
    }
    g_cost_on = getenv("LUMEN_COST") != NULL;
+   {
+      char pp[300];
+      snprintf(pp, sizeof(pp), "%s/debug/perf", g_home);
+      g_perf_on = g_cost_on || file_exists(pp);
+   }
    if (g_ntin || g_ntshot) logf_("test: %d inputs, %d screenshots", g_ntin, g_ntshot);
 }
 
@@ -3631,7 +4416,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          }
          crt_end();
       }
-      SDL_GL_SwapWindow(win);
+      SDL_GL_SwapWindow(win); g_frame_id++;
    }
    logf_("dialog answer %d", answer);
    return answer;
@@ -3687,8 +4472,10 @@ int main(int argc, char **argv)
    snprintf(font_r_old, sizeof(font_r_old), "%s/fonts/regular.ttf", g_home);
    snprintf(padb, sizeof(padb), "%s/gamecontrollerdb.txt", g_home);
    if (log_path) g_log = fopen(log_path, "w");
+   log_start_writer();
    atexit(log_sync_atexit);
    logf_("lumen %s start", LUMEN_VERSION);
+   boot_mark("");
 
    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0)
    { logf_("SDL_Init: %s", SDL_GetError()); return 1; }
@@ -3711,6 +4498,7 @@ int main(int argc, char **argv)
    i18n_set_language(settings_get("language", "es"));
    profiles_load(g_home);
    coll_load(g_home, profiles_active()->id);
+   boot_mark("sdl+config");
 
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -3732,7 +4520,9 @@ int main(int argc, char **argv)
       SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 5); SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
    }
    {
-      int ms = settings_get_int("msaa", 2, 0, 4);   /* 2x: edges of text, glyphs and the 3D launch */
+      int ms = settings_get_int("msaa", 2, 0, 4);   /* 0 = no antialiasing at all */
+      /* the 3D scene has its own multisampled target (scene_setup): none on the window */
+      if (ms > 0 && settings_get_int("scene_aa", 1, 0, 2)) { g_sc.want = 4; ms = 0; }
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, ms > 0);
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, ms);
    }
@@ -3770,8 +4560,12 @@ int main(int argc, char **argv)
    g_ui_scale = g_dh / (float)H;
    logf_("output %dx%d, ui scale %.3f", g_dw, g_dh, g_ui_scale);
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
+   boot_mark("window+gl");
    gl_setup();
    crt_prepare(g_dw, g_dh);   /* CRT filter on: its shader and target now, not on the first frame */
+   logf_("shaders: %d from the cache, %d compiled", g_progs_cached, g_progs_built);
+   scene_setup();
+   boot_mark("shaders");
    g_ortho = m4_ortho(0, W, H, 0);
    if (!dialog)
    {  /* fade in, letters dark. Right after a console boot the boot payload's splash is
@@ -3800,6 +4594,7 @@ int main(int argc, char **argv)
    g_font_hero  = open_font(fonts_semi, 50);
    g_font_tab   = open_font(fonts_med, 19);
    g_font_name  = open_font(fonts_med, 21);
+   boot_mark("fx+fonts");
    splash_step(win, 0.2f);
    if (dialog)   /* in-game dialog: no library, no music */
    {
@@ -3810,9 +4605,11 @@ int main(int argc, char **argv)
    scan_library();
    build_platform_index();
    logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
+   boot_mark("scan");
    splash_step(win, 0.45f);
    platforms_load_art();
    coll_rows_build();
+   boot_mark("tab art");
    splash_step(win, 0.6f);
 
    /* resume last selection */
@@ -3861,11 +4658,14 @@ int main(int argc, char **argv)
    memset(&dpos, 0, sizeof(dpos)); dpos.x = (float)sel;
    asset_path(g_menu_music, sizeof(g_menu_music), "music/menu.ogg", "music/menu.ogg");
    if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
+   boot_mark("resume");
    if (music_init() == 0) ui_sound_changed();
+   boot_mark("audio");
    hints_load(g_home);
    panel_init();
    welcome_init();
    attract_init(start_attract, g_home);
+   boot_mark("ui");
    memset(&att, 0, sizeof(att));
 
    /* first frame positions: start off to the right so they fly in */
@@ -3877,6 +4677,7 @@ int main(int argc, char **argv)
 
    splash_step(win, 0.8f);
    launch_warmup();
+   boot_mark("warm-up");
    splash_step(win, 1.0f);
    {
       char sp[300];
@@ -3889,6 +4690,7 @@ int main(int argc, char **argv)
       }
    }
    last = fps_t = now_s();
+   boot_mark("last splash");
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
 
@@ -4067,7 +4869,7 @@ int main(int argc, char **argv)
       }
       /* disc art of the settled selection, ready before Play */
       if (n && pl->kind != KIND_ARCADE && play_t < 0 && t - sel_t > 0.4) disc_want(g_games[pl->first + sel].disc);
-      disc_poll_upload();
+      { double ps = now_s(); disc_poll_upload(); perf_stall("disc upload", ps); }
 
       /* background: once the selection has settled, the game's image (decoded on the
        * worker) or a background generated from its cover colours */
@@ -4086,7 +4888,7 @@ int main(int argc, char **argv)
             else bg_push(bg_gen_layer(bg_game));
          }
       }
-      bg_poll_upload();
+      { double ps = now_s(); bg_poll_upload(); perf_stall("background upload", ps); }
       bg_advance(dt);
 
       /* music: the game's track once the selection has settled 0.8 s, else the menu
@@ -4106,7 +4908,7 @@ int main(int argc, char **argv)
          if (want) music_play(want, fade_s);
          music_duck(0.55f * panel_amount());
       }
-      status_update(t, &g_status);
+      { double ps = now_s(); status_update(t, &g_status); perf_stall("status", ps); }
 
       /* cover streaming: decoded on the worker, nearest to the selection first */
       {
@@ -4118,8 +4920,10 @@ int main(int argc, char **argv)
          SDL_UnlockMutex(cv_mx);
          if (done >= 0)
          {
+            double ps = now_s();
             game_finish_cover(&g_games[done], cs, avg, acc);
             if (cs) SDL_FreeSurface(cs);
+            perf_stall("cover upload", ps);
          }
          if (n)
          {
@@ -4134,7 +4938,7 @@ int main(int argc, char **argv)
                   game_t *g = &g_games[gi];
                   if (g->tex_state) continue;
                   if (g->has_cover) { if (!cv_busy) { g->tex_state = 2; cover_request(gi, g->cover); } placed = 1; }
-                  else { game_placeholder(g); placed = 1; }
+                  else { double ps = now_s(); game_placeholder(g); placed = 1; perf_stall("placeholder", ps); }
                }
             }
             for (k = 0; k < g_ngames; k++)
@@ -4155,7 +4959,7 @@ int main(int argc, char **argv)
                game_t *cg = &g_games[pl->first + sel];
                if ((cg->tex_state == 1 || cg->tex_state == -1) && !cg->back_tex &&
                    ((t - sel_t > 0.2 && att.amount < 0.001f && !panel_active()) || play_t >= 0))
-                  cg->back_tex = card_tex(cg, 1);
+               { double ps = now_s(); cg->back_tex = card_tex(cg, 1); perf_stall("back card", ps); }
             }
          }
       }
@@ -4168,7 +4972,7 @@ int main(int argc, char **argv)
          float hflip = 0.0f, screen_on = 0.0f;         /* handheld: turn round, screen on */
          float press = 0.0f, shut = 0.0f, seat_t = -1.0f;  /* NES: push down, door shuts; seat time (click) */
          float coin_x = 0.0f, coin_spin = 0.0f, coin_in = 0.0f, credit = 0.0f, insert = 0.0f;
-         int covered, blackout;
+         int covered, blackout, panel_cleared = 0;
          float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
          float pdt = 0.0f;   /* launch clock step this frame */
@@ -4307,7 +5111,11 @@ int main(int argc, char **argv)
          t_upd = now_s();
          crt_on = crt_begin(g_dw, g_dh);   /* CRT filter: the frame goes to its target */
          glViewport(0, 0, g_dw, g_dh);
+         /* settings fully open: an opaque full-screen section. The clear takes its colour
+          * (free on a tile-based GPU) instead of a full-screen quad drawn over the clear */
+         panel_cleared = !blackout && panel_active() && panel_amount() >= 0.999f;
          if (blackout) glClearColor(0, 0, 0, 1);
+         else if (panel_cleared) { float pc[4]; theme_color(TC_PANEL, pc); glClearColor(pc[0], pc[1], pc[2], 1); }
          else glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
          glClearDepthf(1.0f);
          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -4324,8 +5132,7 @@ int main(int argc, char **argv)
             const float ov[4] = { 1, 1, 1, 1 };
             (void)ov;
             g_bg_dim = settings_get_int("bg_dim", 45, 0, 90) / 100.0f;
-            bg_draw(&bg_cur, 1.0f, t);   /* opaque: the scrim is baked into both kinds of layer */
-            if (!bg_empty(&bg_next)) bg_draw(&bg_next, e, t);
+            bg_draw_layers(e, t);   /* opaque: the scrim is baked into both kinds of layer */
          }
          if (g_fx_text && !covered)
          {  /* dashboard UI: dimmed under the panel, gone in the attract scene, fading out
@@ -4343,6 +5150,7 @@ int main(int argc, char **argv)
             glUniform3fv(u_cam, 1, cam);
          }
          launch_refl(100.0f);   /* reflections off */
+         if (n && play_t >= 0 && !blackout) { scene_begin(); scene_blend_over(); }
          glEnable(GL_DEPTH_TEST);
          glDepthFunc(GL_LEQUAL);
          /* 3D only while launching: the selected game's case / cartridge / marquee */
@@ -4489,6 +5297,8 @@ int main(int argc, char **argv)
             }
          }
          glDisable(GL_DEPTH_TEST);
+         scene_end();
+         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
          /* ---- 2D overlay ---- */
          glUseProgram(g_prog_2d);
@@ -4502,7 +5312,7 @@ int main(int argc, char **argv)
                const float dimq[4] = { 0, 0, 0, att.dim };
                draw_2d(0, 0, 0, W, H, dimq, 0);
             }
-            if (pa > 0.003f)
+            if (pa > 0.003f && !panel_cleared)
             {
                /* the settings are a full-screen section: opaque, so nothing under it is drawn
                 * once it is fully open (see `covered`) */
@@ -4604,13 +5414,14 @@ int main(int argc, char **argv)
          t_pre = pre;
          SDL_GL_SwapWindow(win);
          b_draw += pre - t; b_swap += now_s() - pre;
+         perf_frame(t, t_upd, pre, now_s());
          if (frames == 30)
          {  /* boot.sh: a picture is on screen (clears the compositor's one-shot guard) */
             FILE *pf = fopen("/tmp/lumen-presented", "w");
             if (pf) fclose(pf);
          }
       }
-      frames++;
+      frames++; g_frame_id++;
       if (g_cost_on && play_t >= 0)
       {  /* launch trace: one line per frame (pt, frame time, CPU issuing, swap, cost) */
          double fpx = g_cost_px_opaque + g_cost_px_blend, fh = g_cost_px_heavy;
@@ -4618,7 +5429,6 @@ int main(int argc, char **argv)
                play_pt, dt * 1000.0, (t_upd - t) * 1000.0, (t_pre - t_upd) * 1000.0, (now_s() - t_pre) * 1000.0,
                (fpx - lp_px) / 1e6, (fh - lp_heavy) / 1e6, g_mc_tris, g_mc_verts, g_mc_draws, g_mc_px_blend / 1e6, g_mc_px_opaque / 1e6);
       }
-      log_tick();
       {  /* bench: <home>/bench present -> two rounds (vsync on, then off: frame rates
           * not quantised to 60/30/20), each turning one more thing off per step; per
           * step: fps, CPU ms spent issuing the frame, ms blocked in the swap */
