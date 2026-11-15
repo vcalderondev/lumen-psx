@@ -127,7 +127,10 @@ lumen_merge_opt() {
   [ -n "${LUMEN_CORE_OPT_DIR}" ] && [ -n "${L_OPT_CORE_NAME}" ] && [ -s "$2" ] || return 0
   mkdir -p "$(dirname "$1")" || return 1
   [ -f "$1" ] && [ ! -f "$1.lumen-bak" ] && cp "$1" "$1.lumen-bak"
-  : > "$1.tmp" || return 1
+  # merged in RAM: appending line by line on the stick (exFAT through FUSE) was one
+  # open + write + close per option, and the result is usually what is already there
+  mo=/tmp/lumen-opt.merge
+  : > "$mo" || return 1
   seen="|"
   if [ -f "$1" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -135,21 +138,24 @@ lumen_merge_opt() {
         *" ="*)
           key=${line%% =*}
           if lumen_kv_get "$key" "$2"; then
-            echo "${key} = \"${KV_VAL}\"" >> "$1.tmp"; seen="${seen}${key}|"; continue
+            echo "${key} = \"${KV_VAL}\"" >> "$mo"; seen="${seen}${key}|"; continue
           fi ;;
       esac
-      echo "$line" >> "$1.tmp"
+      echo "$line" >> "$mo"
     done < "$1"
   fi
   while IFS= read -r kvl || [ -n "$kvl" ]; do
     key=${kvl%%=*}
     case "$seen" in *"|${key}|"*) continue ;; esac
     lumen_kv_get "$key" "$2"
-    echo "${key} = \"${KV_VAL}\"" >> "$1.tmp"; seen="${seen}${key}|"
+    echo "${key} = \"${KV_VAL}\"" >> "$mo"; seen="${seen}${key}|"
   done < "$2"
-  mv -f "$1.tmp" "$1" || return 1
-  sync
   L_OPT_FILE=$1
+  # same preset as the last launch: nothing to write, nothing to sync
+  if [ -f "$1" ] && cmp -s "$mo" "$1" 2>/dev/null; then rm -f "$mo"; return 0; fi
+  cp "$mo" "$1.tmp" && mv -f "$1.tmp" "$1" || { L_OPT_FILE=""; return 1; }
+  rm -f "$mo"
+  sync
 }
 
 # lumen_build_ra_extra: RetroArch cfg lines that must win over its own config
