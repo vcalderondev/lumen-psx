@@ -13,6 +13,12 @@
 
 enum { KIND_DISC, KIND_CART, KIND_ARCADE };
 enum { ANIM_OPEN_CASE_DISC, ANIM_INSERT_CART, ANIM_INSERT_COIN };
+/* [media] shape: the 3D model of the medium (docs/systems.md, "Built-in shapes") */
+enum { SHAPE_JEWEL, SHAPE_DVD, SHAPE_UMD,
+       SHAPE_CART, SHAPE_CART_SNES, SHAPE_CART_MD, SHAPE_CART_NES, SHAPE_CART_N64, SHAPE_CART_GB, SHAPE_CART_GBA,
+       SHAPE_HUCARD, SHAPE_MARQUEE, SHAPE_COUNT };
+/* insert_cartridge: where the cartridge goes ([animation] slot, default from the shape) */
+enum { SLOT_TOP, SLOT_FRONT, SLOT_HANDHELD };
 
 typedef struct {
    char title[128], publisher[96], year[16], players[8];
@@ -33,7 +39,7 @@ typedef struct {
    char id[32], name[48], logo[300], core[128];
    char layout[8], paths[512], exts[128], art[16], media_art[16], sound[300];
    char meta[300];             /* layout = stock: metadata file next to the declaration */
-   int order, show_name, kind, launch, idle_float;
+   int order, show_name, kind, launch, idle_float, shape, slot;
    float aspect, w, h, color[3];
    /* [graphics]: per-core options and RetroArch overrides, "k=v, k=v" lists */
    char gfx_core[48], gfx_enh[320], gfx_orig[320], gfx_ra_enh[160], gfx_ra_orig[160];
