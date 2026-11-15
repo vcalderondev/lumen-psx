@@ -510,21 +510,109 @@ static void find_first(char *out, size_t n, const char *base, const char *const 
    out[0] = 0;
 }
 
+/* A folder's file names, read once. The scans looked every candidate file up with
+ * stat() (up to 12 per game: cover, media art, background and music under several
+ * names). The stick is exFAT through FUSE: every lookup is a round trip to its daemon,
+ * which walks the folder's entries, so a folder of n games cost n * 12 walks. Now the
+ * names are listed once and looked up in memory, ignoring ASCII case like the file
+ * system does; the path returned carries the name as it is on disk. */
+typedef struct { char **name; int *sorted; int n, cap; } dirlist_t;
+static const dirlist_t *s_dl_cmp;
+static int dirlist_cmp(const void *a, const void *b)
+{
+   return strcasecmp(s_dl_cmp->name[*(const int *)a], s_dl_cmp->name[*(const int *)b]);
+}
+static void dirlist_free(dirlist_t *dl)
+{
+   int i;
+   for (i = 0; i < dl->n; i++) free(dl->name[i]);
+   free(dl->name); free(dl->sorted);
+   memset(dl, 0, sizeof(*dl));
+}
+/* names in readdir order (name[]), plus an index sorted for the lookups; 0 = no folder */
+static int dirlist_read(dirlist_t *dl, const char *dir)
+{
+   DIR *d; struct dirent *de; int i;
+   memset(dl, 0, sizeof(*dl));
+   if (!(d = opendir(dir))) return 0;
+   while ((de = readdir(d)))
+   {
+      if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+      if (dl->n == dl->cap)
+      {
+         int cap = dl->cap ? dl->cap * 2 : 64;
+         char **nn = realloc(dl->name, sizeof(char *) * cap);
+         if (!nn) break;
+         dl->name = nn; dl->cap = cap;
+      }
+      if (!(dl->name[dl->n] = strdup(de->d_name))) break;
+      dl->n++;
+   }
+   closedir(d);
+   dl->sorted = malloc(sizeof(int) * (dl->n ? dl->n : 1));
+   if (!dl->sorted) { dirlist_free(dl); return 1; }
+   for (i = 0; i < dl->n; i++) dl->sorted[i] = i;
+   s_dl_cmp = dl;
+   qsort(dl->sorted, dl->n, sizeof(int), dirlist_cmp);
+   return 1;
+}
+/* the entry called `name` (ASCII case ignored) as it is on disk, or NULL */
+static const char *dirlist_find(const dirlist_t *dl, const char *name)
+{
+   int lo = 0, hi = dl->n - 1;
+   while (lo <= hi)
+   {
+      int mid = (lo + hi) / 2, c = strcasecmp(name, dl->name[dl->sorted[mid]]);
+      if (!c) return dl->name[dl->sorted[mid]];
+      if (c < 0) hi = mid - 1; else lo = mid + 1;
+   }
+   return NULL;
+}
+/* <dir>/<name> when the folder has it, else "". A name with non-ASCII letters that is
+ * not listed is still asked to the file system (its own case folding decides) */
+static int dirlist_path(const dirlist_t *dl, char *out, size_t n, const char *dir, const char *name)
+{
+   const char *hit = dirlist_find(dl, name);
+   const unsigned char *c;
+   if (hit) { snprintf(out, n, "%s/%s", dir, hit); return 1; }
+   for (c = (const unsigned char *)name; *c; c++)
+      if (*c >= 0x80) { snprintf(out, n, "%s/%s", dir, name); if (file_exists(out)) return 1; break; }
+   out[0] = 0;
+   return 0;
+}
+/* find_first() over a listed folder: the first existing <dir>/<stem><suffix> */
+static void dirlist_first(const dirlist_t *dl, char *out, size_t n, const char *dir, const char *stem, const char *const *suffixes)
+{
+   char name[600];
+   int b;
+   for (b = 0; suffixes[b]; b++)
+   {
+      snprintf(name, sizeof(name), "%s%s", stem, suffixes[b]);
+      if (dirlist_path(dl, out, n, dir, name)) return;
+   }
+   out[0] = 0;
+}
+
 /* PSC/BleemSync layout: <path>/<n>/Game.ini + <disc>.cue|pbp|... + <disc>.png */
 static void scan_psc(int pi, const char *dir)
 {
-   char path[700], buf[4096], discs[512], base[700];
+   char path[700], buf[4096], discs[512], gdir[700], name[600];
    static const char *const media_sfx[] = { ".png", ".jpg", NULL };
    static const char *const bg_sfx[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
    static const char *const music_sfx[] = { "music.ogg", "music.wav", NULL };
    DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
+   dirlist_t dl;
    if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
+   memset(&dl, 0, sizeof(dl));
    while ((de = readdir(d)) && g_ngames < MAX_GAMES)
    {
       FILE *f; size_t n; game_t *g; char *c; char exts[160], *tok, *save = NULL;
       if (de->d_name[0] == '.') continue;
       snprintf(path, sizeof(path), "%s/%s/Game.ini", dir, de->d_name);
       if (!(f = fopen(path, "rb"))) continue;
+      snprintf(gdir, sizeof(gdir), "%s/%s", dir, de->d_name);
+      dirlist_free(&dl);
+      dirlist_read(&dl, gdir);   /* the game's folder, listed once for every file below */
       buf[0] = '\n';
       n = fread(buf + 1, 1, sizeof(buf) - 2, f); fclose(f);
       buf[n + 1] = 0;
@@ -543,50 +631,50 @@ static void scan_psc(int pi, const char *dir)
       for (tok = strtok_r(exts, ",", &save); tok && !g->content[0]; tok = strtok_r(NULL, ",", &save))
       {
          trim(tok);
-         snprintf(g->content, sizeof(g->content), "%s/%s/%s.%s", dir, de->d_name, discs, tok);
-         if (!file_exists(g->content)) g->content[0] = 0;
+         snprintf(name, sizeof(name), "%s.%s", discs, tok);
+         dirlist_path(&dl, g->content, sizeof(g->content), gdir, name);
       }
       if (!g->content[0]) continue;
-      snprintf(g->cover, sizeof(g->cover), "%s/%s/%s.png", dir, de->d_name, discs);
-      g->has_cover = file_exists(g->cover);
-      snprintf(base, sizeof(base), "%s/%s/%s", dir, de->d_name, pl->media_art);
-      find_first(g->disc, sizeof(g->disc), base, media_sfx);
-      snprintf(base, sizeof(base), "%s/%s/", dir, de->d_name);
-      find_first(g->bg, sizeof(g->bg), base, bg_sfx);
-      find_first(g->music, sizeof(g->music), base, music_sfx);
+      snprintf(name, sizeof(name), "%s.png", discs);
+      g->has_cover = dirlist_path(&dl, g->cover, sizeof(g->cover), gdir, name);
+      if (!g->has_cover) snprintf(g->cover, sizeof(g->cover), "%s/%s", gdir, name);
+      dirlist_first(&dl, g->disc, sizeof(g->disc), gdir, pl->media_art, media_sfx);
+      dirlist_first(&dl, g->bg, sizeof(g->bg), gdir, "", bg_sfx);
+      dirlist_first(&dl, g->music, sizeof(g->music), gdir, "", music_sfx);
       if (!g->title[0]) snprintf(g->title, sizeof(g->title), "%s", discs);
       g->platform = pi;
       g_ngames++;
    }
    closedir(d);
+   dirlist_free(&dl);
 }
 
 /* Files layout: <path>/<name>.<ext>, art next to it: <name>.png|jpg,
  * <name>-<media_art>.png|jpg, <name>-background.jpg|png */
 static void scan_files(int pi, const char *dir)
 {
-   DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
+   platform_t *pl = &g_plat[pi];
+   dirlist_t dl; int k;
    static const char *const img_sfx[] = { ".png", ".jpg", NULL };
    static const char *const bg_sfx[] = { "-background.jpg", "-background.png", "-bg.jpg", "-bg.png", NULL };
    static const char *const music_sfx[] = { "-music.ogg", "-music.wav", NULL };
-   if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
-   while ((de = readdir(d)) && g_ngames < MAX_GAMES)
+   if (!dirlist_read(&dl, dir)) { logf_("[%s] no dir %s", pl->id, dir); return; }
+   for (k = 0; k < dl.n && g_ngames < MAX_GAMES; k++)
    {
+      const char *fname = dl.name[k];
       game_t *g; char base[700], stem[256], *dot, *p;
-      if (de->d_name[0] == '.' || !ext_ok(pl, de->d_name)) continue;
+      if (fname[0] == '.' || !ext_ok(pl, fname)) continue;
       g = &g_games[g_ngames];
       memset(g, 0, sizeof(*g));
-      snprintf(g->content, sizeof(g->content), "%s/%s", dir, de->d_name);
-      snprintf(stem, sizeof(stem), "%s", de->d_name);
+      snprintf(g->content, sizeof(g->content), "%s/%s", dir, fname);
+      snprintf(stem, sizeof(stem), "%s", fname);
       if ((dot = strrchr(stem, '.'))) *dot = 0;
-      snprintf(base, sizeof(base), "%s/%s", dir, stem);
-      find_first(g->cover, sizeof(g->cover), base, img_sfx);
+      dirlist_first(&dl, g->cover, sizeof(g->cover), dir, stem, img_sfx);
       g->has_cover = g->cover[0] != 0;
-      snprintf(base, sizeof(base), "%s/%s-%s", dir, stem, pl->media_art);
-      find_first(g->disc, sizeof(g->disc), base, img_sfx);
-      snprintf(base, sizeof(base), "%s/%s", dir, stem);
-      find_first(g->bg, sizeof(g->bg), base, bg_sfx);
-      find_first(g->music, sizeof(g->music), base, music_sfx);
+      snprintf(base, sizeof(base), "%s-%s", stem, pl->media_art);
+      dirlist_first(&dl, g->disc, sizeof(g->disc), dir, base, img_sfx);
+      dirlist_first(&dl, g->bg, sizeof(g->bg), dir, stem, bg_sfx);
+      dirlist_first(&dl, g->music, sizeof(g->music), dir, stem, music_sfx);
       /* title: file name without "(...)" / "[...]" tags */
       snprintf(g->title, sizeof(g->title), "%s", stem);
       if ((p = strpbrk(g->title, "([")) && p > g->title) *p = 0;
@@ -594,7 +682,7 @@ static void scan_files(int pi, const char *dir)
       g->platform = pi;
       g_ngames++;
    }
-   closedir(d);
+   dirlist_free(&dl);
 }
 
 /* Apps layout (homebrew): <path>/<name>/app.ini, Game.ini style lines:
