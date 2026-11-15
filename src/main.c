@@ -48,6 +48,7 @@
 #include "collections.h"
 #include "gamemenu.h"
 #include "theme.h"
+#include "crt.h"
 
 #define TEX_WINDOW 6       /* covers kept on the GPU around the selection */
 #define VISIBLE 4          /* boxes drawn on each side */
@@ -2463,7 +2464,7 @@ static void bg_draw(bgtex_t *b, float alpha, double t)
       glEnable(GL_BLEND);
       glUniform4f(u2_aux0, g_bg_dim, 0, 0, 0);
       draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
-      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glBindFramebuffer(GL_FRAMEBUFFER, crt_target());   /* the window, or the CRT filter's target */
       glViewport(0, 0, g_dw, g_dh);
       if (opaque) glDisable(GL_BLEND);
       draw_2d(b->gtex, 0, H, W, -H, c, 0);   /* FBO rows are bottom-up */
@@ -2886,7 +2887,7 @@ static void splash_step(SDL_Window *win, float target)
       if (g_splash_a < 1.0f) g_splash_a = fminf(1.0f, g_splash_a + dt / 0.25f);
       else g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
       SDL_PumpEvents();
-      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      crt_begin(g_dw, g_dh);   /* the splash goes through the CRT filter too: no jump into the dashboard */
       glViewport(0, 0, g_dw, g_dh);
       glDisable(GL_DEPTH_TEST);
       glDisable(GL_SCISSOR_TEST);
@@ -2896,6 +2897,7 @@ static void splash_step(SDL_Window *win, float target)
       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       glUseProgram(g_prog_2d);
       splash_logo_draw(g_splash_fill, g_splash_a);
+      crt_end();
       SDL_GL_SwapWindow(win);
       if ((g_splash_a >= 1.0f && g_splash_fill >= target) || !g_logo_big.tex[0]) break;
    }
@@ -3322,7 +3324,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
       SDL_Event e;
       ui_nav_t nv;
       double t = now_s();
-      float dt = (float)(t - tp); tp = t;
+      float dt = clampf((float)(t - tp), 0.0f, 0.05f); tp = t;   /* a slow frame must not blow up the springs */
       memset(in_pressed, 0, sizeof(in_pressed));
       while (SDL_PollEvent(&e)) { if (e.type == SDL_QUIT) answer = 0; else in_event(&e); }
       nav_fill(&nv, t);
@@ -3350,6 +3352,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          if (t - t0 < 0.02) pill.x = rowy[sel];
          spring_step(&pill, rowy[sel], 260, 26, dt);
 
+         crt_begin(g_dw, g_dh);
          glViewport(0, 0, g_dw, g_dh);
          glClearColor(scrim[0], scrim[1], scrim[2], 1.0f);
          glClear(GL_COLOR_BUFFER_BIT);
@@ -3411,6 +3414,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
             if (ic_back && ic_back->tex) { draw_2d(ic_back->tex, hx, hy, ih, ih, white, 0); hx += ih + 8; }
             if (h_back.tex) draw_2d(h_back.tex, hx, hy + (ih - h_back.h) * 0.5f, h_back.w, h_back.h, dim, 0);
          }
+         crt_end();
       }
       SDL_GL_SwapWindow(win);
    }
@@ -3438,7 +3442,7 @@ int main(int argc, char **argv)
    float play_pt = 0.0f;   /* launch clock: the sum of the (clamped, <= 50 ms) frame times since
                             * Play, so a slow frame never skips part of the animation (it was
                             * t - play_t: a 560 ms stall on the first frame jumped 0.6 s ahead) */
-   int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0;
+   int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0, crt_on = 0;
    int held_dir = 0; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
    spring bg[3], info_y, info_a, plat_x, dpos;
@@ -3548,6 +3552,7 @@ int main(int argc, char **argv)
    logf_("output %dx%d, ui scale %.3f", g_dw, g_dh, g_ui_scale);
    logf_("GL %s | %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
    gl_setup();
+   crt_prepare(g_dw, g_dh);   /* CRT filter on: its shader and target now, not on the first frame */
    g_ortho = m4_ortho(0, W, H, 0);
    if (!dialog) { g_splash_fill = 0.0f; splash_step(win, 0.0f); }   /* fade in, letters dark */
    make_fx_textures();
@@ -4030,6 +4035,7 @@ int main(int argc, char **argv)
 
          /* ---- render ---- */
          t_upd = now_s();
+         crt_on = crt_begin(g_dw, g_dh);   /* CRT filter: the frame goes to its target */
          glViewport(0, 0, g_dw, g_dh);
          if (blackout) glClearColor(0, 0, 0, 1);
          else glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
@@ -4260,6 +4266,11 @@ int main(int argc, char **argv)
             g_splash_fill = -1.0f;
          }
       }
+      crt_end();   /* the CRT pass puts the frame on the window (shots below include it) */
+      if (crt_on && g_cost_on)
+      {  /* one opaque full-screen pass, counted as a heavy shader */
+         g_cost_px_opaque += (double)g_dw * g_dh; g_cost_px_heavy += (double)g_dw * g_dh; g_cost_draws += 1;
+      }
       if (g_ntshot) test_shots(t - t0);
       if (g_launch_shots && play_t >= 0)
       {
@@ -4364,6 +4375,7 @@ int main(int argc, char **argv)
       req.profile = profiles_active()->id;
       req.demo = demo;
       req.resume = !demo && g_play_resume;
+      if (!req.app && crt_level() != CRT_OFF) req.crt = crt_id(crt_level());   /* same filter in the game */
       req.demo_seconds = demo && lp->demo_seconds > 0 ? lp->demo_seconds : settings_get_int("demo_seconds", 60, 20, 300);
       if (lp->has_gfx)
       {
