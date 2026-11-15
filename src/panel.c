@@ -17,6 +17,7 @@
 #include "version.h"
 #include "theme.h"
 #include "crt.h"
+#include "filepicker.h"
 
 /* ------------------------------------------------------------------------ */
 /* geometry and colours                                                      */
@@ -69,6 +70,7 @@ static const char *const k_page_key[P_COUNT] = {
 
 enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
+       ID_PROFILE_AVATAR, ID_PROFILE_AVATAR_REMOVE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
        ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500,
        ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_DSP_CRT, ID_INFO = 900 };
@@ -120,6 +122,7 @@ typedef struct {
    int type, id, enabled, dim, check, enter, at_lo, at_hi;
    int swatch;                  /* profile colour drawn left of the value, -1 none */
    int swatches;                /* colour row: draw the 8 swatches, this one selected */
+   int avatar;                  /* the active profile's picture drawn left of the value */
    const char *why;             /* disabled row: tr key shown as a toast on Cross */
    char label[96], value[96];
 } row_t;
@@ -294,6 +297,11 @@ static void page_build(void)
       row_add(R_ACTION, ID_PROFILE_RENAME, tr("profile.rename"), NULL);
       if ((r = row_add(R_CHOICE, ID_PROFILE_COLOR, tr("profile.color"), NULL)))
       { r->swatches = 1; r->swatch = color; r->at_lo = color <= 0; r->at_hi = color >= PROFILE_COLORS - 1; }
+      /* avatar: a picture picked from the stick (file picker), else the initials on the colour */
+      if ((r = row_add(R_ACTION, ID_PROFILE_AVATAR, tr("profile.avatar"), tr(ap->avatar ? "profile.avatar_image" : "profile.avatar_initials"))))
+      { r->enter = 1; if (ap->avatar) r->avatar = 1; else r->swatch = color; }
+      if ((r = row_add(R_ACTION, ID_PROFILE_AVATAR_REMOVE, tr("profile.avatar_remove"), NULL)) && !ap->avatar)
+      { r->enabled = 0; r->dim = 1; r->why = "profile.avatar_none"; }
       if ((r = row_add(R_ACTION, ID_PROFILE_DELETE, tr("profile.delete"), NULL)) && !strcmp(ap->id, "main"))
       { r->enabled = 0; r->dim = 1; r->why = "profile.main_locked"; }
       snprintf(num, sizeof(num), "%d", np);
@@ -521,6 +529,22 @@ static void delete_yes(void)
    select_row(ID_PROFILE_ACTIVE);
 }
 
+/* avatar: the picker hands the chosen image to avatar_accept on its worker thread (decode,
+ * crop, scale, write avatar.png); avatar_done then refreshes what is on screen */
+static char s_av_id[16];
+static const char *avatar_accept(const char *path, void *user)
+{
+   (void)user;
+   return profiles_set_avatar(s_av_id, path) == 0 ? NULL : "profile.avatar_error";
+}
+static void avatar_done(const char *path, void *user)
+{
+   (void)path; (void)user;
+   profiles_avatar_refresh(s_av_id);
+   ui_avatar_changed();
+   panel_toast("profile.avatar_set");
+}
+
 static void row_action(const row_t *r)
 {
    if (r->id >= ID_LANG && r->id < ID_LANG + I18N_MAX_LANGS)
@@ -561,6 +585,20 @@ static void row_action(const row_t *r)
       color_commit();
       trf(s_cbuf, sizeof(s_cbuf), "profile.delete_confirm", "name", profiles_display_name(profiles_active()), NULL);
       confirm_open(s_cbuf, delete_yes);
+   }
+   else if (r->id == ID_PROFILE_AVATAR)
+   {
+      color_commit();
+      snprintf(s_av_id, sizeof(s_av_id), "%s", profiles_active()->id);
+      filepicker_open(&(filepicker_t){ .id = "avatar", .title_key = "profile.avatar_title", .exts = FP_EXTS_IMAGE,
+                                       .empty_key = "profile.avatar_empty", .busy_key = "profile.avatar_saving",
+                                       .preview = FP_PREVIEW_ROUND, .accept = avatar_accept, .done = avatar_done });
+   }
+   else if (r->id == ID_PROFILE_AVATAR_REMOVE)
+   {
+      color_commit();
+      if (profiles_clear_avatar(profiles_active()->id) != 0) panel_toast("error.profile");
+      else { ui_avatar_changed(); panel_toast("profile.avatar_removed"); select_row(ID_PROFILE_AVATAR); }
    }
    else if (r->id == ID_DSP_THEME_APPLY)
    {
@@ -1014,6 +1052,13 @@ void panel_open(void)
    logf_("panel: open");
 }
 
+void panel_open_profile(void)
+{
+   if (s_open) return;
+   panel_open();
+   page_enter(P_PROFILE, 1);
+}
+
 int panel_active(void) { return s_open || s_slide.x <= SLIDE_OFF - 20.0f; }
 
 float panel_amount(void) { return clampf(s_fade.x, 0.0f, 1.0f); }
@@ -1206,6 +1251,16 @@ void panel_draw(double t)
          col(c, C_DIM, la);
          draw_label(&s_rv[i], xr - s_rv[i].w, y + (ROW_H - s_rv[i].h) * 0.5f, c);
          if (r->swatch >= 0) draw_swatch(r->swatch, xr - s_rv[i].w - 12, y, la);
+         if (r->avatar)
+         {
+            GLuint at; int aw, ah;
+            if (ui_avatar(&at, &aw, &ah))
+            {
+               const float wh[4] = { 1, 1, 1, la }, ad = 30.0f;
+               draw_image(at, aw, ah, xr - s_rv[i].w - 12 - ad, y + (ROW_H - ad) * 0.5f, ad, ad, ad * 0.5f, wh);
+               gl_use_2d();
+            }
+         }
       }
    }
    glDisable(GL_SCISSOR_TEST);

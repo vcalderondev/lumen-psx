@@ -48,6 +48,7 @@
 #include "version.h"
 #include "collections.h"
 #include "gamemenu.h"
+#include "filepicker.h"
 #include "theme.h"
 #include "crt.h"
 
@@ -2994,6 +2995,20 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "dpad" },     "btn.dpad",         "hint.move" },
       { { "cross" },    "btn.cross",        "hint.select" },
       { { "circle" },   "btn.circle",       "hint.cancel" } },
+   [HINTS_FILEPICKER] = {
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
+      { { "circle" },   "btn.circle",       "hint.back" },
+      { { "triangle" }, "btn.triangle",     "hint.cancel" } },
+   [HINTS_DASH_TABS] = {      /* dashboard, focus on the system tabs */
+      { { "dpad" },     "btn.dpad",         "hint.platform" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "select" },   "btn.select",       "hint.settings" } },
+   [HINTS_DASH_PROFILE] = {   /* dashboard, focus on the profile */
+      { { "cross" },    "btn.cross",        "section.profile" },
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "select" },   "btn.select",       "hint.settings" } },
    [HINTS_ATTRACT] = { { { NULL }, NULL, NULL } },   /* the attract scene draws its own PRESS START */
    [HINTS_WELCOME] = {
       { { "cross" },    "btn.cross",        "hint.next" },
@@ -3625,6 +3640,10 @@ static void coll_rows_rebuild(int *sel_plat, int *sel)
 static status_t  g_status;
 static char      g_menu_music[512];          /* <home>/assets/music/menu.ogg or "" */
 static struct { char id[16]; GLuint tex; int w, h; label_t initials; } g_avatar;
+/* dashboard focus: Up from the games reaches the system tabs, Up again the profile */
+enum { FOCUS_GAMES, FOCUS_TABS, FOCUS_PROFILE };
+static int g_focus;
+static int g_avatar_dirty;   /* avatar.png of the active profile was replaced or removed */
 
 /* first letter of up to two words of the name (UTF-8 sequences kept whole) */
 static void initials_of(const char *name, char *out, size_t n)
@@ -3663,6 +3682,25 @@ static void avatar_load(const profile_t *p)
    }
    initials_of(profiles_display_name(p), ini, sizeof(ini));
    label_set(&g_avatar.initials, g_font_tab, ini);
+}
+
+void ui_avatar_changed(void) { g_avatar_dirty = 1; }
+
+int ui_avatar(GLuint *tex, int *w, int *h)
+{
+   const profile_t *ap = profiles_active();
+   if (g_avatar_dirty || strcmp(g_avatar.id, ap->id)) { g_avatar_dirty = 0; avatar_load(ap); }
+   if (tex) *tex = g_avatar.tex;
+   if (w) *w = g_avatar.w;
+   if (h) *h = g_avatar.h;
+   return g_avatar.tex != 0;
+}
+
+GLuint tex_from_surface(SDL_Surface *s) { return surface_to_tex(s, 1, NULL); }
+
+void draw_image(GLuint tex, int tw, int th, float x, float y, float w, float h, float radius, const float rgba[4])
+{
+   draw_tile(tex, tw, th, x, y, w, h, radius, -2.0f, 0.0f, rgba);
 }
 
 /* horizontal position and size of a tile at offset d from the selection (continuous,
@@ -3923,7 +3961,19 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       const float ax = DASH_X, ay = TOP_Y, ad = 48;
       float sw[4];
       int played = stats_games_played();
-      if (strcmp(g_avatar.id, ap->id)) avatar_load(ap);
+      static spring pf;
+      float fa;
+      if (g_avatar_dirty || strcmp(g_avatar.id, ap->id)) { g_avatar_dirty = 0; avatar_load(ap); }
+      spring_step(&pf, g_focus == FOCUS_PROFILE ? 1.0f : 0.0f, 200, 22, 1.0f / 60.0f);
+      fa = clampf(pf.x, 0.0f, 1.0f);
+      if (fa > 0.01f)
+      {  /* focused: a glass pill behind the avatar and the name, with the focus ring */
+         const float gw = ad + 16 + (l_name.w > l_psub.w ? l_name.w : l_psub.w) + 34, gh = ad + 20;
+         const float fill[4] = { 1, 1, 1, 0.16f * fa * ua }, fring[4] = { 1, 1, 1, 0.95f * fa * ua };
+         draw_shadow_ex(ax - 10, ay - 10, gw, gh, gh * 0.5f, 12, 4, 0.40f * fa * ua, 1);
+         draw_shape(ax - 10, ay - 10, gw, gh, gh * 0.5f, 0, fill);
+         draw_shape(ax - 14, ay - 14, gw + 8, gh + 8, gh * 0.5f + 4, 3.0f, fring);
+      }
       draw_shadow(ax, ay, ad, ad, ad * 0.5f, 10, 3, 0.45f * ua);
       if (g_avatar.tex)
       {
@@ -3982,7 +4032,8 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
    if (g_nplat)
    {  /* a row wider than the safe area scrolls (spring) to keep the selected pill inside,
        * with the L1 / R1 glyphs pinned at the margins */
-      static spring off;
+      static spring off, tf;
+      float tabf;
       const float ph = 42.0f, lh = 22.0f, padx = 20.0f;
       const float gl[4] = { 1, 1, 1, 0.60f * ua };
       float pws[MAX_PLATFORMS], x0, x, total = 0, sx = 0, sw = 0, l1w = 0, r1w = 0, want = 0, left, right;
@@ -4006,6 +4057,8 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          want = clampf(want, 0.0f, total - (right - left));
       }
       spring_step(&off, want, 200, 22, 1.0f / 60.0f);
+      spring_step(&tf, g_focus == FOCUS_TABS ? 1.0f : 0.0f, 200, 22, 1.0f / 60.0f);
+      tabf = clampf(tf.x, 0.0f, 1.0f);
       x0 = left - off.x;
       if (g_nplat > 1) glyph_draw("l2", DASH_X, TAB_Y + (ph - 24) * 0.5f, 24, gl);
       if (total > right - left)
@@ -4024,6 +4077,11 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          draw_shadow_ex(x, TAB_Y, pw, ph, ph * 0.5f, 12, 4, (on_ ? 0.45f : 0.30f) * ua, 1);
          draw_shape(x, TAB_Y, pw, ph, ph * 0.5f, 0, fill);
          draw_shape(x, TAB_Y, pw, ph, ph * 0.5f, 1.0f, edge);
+         if (on_ && tabf > 0.01f)
+         {  /* the tabs have the focus: the same ring as the focused game */
+            const float fring[4] = { 1, 1, 1, 0.95f * tabf * ua };
+            draw_shape(x - 5, TAB_Y - 5, pw + 10, ph + 10, ph * 0.5f + 5, 3.0f, fring);
+         }
          cx = x + padx;
          if (p->logo_tex)
          {
@@ -4043,9 +4101,12 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
    /* tiles: soft shadows first, then the covers; tiles left of the selection fade away */
    if (n)
    {
+      static spring gf = { 1.0f, 0.0f };
       int base = (int)floorf(pos);
-      float st = (float)(t - sel_t), sheen = -2.0f;
-      if (st > 0.35f)
+      float st = (float)(t - sel_t), sheen = -2.0f, gamef;
+      spring_step(&gf, g_focus == FOCUS_GAMES ? 1.0f : 0.0f, 200, 22, 1.0f / 60.0f);
+      gamef = clampf(gf.x, 0.0f, 1.0f);
+      if (st > 0.35f && g_focus == FOCUS_GAMES)
       {  /* a light sweep over the selected tile shortly after it settles, then every 6 s */
          float u = fmodf(st - 0.35f, 6.0f);
          if (u < 1.0f) sheen = -0.6f + u * 2.4f;
@@ -4081,7 +4142,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          }
          if (idx == sel)
          {  /* focus ring (fades in with the title) and the media badge */
-            const float ring[4] = { 1, 1, 1, 0.95f * ta * info_a }, badge[4] = { 0.04f, 0.04f, 0.06f, 0.70f * ta };
+            const float ring[4] = { 1, 1, 1, 0.95f * ta * info_a * gamef }, badge[4] = { 0.04f, 0.04f, 0.06f, 0.70f * ta };
             const float bedge[4] = { 1, 1, 1, 0.22f * ta };
             const char *mg = pl->kind == KIND_CART ? "cartridge" : (pl->kind == KIND_ARCADE ? "coin" : "disc");
             const float gc[4] = { 1, 1, 1, 0.95f * ta };
@@ -4717,6 +4778,8 @@ int main(int argc, char **argv)
       if (pl && sel_plat >= g_nreal_plat && pl->count) coll_row_follow(pl, pl->first + (sel < pl->count ? sel : 0));
       int n = pl ? pl->count : 0, move = 0, plat_move = 0, page = 0, play = 0, att_swallow, restore = -1, want_menu = 0;
       ui_nav_t fnav;   /* one navigation frame shared by the panel and the game menu (auto-repeat state) */
+      int fp_open;     /* the file picker was open when this frame began */
+      int open_profile = 0;   /* Cross on the focused profile */
       launch_dt = dt > 0.10f ? 0.10f : dt;   /* a stall (>= 100 ms) still does not skip the animation */
       if (play_t >= 0 && t > play_t)
       {  /* how the launch ran on this machine: one line in the log when it ends */
@@ -4740,7 +4803,7 @@ int main(int argc, char **argv)
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
-         attract_update(t, dt, !panel_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
+         attract_update(t, dt, !panel_active() && !filepicker_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
          att_swallow = was || attract_active() || att.amount > 0.02f;
          if (att_swallow) g_want_settings = 0;
       }
@@ -4761,15 +4824,36 @@ int main(int argc, char **argv)
          /* Cross plays; Start alone opens the game menu (favourite, folders) */
          if (in_pressed[IN_PLAY]) play = 1;
          if (in_pressed[IN_START] && !in_down[IN_SELECT]) want_menu = 1;
-         /* L1 / R1: previous / next page of games; L2 / R2 (and up / down): system */
+         /* L1 / R1: previous / next page of games; L2 / R2: system (Up / Down move the focus, below) */
          if (in_pressed[IN_L1]) page = -1;
          if (in_pressed[IN_R1]) page = 1;
-         if (in_pressed[IN_L2] || in_pressed[IN_UP]) plat_move = -1;
-         if (in_pressed[IN_R2] || in_pressed[IN_DOWN]) plat_move = 1;
+         if (in_pressed[IN_L2]) plat_move = -1;
+         if (in_pressed[IN_R2]) plat_move = 1;
          if (in_pressed[IN_LEFT]) { move = -1; held_next = t + 0.32; }
          if (in_pressed[IN_RIGHT]) { move = 1; held_next = t + 0.32; }
       }
       held_dir = in_down[IN_LEFT] ? -1 : (in_down[IN_RIGHT] ? 1 : 0);
+      {  /* focus: games <-> system tabs <-> profile with Up / Down. Away from the games,
+          * Left / Right change the system (tabs), Cross goes back to the games (tabs) or
+          * opens the profile settings (profile), Circle returns to the games */
+         const int free_ = !panel_active() && !filepicker_active() && !gamemenu_active() && !welcome_active() &&
+                           !att_swallow && play_t < 0;
+         open_profile = 0;
+         if (attract_active() || play_t >= 0 || !g_nplat) g_focus = FOCUS_GAMES;
+         else if (free_)
+         {
+            if (in_pressed[IN_UP] && g_focus < FOCUS_PROFILE) g_focus++;
+            else if (in_pressed[IN_DOWN] && g_focus > FOCUS_GAMES) g_focus--;
+            else if (g_focus != FOCUS_GAMES)
+            {
+               if (in_pressed[IN_BACK]) g_focus = FOCUS_GAMES;
+               else if (g_focus == FOCUS_TABS && in_pressed[IN_PLAY]) g_focus = FOCUS_GAMES;
+               else if (g_focus == FOCUS_TABS && move) { plat_move = move; }
+               else if (g_focus == FOCUS_PROFILE && in_pressed[IN_PLAY]) open_profile = 1;
+               move = page = play = want_menu = 0; held_dir = 0;
+            }
+         }
+      }
       (void)start_down; (void)select_down; (void)pad;
       if (welcome_active())
       {  /* first-run presentation: owns the input until it is closed */
@@ -4782,17 +4866,25 @@ int main(int argc, char **argv)
          move = plat_move = page = play = want_menu = 0;
       }
       nav_fill(&fnav, t);
+      fp_open = filepicker_open_now();
+      {  /* file picker: a card over the panel (or the dashboard); owns the input while open */
+         ui_nav_t pn = fnav;
+         if (!fp_open || att_swallow) memset(&pn, 0, sizeof(pn));
+         filepicker_update(&pn, t, dt);
+         if (fp_open) { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; }
+      }
       {  /* settings panel: owns the input while open or closing (6.3) */
          ui_nav_t nav = fnav;
          int was_open = panel_active(), gm = gamemenu_active();
-         if (!was_open || att_swallow) memset(&nav, 0, sizeof(nav));
-         if (!was_open && !gm && in_pressed[IN_OPTIONS] && play_t < 0 && !att_swallow) panel_open();
+         if (!was_open || att_swallow || fp_open) memset(&nav, 0, sizeof(nav));
+         if (!was_open && !gm && !fp_open && in_pressed[IN_OPTIONS] && play_t < 0 && !att_swallow) panel_open();
          if (g_want_settings)   /* Select tapped: opens the panel; while open it acts like Triangle */
          {
             g_want_settings = 0;
             if (!was_open && !gm && play_t < 0) panel_open();
             else if (was_open) nav.options = 1;
          }
+         if (open_profile && !was_open && !gm) { panel_open_profile(); memset(&nav, 0, sizeof(nav)); }
          panel_update(&nav, t, dt);
          if (was_open || panel_active()) { move = plat_move = page = play = want_menu = 0; held_dir = 0; }
       }
@@ -4800,7 +4892,7 @@ int main(int argc, char **argv)
           * it opens for a new folder is the panel's (above) */
          ui_nav_t gn = fnav;
          int open_now = gamemenu_open_now(), r;
-         if (!open_now || panel_active() || att_swallow) memset(&gn, 0, sizeof(gn));
+         if (!open_now || panel_active() || att_swallow || fp_open) memset(&gn, 0, sizeof(gn));
          gamemenu_update(&gn, t, dt);
          if (open_now || gamemenu_active()) { move = plat_move = page = play = want_menu = 0; held_dir = 0; }
          r = gamemenu_take();
@@ -5325,9 +5417,11 @@ int main(int argc, char **argv)
                static int h_cur = HINTS_CAROUSEL, h_prev = -1;
                static float h_mix = 1.0f;
                int want = welcome_active() ? (welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
+                          filepicker_open_now() ? HINTS_FILEPICKER :
                           panel_active() ? panel_hint_set() :
                           gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
-                          (attract_active() ? HINTS_ATTRACT : HINTS_CAROUSEL);
+                          (attract_active() ? HINTS_ATTRACT : g_focus == FOCUS_TABS ? HINTS_DASH_TABS :
+                           g_focus == FOCUS_PROFILE ? HINTS_DASH_PROFILE : HINTS_CAROUSEL);
                const float ha = (1 - fade) * (1 - att.amount) * launch_ui;
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
@@ -5344,6 +5438,12 @@ int main(int argc, char **argv)
             }
             gamemenu_draw(t);
             panel_draw(t);
+            filepicker_draw(t);
+            if (filepicker_active())
+            {  /* its backdrop covered the help bar: draw the picker's set again on top */
+               glUseProgram(g_prog_2d);
+               hints_draw(HINTS_FILEPICKER, 672, filepicker_amount() * (1 - fade));
+            }
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);
             attract_draw(t);

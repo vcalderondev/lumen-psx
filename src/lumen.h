@@ -78,6 +78,10 @@ void   label_free(label_t *l);
 void   gl_use_2d(void);        /* glUseProgram(g_prog_2d) + sampler 0 */
 void   gl_scissor(float x, float y, float w, float h);   /* logical rect, top-left origin */
 void   ui_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float a);
+GLuint tex_from_surface(SDL_Surface *s);   /* mipmapped RGBA texture; the surface stays the caller's */
+/* image (tw x th texels) cover-fitted into a rounded rectangle; ends in another program:
+ * call gl_use_2d() before more draw_2d() */
+void   draw_image(GLuint tex, int tw, int th, float x, float y, float w, float h, float radius, const float rgba[4]);
 
 /* one frame of navigation for UI modules: press edges, with auto-repeat on the directions.
  * back = Circle or Square; erase = Square alone (the keyboard tells them apart) */
@@ -86,6 +90,8 @@ typedef struct { int up, down, left, right, confirm, back, erase, options, start
 /* UI callbacks implemented in main.c */
 void   ui_language_changed(void);   /* rebuild text baked into textures after i18n_set_language() */
 void   ui_cards_changed(void);      /* the active profile changed: regenerate the back of the cases */
+void   ui_avatar_changed(void);     /* the active profile's avatar.png changed: load it again */
+int    ui_avatar(GLuint *tex, int *w, int *h);   /* the active profile's picture; 0 = none (initials) */
 void   ui_library_changed(void);    /* a setting changed which systems are listed: rescan next frame */
 
 #endif
