@@ -43,45 +43,6 @@ static inline mat4 m4_scale(float x, float y, float z)
    return r;
 }
 
-static inline mat4 m4_rot_y(float a)
-{
-   mat4 r = m4_identity();
-   float c = cosf(a), s = sinf(a);
-   r.m[0] = c;  r.m[8]  = s;
-   r.m[2] = -s; r.m[10] = c;
-   return r;
-}
-
-static inline mat4 m4_rot_x(float a)
-{
-   mat4 r = m4_identity();
-   float c = cosf(a), s = sinf(a);
-   r.m[5] = c;  r.m[9]  = -s;
-   r.m[6] = s;  r.m[10] = c;
-   return r;
-}
-
-static inline mat4 m4_rot_z(float a)
-{
-   mat4 r = m4_identity();
-   float c = cosf(a), s = sinf(a);
-   r.m[0] = c;  r.m[4] = -s;
-   r.m[1] = s;  r.m[5] = c;
-   return r;
-}
-
-static inline mat4 m4_perspective(float fovy, float aspect, float zn, float zf)
-{
-   mat4 r; float f = 1.0f / tanf(fovy * 0.5f);
-   memset(&r, 0, sizeof(r));
-   r.m[0]  = f / aspect;
-   r.m[5]  = f;
-   r.m[10] = (zf + zn) / (zn - zf);
-   r.m[11] = -1.0f;
-   r.m[14] = (2.0f * zf * zn) / (zn - zf);
-   return r;
-}
-
 static inline mat4 m4_ortho(float l, float r_, float b, float t)
 {
    mat4 r = m4_identity();

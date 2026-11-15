@@ -16,6 +16,10 @@
  * launch itself draws no cover. Layers and cover are decoded on worker threads once the
  * selection settles.
  *
+ * A system with no illustration gets the generic launch on the same field: no hardware is
+ * invented, the game's cover is the object. It floats as a card, turns once and grows into
+ * the frame.
+ *
  * Included by main.c (uses draw_2d, draw_shape, gl_scissor, surface_to_tex, label_t). */
 
 #include "image.h"
@@ -40,7 +44,8 @@ static fxf fx_about(float ox, float oy, float sx, float sy) { fxf r = { sx, sy, 
 
 typedef struct {
    char key[32];
-   int ok;                       /* the layers are on the GPU */
+   int ok;                       /* the layers are on the GPU (or the launch is the generic one) */
+   int generic;                  /* no illustration for this key: the game's cover as a card */
    GLuint tex[FL_N];
    int medium, door;             /* FM_*; door: 0 none, 1 lid (hinged at the back), 2 flap */
    int has_clip_y, has_screen, art_layer;   /* art_layer: -1 none, FL_MEDIUM or FL_BODY */
@@ -308,7 +313,7 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
    {
       if (g_flat_ljob && !now) return;   /* one job at a time: asked again next frame */
       snprintf(f->key, sizeof(f->key), "%s", pl->flat);
-      f->ok = 0;
+      f->ok = 0; f->generic = 0;
       if (flat_read_ini(f, f->key))
       {
          flat_ljob_t *j = calloc(1, sizeof(*j));
@@ -317,14 +322,22 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
          else if (!g_flat_ljob) { g_flat_ljob = j; SDL_DetachThread(SDL_CreateThread(flat_layers_thread, "flat-layers", j)); }
          else free(j);
       }
-      else logf_("flat launch: no <home>/assets/launch/%s/launch.ini", f->key);
+      else
+      {  /* no illustration: the generic launch, whose "screen" is the cover itself */
+         int i;
+         for (i = 0; i < FL_N; i++) if (f->tex[i]) { glDeleteTextures(1, &f->tex[i]); f->tex[i] = 0; }
+         if (f->base) { SDL_FreeSurface(f->base); f->base = NULL; }
+         if (f->mask) { SDL_FreeSurface(f->mask); f->mask = NULL; }
+         f->generic = 1; f->ok = 1; f->medium = FM_NONE; f->door = 0; f->art_layer = -1; f->has_clip_y = 0;
+         f->has_screen = 1; f->screen[0] = 140; f->screen[1] = 50; f->screen[2] = 200; f->screen[3] = 200; f->shadow = 200;
+      }
    }
    else if (now && !f->ok && g_flat_ljob)
    {  /* Play while the layers are still being decoded: wait for that worker */
       while (!SDL_AtomicGet(&g_flat_ljob->done)) SDL_Delay(1);
       flat_poll();
    }
-   if (g && strcmp(f->art_path, g->cover))
+   if (g && !f->generic && strcmp(f->art_path, g->cover))
    {
       if (g_flat_ajob && !now) return;
       snprintf(f->art_path, sizeof(f->art_path), "%s", g->cover);
@@ -345,21 +358,19 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
    }
 }
 
-/* Play: everything must be there now. 0 when the system has no illustration (the caller
- * falls back to its 3D / cover animation). */
-static int flat_begin(const platform_t *pl, const game_t *g)
+/* Play: everything must be there now. */
+static void flat_begin(const platform_t *pl, const game_t *g)
 {
    flat_t *f = &g_flat;
    int i, k;
    char up[64];
    flat_want(pl, g, 1);
-   if (!f->ok) return 0;
    if (!f->art_s)
    {  /* no cover file (a placeholder card): five tones between the card's two colours */
       for (i = 0; i < 5; i++)
          for (k = 0; k < 3; k++) f->pal[i][k] = clampf(lerpf(g->col[k] * 0.45f, g->acc[k] * 0.6f + 0.4f, i / 4.0f), 0, 1);
    }
-   if (!f->painted_ok || strcmp(f->painted, g->cover))
+   if (!f->generic && (!f->painted_ok || strcmp(f->painted, g->cover)))
    {
       double ps = now_s();
       flat_paint_layer(f);
@@ -370,7 +381,6 @@ static int flat_begin(const platform_t *pl, const game_t *g)
    up[i] = 0;
    label_set(&f->l_kicker, g_font_caps, up);
    label_set(&f->l_title, g_font_title, g->title);
-   return 1;
 }
 
 /* ---- drawing ---------------------------------------------------------------------------- */
@@ -435,7 +445,7 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
       else if (pt < 0.78f) { u = flat_smooth(flat_ramp(pt, 0.70f, 0.78f)); drop = fx_mul(fx_move(0, lerpf(16.0f, -10.0f, u)), fx_about(240, 150, lerpf(1.05f, 0.98f, u), lerpf(0.93f, 1.03f, u))); }
       else { u = flat_smooth(flat_ramp(pt, 0.78f, 0.88f)); drop = fx_mul(fx_move(0, lerpf(-10.0f, 0, u)), fx_about(240, 150, lerpf(0.98f, 1, u), lerpf(1.03f, 1, u))); }
       bob = pt > 0.88f ? 0.5f - 0.5f * cosf((pt - 0.88f) * PI2 / 3.0f) : 0.0f;
-      if (pt > FLAT_SEAT)
+      if (pt > FLAT_SEAT && f->medium != FM_NONE)
       {
          if (pt < FLAT_SEAT + 0.06f) { u = flat_ramp(pt, FLAT_SEAT, FLAT_SEAT + 0.06f); sq = fx_about(240, 300, lerpf(1, 1.045f, u), lerpf(1, 0.945f, u)); }
          else if (pt < FLAT_SEAT + 0.14f) { u = flat_smooth(flat_ramp(pt, FLAT_SEAT + 0.06f, FLAT_SEAT + 0.14f)); sq = fx_about(240, 300, lerpf(1.045f, 0.99f, u), lerpf(0.945f, 1.015f, u)); }
@@ -504,6 +514,28 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
       }
    }
    lit = pt < 1.56f ? 0.0f : pt < 1.60f ? 0.7f : pt < 1.66f ? 0.2f : 1.0f;
+
+   if (f->generic)
+   {  /* the cover as a card in a dark frame; it turns once (flat: its width closes and
+       * opens again, the back is the frame alone), then grows into the frame */
+      const float turn = cosf(flat_smooth(flat_ramp(pt, 0.95f, 1.55f)) * PI2);
+      const fxf card = fx_mul(body, fx_about(240, 150, turn, 1.0f));
+      const float frame[4] = { 0.063f, 0.082f, 0.133f, 1.0f }, one[4] = { 1, 1, 1, 1 };
+      const float tw = (float)(g->tex_w > 0 ? g->tex_w : 1), th = (float)(g->tex_h > 0 ? g->tex_h : 1);
+      float r[4], c[4], w, h;
+      flat_rect(card, 134, 44, 212, 212, r);
+      if (r[2] > 1.0f) draw_shape(r[0], r[1], r[2], r[3], 18.0f * fabsf(body.sx) * (r[2] / (212.0f * fabsf(body.sx)) < 0.4f ? 0.4f : 1.0f), 0.0f, frame);
+      flat_rect(card, 140, 50, 200, 200, c);
+      if (turn > 0.0f && g->tex && c[2] > 1.0f)
+      {  /* cover-fit in the card's window (cut by it), squeezed with the turn */
+         if (tw / th > 1.0f) { h = c[3]; w = h * tw / th * turn; } else { w = c[2]; h = c[2] / turn * th / tw; }
+         glEnable(GL_SCISSOR_TEST);
+         gl_scissor(c[0], c[1], c[2], c[3]);
+         draw_2d(g->tex, c[0] + (c[2] - w) * 0.5f, c[1] + (c[3] - h) * 0.5f, w, h, one, 0);
+         glDisable(GL_SCISSOR_TEST);
+      }
+      return;
+   }
 
    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   /* the layers are premultiplied */
    if (f->medium == FM_BEHIND)
