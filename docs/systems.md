@@ -37,7 +37,7 @@ art    = cover                  ; image on the front: cover | label | marquee
 media_art = disc                ; per-game image of the medium: <game>/disc.png, <game>/cart.png ...
 
 [animation]
-launch = open_case_disc         ; open_case_disc | insert_cartridge | insert_coin
+launch = open_case_disc         ; open_case_disc | insert_cartridge | insert_coin | cover (see below)
 slot   = top                    ; insert_cartridge: top | front | handheld (default from the shape)
 idle   = float                  ; float | none
 sound  = launch.wav             ; optional, <home>/assets/systems/<id>/launch.wav
@@ -166,6 +166,13 @@ has a default; a minimal declaration only needs `[system] id/name`,
 | cartridge | `cart_snes`, `cart_md`, `cart_n64`, `cart_nes`, `cart_gb` (`cart_gbc`), `cart_gba`, `cart` (generic) | `insert_cartridge`: into the console's slot, by `[animation] slot` (default from the shape): `top` (SNES, Mega Drive, N64, generic) the cartridge drops into a top-loader; `front` (NES, cards) it lies down and slides in through the front flap; `handheld` (GB, GBA) it slides into the back of the handheld, which turns round and lights its screen. Then the power LED |
 | arcade | `marquee` (backlit marquee panel) | `insert_coin`: a coin rolls into the slot, "CREDIT 1" blinks, the marquee flickers on |
 | card | `hucard` (default for `kind = card`) | `insert_cartridge` (slot `front`) |
+| any | none needed | `cover`: the generic animation. No console, cartridge or disc is simulated: the game's cover, as a thin card with a halo of its accent colour, rises, turns once about itself and flies into the camera (1.95 s) |
+
+**Which animation a system gets.** `[animation] launch` when it is declared. Without it,
+the hardware animation of the kind, but only when `[media] shape` says what the medium
+looks like. A declaration with neither (a minimal one, or a system Lumen has no model for)
+gets `cover`: nothing is assumed about its hardware. Before 0.14 such a system was shown
+as a generic cartridge going into a generic console (or a CD jewel case).
 
 A shape of another kind is ignored (the kind's generic one is used). With a photo of the
 game's own cartridge (`media_art`) the photo replaces the modelled cartridge; its

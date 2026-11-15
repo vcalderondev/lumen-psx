@@ -1,4 +1,5 @@
-/* Settings panel, on-screen keyboard, confirm dialog and toast (docs/settings-design.md 6).
+/* Settings panel, on-screen keyboard, confirm dialog and toast (docs/settings-design.md 6;
+ * look and layout: lumen-design, settings.html / keyboard.html / confirm.html).
  *
  * Everything lives in static storage: the rows of the current page are rebuilt every
  * frame into fixed buffers (plain string copies, no heap), and every text on screen is a
@@ -18,17 +19,28 @@
 #include "theme.h"
 #include "crt.h"
 #include "filepicker.h"
+#include "stats.h"
+#include "ui.h"
 
 /* ------------------------------------------------------------------------ */
 /* geometry and colours                                                      */
 /* a full-screen section (opaque backdrop drawn by main.c under the help bar): the
  * content is a centred column inside the TV-safe area */
-#define PW      860.0f
-#define PH      596.0f
-#define PX0     ((W - PW) * 0.5f)
-#define PY0     44.0f
-#define ROW_H   48.0f
-#define ROWS_Y  132.0f       /* first row, relative to the section top */
+/* a section over the dimmed art (lumen-design, settings.html): the title and the rail of
+ * sections on the left, one glass card with the focused section on the right */
+#define TITLE_X 84.0f
+#define TITLE_Y 112.0f
+#define RAIL_X  70.0f
+#define RAIL_Y  172.0f
+#define RAIL_W  320.0f
+#define RAIL_H  52.0f
+#define RAIL_P  56.0f        /* rail pitch */
+#define CARD_X  420.0f
+#define CARD_Y  108.0f
+#define CARD_W  776.0f
+#define CARD_H  528.0f
+#define HEAD_H  138.0f       /* card header: kicker, title, caption, hairline */
+#define ROW_H   54.0f        /* row pitch; the pill is ROW_H - 4 high */
 #define PAD     28.0f
 #define SLIDE_OFF 560.0f     /* s_slide when closed: drives the open/close motion */
 #define MAX_ROWS 20
@@ -131,13 +143,15 @@ static row_t   s_rows[MAX_ROWS];
 static int     s_nrows;
 static char    s_foot[400];            /* page footer text (translated), "" = none */
 
-static int     s_open, s_page, s_sel;
+static int     s_open, s_page = 1, s_sel;
+static int     s_in_card;              /* focus: 0 the rail of sections, 1 the rows of the card */
+static spring  s_rail;                 /* rail highlight, y offset */
 static int     s_osk_only;             /* keyboard opened from the game menu, panel hidden */
 static spring  s_slide, s_fade, s_px, s_pa, s_hl, s_scroll;
 static long    s_free_tenths = -1;     /* About: free space in tenths of GB, or */
 static long    s_free_mb = -1;         /* in MB below 1 GB; measured when the page opens */
 
-static label_t s_title, s_ptitle, s_footer, s_lt, s_gt;
+static label_t s_title, s_ptitle, s_footer, s_lt, s_gt, s_kick, s_cap, s_rail_l[16];
 static label_t s_rl[MAX_ROWS], s_rv[MAX_ROWS];
 
 /* Profile page: colour being chosen, written to profile.ini when it is committed
@@ -170,7 +184,7 @@ static spring  s_mod;
 /* keyboard (6.6) */
 typedef const char *(*osk_accept_fn)(const char *text);  /* NULL = accepted, else a tr key to show */
 #define OSK_W 760.0f
-#define OSK_H 330.0f
+#define OSK_H 340.0f
 #define OSK_MAX_CHARS 16
 #define OSK_MAX_BYTES 48
 static const char *const k_keys[40] = {
@@ -184,6 +198,7 @@ enum { OK_SHIFT, OK_SPACE, OK_ERASE, OK_OK };
 static const int   k_act_col[4] = { 0, 2, 6, 8 }, k_act_span[4] = { 2, 4, 2, 2 };
 static const char *const k_act_key[4] = { "osk.shift", "osk.space", "osk.erase", "osk.ok" };
 static label_t     s_kup[40], s_klo[40], s_kact[4], s_ktitle, s_ktext;
+static char        s_ktitle_txt[96];
 static char        s_text[OSK_MAX_BYTES + 4];
 static int         s_orow, s_ocol, s_lower;
 static osk_accept_fn s_osk_accept;
@@ -191,8 +206,8 @@ static spring      s_kx, s_ky, s_kw;
 
 /* confirm (6.7) */
 typedef void (*confirm_fn)(void);
-#define DLG_W 560.0f
-#define DLG_H 220.0f
+#define DLG_W 580.0f
+#define DLG_H 228.0f
 static label_t     s_cmsg, s_cnote, s_cbtn[2];
 static int         s_csel;              /* 0 cancel (default), 1 delete */
 static confirm_fn  s_con_yes;
@@ -292,7 +307,8 @@ static void page_build(void)
       int ai = profiles_find(ap->id), np = profiles_count(), color = s_pcolor >= 0 ? s_pcolor : ap->color;
       if ((r = row_add(R_CHOICE, ID_PROFILE_ACTIVE, tr("profile.active"), profiles_display_name(ap))))
       { r->swatch = color; r->at_lo = ai <= 0; r->at_hi = ai >= np - 1; }
-      if ((r = row_add(R_ACTION, ID_PROFILE_CREATE, tr("profile.create"), NULL)) && np >= MAX_PROFILES)
+      snprintf(num, sizeof(num), "%d", np);
+      if ((r = row_add(R_ACTION, ID_PROFILE_CREATE, tr("profile.create"), trf(v, sizeof(v), "profile.count", "n", num, NULL))) && np >= MAX_PROFILES)
       { r->enabled = 0; r->dim = 1; r->why = "profile.full"; }
       row_add(R_ACTION, ID_PROFILE_RENAME, tr("profile.rename"), NULL);
       if ((r = row_add(R_CHOICE, ID_PROFILE_COLOR, tr("profile.color"), NULL)))
@@ -304,9 +320,6 @@ static void page_build(void)
       { r->enabled = 0; r->dim = 1; r->why = "profile.avatar_none"; }
       if ((r = row_add(R_ACTION, ID_PROFILE_DELETE, tr("profile.delete"), NULL)) && !strcmp(ap->id, "main"))
       { r->enabled = 0; r->dim = 1; r->why = "profile.main_locked"; }
-      snprintf(num, sizeof(num), "%d", np);
-      trf(v, sizeof(v), "profile.count", "n", num, NULL);
-      snprintf(s_foot, sizeof(s_foot), "%s\n%s", v, tr("profile.cards_note"));
       break;
    }
    case P_SCREENSAVER:
@@ -448,6 +461,7 @@ static void rows_snap(void)
 {
    s_hl.x = s_sel > 0 ? s_sel * ROW_H : 0.0f; s_hl.v = 0;
    s_scroll.x = 0; s_scroll.v = 0;
+   s_rail.x = (s_page - 1) * RAIL_P; s_rail.v = 0;
 }
 
 static void page_enter(int page, int dir)
@@ -458,8 +472,9 @@ static void page_enter(int page, int dir)
    page_build();
    s_sel = first_selectable();
    if (page == P_LANGUAGE && (i = lang_active_index()) >= 0) s_sel = i;
-   rows_snap();
-   s_px.x = dir * 80.0f; s_px.v = 0;
+   s_hl.x = s_sel > 0 ? s_sel * ROW_H : 0.0f; s_hl.v = 0;
+   s_scroll.x = 0; s_scroll.v = 0;
+   s_px.x = dir * 24.0f; s_px.v = 0;
    s_pa.x = 0.0f; s_pa.v = 0;
 }
 
@@ -474,7 +489,7 @@ static void panel_close(void)
 {
    if (!s_open) return;
    color_commit();
-   s_open = 0;
+   s_open = 0; s_in_card = 0;
    logf_("panel: close");
    if (settings_dirty() && settings_save() != 0) panel_toast("error.save");
 }
@@ -718,30 +733,29 @@ static void row_cycle(const row_t *r)
 static void page_input(const ui_nav_t *nav)
 {
    const row_t *r = row_selectable(s_sel) ? &s_rows[s_sel] : NULL;
-   if (nav->up) sel_move(-1);
-   if (nav->down) sel_move(1);
-   if (s_page == P_ROOT)
-   {
-      /* root rows open pages: only R_ACTION ids are page numbers */
-      if (nav->confirm && r && r->type == R_ACTION && r->id >= 0 && r->id < P_COUNT) page_enter(r->id, 1);
+   if (!s_in_card)
+   {  /* the rail: Up / Down change the section shown in the card, Cross / Right enter it */
+      int to = s_page + (nav->down ? 1 : 0) - (nav->up ? 1 : 0);
+      if (to != s_page && to >= 1 && to < P_COUNT) page_enter(to, 0);
+      else if ((nav->confirm || nav->right) && first_selectable() >= 0) s_in_card = 1;
       else if (nav->back || nav->options) panel_close();
       return;
    }
+   if (nav->up) sel_move(-1);
+   if (nav->down) sel_move(1);
    if (r && r->type == R_CHOICE && (nav->left || nav->right))
    {
       if (!r->enabled && r->why) panel_toast(r->why);
       else row_change(r, nav->right ? 1 : -1);
    }
+   if (nav->options) { panel_close(); return; }   /* Triangle: out of the whole flow */
    if (nav->confirm && r && !r->enabled && r->why) panel_toast(r->why);
    else if (nav->confirm && r && r->type == R_ACTION && r->enabled) row_action(r);
    else if (nav->confirm && r && r->type == R_CHOICE) row_cycle(r);
-   else if (nav->back || nav->options)
-   {
-      int from = s_page;
+   else if (nav->back || (nav->left && !(r && r->type == R_CHOICE)))
+   {  /* back to the rail */
       color_commit();
-      page_enter(P_ROOT, -1);
-      s_sel = from - 1;   /* root rows are the pages in order */
-      rows_snap();
+      s_in_card = 0;
    }
 }
 
@@ -785,7 +799,7 @@ static void osk_open(const char *title_key, const char *initial, osk_accept_fn a
       if (strcmp(s_klower[k], k_keys[k])) label_set(&s_klo[k], g_font_sub, s_klower[k]);
    }
    for (k = 0; k < 4; k++) label_set(&s_kact[k], g_font_small, tr(k_act_key[k]));
-   label_set(&s_ktitle, g_font_sub, tr(title_key));
+   snprintf(s_ktitle_txt, sizeof(s_ktitle_txt), "%s", tr(title_key));
    snprintf(s_text, sizeof(s_text), "%s", initial ? initial : "");
    s_lower = s_text[0] != 0;
    s_orow = 1; s_ocol = 0;
@@ -903,56 +917,45 @@ static void osk_input(const ui_nav_t *nav)
    }
 }
 
-/* draw helpers scaled about the screen centre (scale-in of the modals) */
-static float s_mk = 1.0f;
-static float mx(float x) { return W * 0.5f + (x - W * 0.5f) * s_mk; }
-static float my(float y) { return H * 0.5f + (y - H * 0.5f) * s_mk; }
-static void m_rect(float x, float y, float w, float h, float r, const float c[4], float b)
-{
-   draw_round_rect(mx(x), my(y), w * s_mk, h * s_mk, r * s_mk, c, b);
-}
+/* modal draw helpers: a modal rises 16 px into place while it fades in */
+static float s_mrise;
+static float mx(float x) { return x; }
+static float my(float y) { return y + s_mrise; }
 static void m_label(const label_t *l, float x, float y, const float c[4])
 {
-   if (l->tex && c[3] > 0.003f) draw_2d(l->tex, floorf(mx(x)), floorf(my(y)), l->w * s_mk, l->h * s_mk, c, 0);
+   if (l->tex && c[3] > 0.003f) draw_2d(l->tex, floorf(mx(x)), floorf(my(y)), l->w, l->h, c, 0);
 }
 
 static void osk_draw(double t, float a)
 {
-   float ox = (W - OSK_W) * 0.5f, oy = (H - OSK_H) * 0.5f, x, y, w, cx;
-   float c[4], f[4];
+   float ox = (W - OSK_W) * 0.5f, oy = (H - OSK_H) * 0.5f, x, y, w;
+   float c[4];
+   const float black[3] = { 0, 0, 0 }, white[3] = { 1, 1, 1 }, ink[4] = { 0.043f, 0.047f, 0.063f, a };
    int k, r;
-   col(f, (const float[3]){ 0.11f, 0.11f, 0.16f }, 0.94f * a);
-   m_rect(ox, oy, OSK_W, OSK_H, 22, f, 0.14f * a);
-   col(c, C_DIM, a);
-   m_label(&s_ktitle, ox + 28, oy + 18, c);
-   col(f, (const float[3]){ 0, 0, 0 }, 0.28f * a);
-   m_rect(ox + 24, oy + 52, OSK_W - 48, 44, 10, f, 0.10f * a);
-   label_set(&s_ktext, g_font_sub, s_text);
+   ui_card(mx(ox), my(oy), OSK_W, OSK_H, a);
+   ui_kicker(&s_ktitle, s_ktitle_txt, mx(ox + 28), my(oy + 22), a);
+   ui_fill(mx(ox + 24), my(oy + 50), OSK_W - 48, 48, 14, black, 0.30f * a);
+   label_set(&s_ktext, g_font_medium, s_text);
    col(c, C_TXT, a);
-   m_label(&s_ktext, ox + 40, oy + 74 - s_ktext.h * 0.5f, c);
-   if (fmod(t, 1.0) < 0.55)
-   {
-      col(c, C_ACC, a);
-      m_rect(ox + 41 + s_ktext.w, oy + 61, 2, 26, 1, c, 0);
-   }
-   /* keys */
+   m_label(&s_ktext, ox + 42, oy + 74 - s_ktext.h * 0.5f, c);
+   if (fmod(t, 1.0) < 0.55) ui_fill(mx(ox + 44 + s_ktext.w), my(oy + 61), 2, 26, 1, C_ACC, a);
+   /* keys: glass, the last one (Done) is the white primary */
    for (r = 0; r < 5; r++)
       for (k = 0; k < (r < 4 ? 10 : 4); k++)
       {
          const label_t *l;
+         const int primary = r == 4 && k == OK_OK;
          osk_key_rect(r, k, &x, &y, &w);
-         col(f, (const float[3]){ 1, 1, 1 }, ((r == 4 && k == OK_SHIFT && s_lower) ? 0.05f : 0.07f) * a);
-         m_rect(x, y, w, 36, 9, f, 0.05f * a);
+         if (primary) ui_fill(mx(x), my(y), w, 36, 10, white, a);
+         else ui_fill(mx(x), my(y), w, 36, 10, white, ((r == 4 && k == OK_SHIFT && !s_lower) ? UI_SELECTED : UI_REST) * a);
          if (r < 4) l = (s_lower && s_klo[r * 10 + k].tex) ? &s_klo[r * 10 + k] : &s_kup[r * 10 + k];
          else l = &s_kact[k];
-         col(c, (r == 4 && k == OK_OK) ? C_ACC : C_TXT, a);
-         if (r == 4 && k == OK_SHIFT && !s_lower) col(c, C_ACC, a);   /* upper case engaged */
-         m_label(l, x + (w - l->w) * 0.5f, y + (36 - l->h) * 0.5f, c);
+         col(c, C_TXT, a);
+         m_label(l, x + (w - l->w) * 0.5f, y + (36 - l->h) * 0.5f, primary ? ink : c);
       }
-   /* moving highlight */
-   col(f, (const float[3]){ 1, 1, 1 }, 0.22f * a);
-   cx = s_kx.x;
-   m_rect(cx, s_ky.x, s_kw.x, 36, 9, f, 0.35f * a);
+   /* the focused key: brighter glass and the ring, travelling with a spring */
+   if (!(s_orow == 4 && osk_act_of_col(s_ocol) == OK_OK)) ui_fill(mx(s_kx.x), my(s_ky.x), s_kw.x, 36, 10, white, (UI_SELECTED - UI_REST) * a);
+   ui_ring(mx(s_kx.x), my(s_ky.x), s_kw.x, 36, 10, 2.0f, a);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -962,11 +965,11 @@ static void confirm_open_ex(const char *message, const char *note_key, const cha
 {
    if (s_modal != M_NONE) return;
    if (s_modal_drawn == M_OSK) osk_free();
-   wlabel_set(&s_cmsg, g_font_sub, message, (int)DLG_W - 60);
+   wlabel_set(&s_cmsg, g_font_medium, message, (int)DLG_W - 64);
    if (note_key) wlabel_set(&s_cnote, g_font_small, tr(note_key), (int)DLG_W - 60);
    else label_free(&s_cnote);
-   label_set(&s_cbtn[0], g_font_sub, tr("confirm.cancel"));
-   label_set(&s_cbtn[1], g_font_sub, tr(yes_key));
+   label_set(&s_cbtn[0], g_font_medium, tr("confirm.cancel"));
+   label_set(&s_cbtn[1], g_font_medium, tr(yes_key));
    s_csel = 0; s_con_yes = on_yes;
    s_modal = s_modal_drawn = M_CONFIRM;
    s_mod.x = 0; s_mod.v = 0;
@@ -990,24 +993,21 @@ static void confirm_input(const ui_nav_t *nav)
 
 static void confirm_draw(float a)
 {
-   float ox = (W - DLG_W) * 0.5f, oy = (H - DLG_H) * 0.5f, bw = (DLG_W - 80) * 0.5f, by = oy + DLG_H - 24 - 46;
-   float c[4], f[4];
+   float ox = (W - DLG_W) * 0.5f, oy = (H - DLG_H) * 0.5f, bw = (DLG_W - 80) * 0.5f, by = oy + DLG_H - 28 - 52;
+   float c[4];
    int b;
-   col(f, (const float[3]){ 0.11f, 0.11f, 0.16f }, 0.95f * a);
-   m_rect(ox, oy, DLG_W, DLG_H, 22, f, 0.14f * a);
+   ui_card(mx(ox), my(oy), DLG_W, DLG_H, a);
    col(c, C_TXT, a);
-   m_label(&s_cmsg, ox + 30, oy + 26, c);
+   m_label(&s_cmsg, ox + 32, oy + 28, c);
    col(c, C_DIM, a);
-   m_label(&s_cnote, ox + 30, oy + 34 + s_cmsg.h, c);
+   m_label(&s_cnote, ox + 32, oy + 36 + s_cmsg.h, c);
    for (b = 0; b < 2; b++)
-   {
-      float bx = ox + 30 + b * (bw + 20);
-      const float *tint = b ? C_RED : (const float[3]){ 1, 1, 1 };
-      col(f, b ? (const float[3]){ 0.90f, 0.25f, 0.25f } : (const float[3]){ 1, 1, 1 },
-          (s_csel == b ? (b ? 0.38f : 0.22f) : 0.07f) * a);
-      m_rect(bx, by, bw, 46, 12, f, (s_csel == b ? 0.30f : 0.06f) * a);
-      col(c, b ? tint : C_TXT, a);
-      m_label(&s_cbtn[b], bx + (bw - s_cbtn[b].w) * 0.5f, by + (46 - s_cbtn[b].h) * 0.5f, c);
+   {  /* two glass pills; the answer that does something is tinted, never filled */
+      float bx = ox + 32 + b * (bw + 16);
+      if (s_csel == b) ui_focus(mx(bx), my(by), bw, 52, 26, a);
+      ui_rest(mx(bx), my(by), bw, 52, 26, a);
+      col(c, b ? C_RED : C_TXT, a);
+      m_label(&s_cbtn[b], bx + (bw - s_cbtn[b].w) * 0.5f, by + (52 - s_cbtn[b].h) * 0.5f, c);
    }
 }
 
@@ -1026,7 +1026,7 @@ void panel_init(void)
    label_set(&s_lt, g_font_sub, "\xE2\x80\xB9");   /* ‹ */
    label_set(&s_gt, g_font_sub, "\xE2\x80\xBA");   /* › */
    s_slide.x = SLIDE_OFF;
-   s_page = P_ROOT;
+   s_page = P_LANGUAGE;
    if (theme_active_index() > 0)
    {
       theme_color(TC_TEXT, C_TXT); theme_color(TC_DIM, C_DIM);
@@ -1048,7 +1048,9 @@ void panel_open(void)
    if (s_open) return;
    s_open = 1;
    if (s_slide.x > SLIDE_OFF - 20.0f) { s_slide.x = SLIDE_OFF; s_slide.v = 0; }
-   page_enter(P_ROOT, 0);
+   s_in_card = 0;
+   page_enter(s_page >= 1 && s_page < P_COUNT ? s_page : P_LANGUAGE, 0);
+   rows_snap();
    logf_("panel: open");
 }
 
@@ -1056,7 +1058,9 @@ void panel_open_profile(void)
 {
    if (s_open) return;
    panel_open();
-   page_enter(P_PROFILE, 1);
+   page_enter(P_PROFILE, 0);
+   rows_snap();
+   s_in_card = 1;
 }
 
 int panel_active(void) { return s_open || s_slide.x <= SLIDE_OFF - 20.0f; }
@@ -1068,7 +1072,7 @@ int panel_hint_set(void)
    if (!s_open) return HINTS_CAROUSEL;
    if (s_modal == M_OSK) return HINTS_OSK;
    if (s_modal == M_CONFIRM) return HINTS_CONFIRM;
-   if (s_page == P_ROOT) return HINTS_PANEL_ROOT;
+   if (!s_in_card) return HINTS_PANEL_ROOT;
    {
       /* the D-pad only changes values on pages with choice rows */
       int i, choice = 0, sel = 0;
@@ -1103,7 +1107,7 @@ void panel_update(const ui_nav_t *nav, double t, float dt)
    spring_step(&s_pa, 1.0f, 120, 16, dt);
    {
       /* keep the selected row inside the visible rows area */
-      float view = PH - ROWS_Y - 24.0f - (s_footer.tex ? s_footer.h + 16.0f : 0.0f);
+      float view = CARD_H - HEAD_H - 20.0f - (s_footer.tex ? s_footer.h + 16.0f : 0.0f);
       float y = s_sel >= 0 ? s_sel * ROW_H : 0.0f, target = s_scroll.x;
       if (s_sel >= 0)
       {
@@ -1113,6 +1117,7 @@ void panel_update(const ui_nav_t *nav, double t, float dt)
       if (target < 0) target = 0;
       spring_step(&s_hl, y, 220, 22, dt);
       spring_step(&s_scroll, target, 220, 22, dt);
+      spring_step(&s_rail, (s_page - 1) * RAIL_P, 260, 26, dt);
    }
 
    /* modal */
@@ -1145,66 +1150,85 @@ static float draw_swatch(int color, float xr, float y, float a)
 
 void panel_draw(double t)
 {
-   /* the section rises 0..34 px into place while it fades in */
-   float a = panel_amount(), px = PX0, py = PY0 + s_slide.x * 0.06f;
-   float ca, cx, top, bottom, c[4], f[4];
+   /* the section rises 0..34 px into place while it fades in; a modal or the file picker
+    * over it takes the stage: the section fades out under them */
+   const float m = clampf(s_mod.x, 0.0f, 1.0f), fp = filepicker_amount(), over = m > fp ? m : fp;
+   float a = panel_amount() * (1.0f - over), rise = s_slide.x * 0.06f;
+   float ca, cx, cy = CARD_Y + rise, top, bottom, c[4], f[4];
+   char buf[200], num[24];
    int i;
-   if (s_slide.x > SLIDE_OFF - 10.0f && a < 0.003f && s_modal_drawn == M_NONE) return;
+   if (s_slide.x > SLIDE_OFF - 10.0f && panel_amount() < 0.003f && s_modal_drawn == M_NONE) return;
    gl_use_2d();
-   if (a < 0.003f && s_modal_drawn != M_NONE) goto modal;   /* keyboard alone (panel_osk) */
+   if (a < 0.003f) goto modal;
    ca = a * clampf(s_pa.x, 0.0f, 1.0f);
-   cx = px + s_px.x;
-   col(f, (const float[3]){ 1, 1, 1 }, 0.08f * a);   /* hairline under the header */
-   draw_2d(0, px + PAD, py + ROWS_Y - 14, PW - 2 * PAD, 1, f, 0);
+   cx = CARD_X + s_px.x;
 
+   /* title and the rail of sections */
    label_set(&s_title, g_font_title, tr("panel.title"));
    col(c, C_TXT, a);
-   draw_label(&s_title, px + PAD, py + 26, c);
-   if (s_page != P_ROOT)
+   draw_label(&s_title, TITLE_X, TITLE_Y + rise, c);
+   if (s_in_card) ui_rest(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, RAIL_H * 0.5f, a);   /* you are here */
+   else ui_focus(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, RAIL_H * 0.5f, a);
+   for (i = 1; i < P_COUNT; i++)
    {
-      label_set(&s_ptitle, g_font_sub, tr(k_page_key[s_page]));
-      col(c, C_DIM, ca);
-      draw_label(&s_ptitle, cx + PAD, py + 76, c);
+      label_t *l = &s_rail_l[i];
+      label_set(l, g_font_sub, tr(k_page_key[i]));
+      col(c, C_TXT, a * (i == s_page ? 1.0f : 0.86f));
+      draw_label(l, RAIL_X + 20, RAIL_Y + rise + (i - 1) * RAIL_P + (RAIL_H - l->h) * 0.5f, c);
    }
 
-   /* footer note */
-   if (s_foot[0]) wlabel_set(&s_footer, g_font_small, s_foot, (int)(PW - 2 * PAD));
+   /* the card: a header that gives the section a face, then its rows */
+   ui_card(CARD_X, cy, CARD_W, CARD_H, a);
+   {
+      float hx = cx + PAD;
+      const char *title = tr(k_page_key[s_page]), *kick = tr("panel.title"), *cap = "";
+      if (s_page == P_PROFILE)
+      {
+         int played = stats_games_played();
+         ui_avatar_draw(cx + PAD, cy + 26, 72, ca);
+         hx += 72 + 22;
+         kick = tr("section.profile"); title = profiles_display_name(profiles_active());
+         snprintf(num, sizeof(num), "%d", played);
+         cap = trf(buf, sizeof(buf), played == 1 ? "dash.profile_games_one" : "dash.profile_games", "n", num, NULL);
+      }
+      ui_kicker(&s_kick, kick, hx, cy + 28, ca);
+      label_set(&s_ptitle, g_font_title, title);
+      col(c, C_TXT, ca);
+      draw_label(&s_ptitle, hx, cy + 44, c);
+      label_set(&s_cap, g_font_small, cap);
+      col(c, C_DIM, ca);
+      draw_label(&s_cap, hx, cy + 88, c);
+      col(f, (const float[3]){ 1, 1, 1 }, 0.08f * a);
+      draw_2d(0, CARD_X + PAD, cy + 124, CARD_W - 2 * PAD, 1, f, 0);
+   }
+
+   /* footer note, inside the card */
+   if (s_foot[0]) wlabel_set(&s_footer, g_font_small, s_foot, (int)(CARD_W - 2 * PAD - 12));
    else label_free(&s_footer);
-   bottom = py + PH - 24.0f - (s_footer.tex ? s_footer.h + 16.0f : 0.0f);
+   bottom = cy + CARD_H - 20.0f - (s_footer.tex ? s_footer.h + 16.0f : 0.0f);
    if (s_footer.tex)
    {
       col(c, C_DIM, ca);
-      draw_label(&s_footer, cx + PAD, py + PH - 24.0f - s_footer.h, c);
+      draw_label(&s_footer, cx + PAD + 6, cy + CARD_H - 20.0f - s_footer.h, c);
    }
 
-   /* rows, clipped to their area */
-   top = py + ROWS_Y;
-   {
-      glEnable(GL_SCISSOR_TEST);
-      gl_scissor(px, top, PW, bottom - top);
-   }
-   if (s_sel >= 0)
-   {
-      col(f, (const float[3]){ 1, 1, 1 }, 0.10f * ca);
-      draw_round_rect(cx + 16, top + s_hl.x - s_scroll.x + 3, PW - 32, ROW_H - 6, 12, f, 0.0f);
-   }
+   /* rows, clipped to their area (the ring needs 8 px around the pill) */
+   top = cy + HEAD_H;
+   glEnable(GL_SCISSOR_TEST);
+   gl_scissor(CARD_X + 2, top - 8, CARD_W - 4, bottom - top + 16);
+   if (s_sel >= 0 && s_in_card) ui_focus(cx + 14, top + s_hl.x - s_scroll.x + 2, CARD_W - 28, ROW_H - 4, (ROW_H - 4) * 0.5f, ca);
    for (i = 0; i < s_nrows; i++)
    {
       const row_t *r = &s_rows[i];
-      float y = top + i * ROW_H - s_scroll.x, xr = cx + PW - PAD, la = ca * (r->dim ? 0.4f : 1.0f);
+      float y = top + i * ROW_H - s_scroll.x, xr = cx + CARD_W - 14 - 20, la = ca * (r->dim ? 0.38f : 1.0f);
       label_set(&s_rl[i], g_font_sub, r->label);
       label_set(&s_rv[i], g_font_sub, r->value);
-      if (y + ROW_H < top || y > bottom) continue;
-      if (i + 1 < s_nrows)
-      {  /* row separator */
-         col(f, (const float[3]){ 1, 1, 1 }, 0.05f * ca);
-         draw_2d(0, cx + PAD, floorf(y + ROW_H), PW - 2 * PAD, 1, f, 0);
-      }
+      if (y + ROW_H < top - 8 || y > bottom + 8) continue;
       col(c, C_TXT, la);
-      draw_label(&s_rl[i], cx + PAD, y + (ROW_H - s_rl[i].h) * 0.5f, c);
+      draw_label(&s_rl[i], cx + 14 + 20, y + (ROW_H - s_rl[i].h) * 0.5f, c);
       if (r->type == R_CHOICE)
       {
-         col(c, C_TXT, la * (r->at_hi ? 0.25f : 0.8f));
+         col(c, C_DIM, la * (r->at_hi ? 0.35f : 1.0f));
          draw_label(&s_gt, xr - s_gt.w, y + (ROW_H - s_gt.h) * 0.5f, c);
          xr -= s_gt.w + 12;
          if (r->swatches)
@@ -1215,10 +1239,10 @@ void panel_draw(double t)
                float sx = xr - SW_D, sy = y + (ROW_H - SW_D) * 0.5f;
                if (k == r->swatch)
                {
-                  col(f, (const float[3]){ 1, 1, 1 }, 0.85f * la);
+                  col(f, (const float[3]){ 1, 1, 1 }, 0.90f * la);
                   draw_round_rect(sx - 3, sy - 3, SW_D + 6, SW_D + 6, SW_D * 0.5f + 3, f, 0.0f);
                }
-               profiles_color(k, f); f[3] = la * (k == r->swatch ? 1.0f : 0.55f);
+               profiles_color(k, f); f[3] = la * (k == r->swatch ? 1.0f : 0.70f);
                draw_round_rect(sx, sy, SW_D, SW_D, SW_D * 0.5f, f, 0.0f);
                xr -= SW_D + 10;
             }
@@ -1226,12 +1250,12 @@ void panel_draw(double t)
          }
          else
          {
-            col(c, C_TXT, la);
+            col(c, C_TXT, la * 0.92f);
             draw_label(&s_rv[i], xr - s_rv[i].w, y + (ROW_H - s_rv[i].h) * 0.5f, c);
             xr -= s_rv[i].w + 12;
             if (r->swatch >= 0) xr = draw_swatch(r->swatch, xr, y, la);
          }
-         col(c, C_TXT, la * (r->at_lo ? 0.25f : 0.8f));
+         col(c, C_DIM, la * (r->at_lo ? 0.35f : 1.0f));
          draw_label(&s_lt, xr - s_lt.w, y + (ROW_H - s_lt.h) * 0.5f, c);
       }
       else
@@ -1248,34 +1272,23 @@ void panel_draw(double t)
             draw_round_rect(xr - 12, y + ROW_H * 0.5f - 6, 12, 12, 6, f, 0.0f);
             xr -= 12 + 12;
          }
-         col(c, C_DIM, la);
+         col(c, C_TXT, la * 0.92f);
+         if (r->type == R_ACTION && !r->enter) col(c, C_DIM, la);
          draw_label(&s_rv[i], xr - s_rv[i].w, y + (ROW_H - s_rv[i].h) * 0.5f, c);
          if (r->swatch >= 0) draw_swatch(r->swatch, xr - s_rv[i].w - 12, y, la);
-         if (r->avatar)
-         {
-            GLuint at; int aw, ah;
-            if (ui_avatar(&at, &aw, &ah))
-            {
-               const float wh[4] = { 1, 1, 1, la }, ad = 30.0f;
-               draw_image(at, aw, ah, xr - s_rv[i].w - 12 - ad, y + (ROW_H - ad) * 0.5f, ad, ad, ad * 0.5f, wh);
-               gl_use_2d();
-            }
-         }
+         if (r->avatar) ui_avatar_draw(xr - s_rv[i].w - 12 - 30, y + (ROW_H - 30) * 0.5f, 30, la);
       }
    }
    glDisable(GL_SCISSOR_TEST);
 
-   /* modal over the panel */
+   /* modal: the keyboard or a question, alone on the scrim */
 modal:
    if (s_modal_drawn != M_NONE)
    {
-      float m = clampf(s_mod.x, 0.0f, 1.0f);
-      const float shade[4] = { 0, 0, 0, 0.35f * m };
-      draw_2d(0, 0, 0, W, H, shade, 0);
-      s_mk = 0.92f + 0.08f * s_mod.x;
+      if (panel_amount() < 0.5f) ui_scrim(m * (1.0f - panel_amount()));   /* keyboard alone over the home */
+      s_mrise = (1.0f - m) * 16.0f;
       if (s_modal_drawn == M_OSK) osk_draw(t, m);
       else confirm_draw(m);
-      s_mk = 1.0f;
    }
 }
 
