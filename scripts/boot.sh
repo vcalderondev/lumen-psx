@@ -11,8 +11,56 @@
 #     the stock Sony menu so it always stays usable; the power button works there.
 LUMEN_HOME="/media/lumen"
 LOG="${LUMEN_HOME}/logs"
+# POWER. Sony's power manager unmounts the stick before its suspend to RAM, and at the
+# resume the kernel disconnects the stick and finds it again a few seconds later: whatever
+# has to live through a suspend must not run from the stick or hold a file open on it
+# (a shell reading its script from it, a binary paged in from it, an open log). So this
+# script, run.sh, power.sh and lumen-buttons run from copies in RAM (/tmp/lumen-run) and
+# log there; logsync.sh appends those logs to the stick. Verified on the console with a
+# FAT32 stick (three suspend / resume cycles, 2026-11-15).
+# <home>/debug/no-power-suspend turns it off: everything runs from the stick as before
+# 0.14.1 and POWER is ignored.
+RUN=/tmp/lumen-run
+if [ ! -f "${LUMEN_HOME}/debug/no-power-suspend" ] && [ "${LUMEN_RAM}" != 1 ]; then
+  rm -rf "${RUN}"; mkdir -p "${RUN}"
+  if cp "${LUMEN_HOME}/boot.sh" "${LUMEN_HOME}/run.sh" "${LUMEN_HOME}/power.sh" "${LUMEN_HOME}/lumen-buttons" "${RUN}/" 2>/dev/null &&
+     chmod 755 "${RUN}/lumen-buttons"; then
+    LUMEN_RAM=1; export LUMEN_RAM
+    cd /
+    exec sh "${RUN}/boot.sh" "$@"
+  fi
+  rm -rf "${RUN}"   # no room or no files: the usual way, POWER stays ignored
+fi
 mkdir -p "${LOG}"
-exec >> "${LOG}/boot.log" 2>&1
+: > /tmp/lumen-usb-writers.pids   # processes that write to the stick (power.sh pauses them)
+if [ "${LUMEN_RAM}" = 1 ]; then
+  SCRIPTS="${RUN}"; BUTTONS_LOG="${RUN}/buttons.log"
+  exec >> "${RUN}/boot.log" 2>&1
+  # RAM logs -> the stick every 2 s, one open-append-close per file. The offset of a log
+  # only moves after its new part was appended, so a pass cut short (stick gone, this
+  # process paused by power.sh) is simply taken again
+  cat > "${RUN}/logsync.sh" <<'LOGSYNC'
+#!/bin/sh
+L=/media/lumen/logs
+while :; do
+  for n in boot buttons suspend; do
+    f=/tmp/lumen-run/$n.log
+    [ -f "$f" ] || continue
+    off=$(cat "$f.off" 2>/dev/null || echo 0); size=$(wc -c < "$f")
+    [ "$size" -gt "$off" ] || continue
+    grep -q ' /media ' /proc/mounts || continue
+    if tail -c +$((off + 1)) "$f" | head -c $((size - off)) >> "$L/$n.log" 2>/dev/null; then echo "$size" > "$f.off"; fi
+  done
+  [ "$1" = once ] && exit 0
+  sleep 2
+done
+LOGSYNC
+  sh "${RUN}/logsync.sh" &
+  echo $! >> /tmp/lumen-usb-writers.pids
+else
+  SCRIPTS="${LUMEN_HOME}"; BUTTONS_LOG="${LOG}/buttons.log"
+  exec >> "${LOG}/boot.log" 2>&1
+fi
 echo "=== lumen boot $(date) ($(cut -d' ' -f1 /proc/uptime) s since power-on)"
 # CPU / GPU frequency policy, for the record (read only): governor, current and
 # available frequencies of cpu0, and of every devfreq device (the GPU's, if any)
@@ -257,22 +305,26 @@ rm -f /data/power/prepare_suspend /data/power/apps_okay
 BUTTONS_PID=""
 # POWER (Sony's suspend): power.sh, run by lumen-buttons, pauses the processes that use
 # the USB stick; it runs from RAM and the stick's writers are recorded for it
-cp "${LUMEN_HOME}/power.sh" /tmp/lumen-power.sh 2>/dev/null
-: > /tmp/lumen-usb-writers.pids
-if [ -x "${LUMEN_HOME}/lumen-buttons" ] || chmod +x "${LUMEN_HOME}/lumen-buttons" 2>/dev/null; then
-  "${LUMEN_HOME}/lumen-buttons" --log "${LOG}/buttons.log" > /tmp/lumen-buttons.out 2>&1 &
+cp "${SCRIPTS}/power.sh" /tmp/lumen-power.sh 2>/dev/null
+if [ -x "${SCRIPTS}/lumen-buttons" ] || chmod +x "${SCRIPTS}/lumen-buttons" 2>/dev/null; then
+  "${SCRIPTS}/lumen-buttons" --log "${BUTTONS_LOG}" > /tmp/lumen-buttons.out 2>&1 &
   BUTTONS_PID=$!
   # up to 5 s: the first start from a cold FAT32 stick took longer than 1 s (POWER then
   # stayed disabled for the whole session)
   i=0; while [ $i -lt 50 ] && ! grep -q ready /tmp/lumen-buttons.out 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
 fi
+# Power LED: Sony's start-up leaves green and red both on (orange, its "standby" colour) and
+# only its power manager turns the red one off. lumen-buttons drives the green one alone,
+# so without this the LED stayed orange for the whole Lumen session.
+echo 0 > /sys/class/leds/red/brightness 2>/dev/null
 if [ -n "${BUTTONS_PID}" ] && grep -q ready /tmp/lumen-buttons.out 2>/dev/null; then
-  # POWER: Sony's suspend works but the resume does not come back yet (under work); it is
-  # only enabled with <home>/debug/power-suspend (test switch), otherwise POWER is ignored
-  if [ -f "${LUMEN_HOME}/debug/power-suspend" ]; then
+  # POWER: Sony's suspend, when the session runs from RAM (above); otherwise ignored
+  if [ "${LUMEN_RAM}" = 1 ]; then
     echo 1 > /data/power/disable      # power manager suspends after our apps_okay
+    echo "POWER: suspend enabled (session in RAM: ${RUN})"
   else
     echo 2 > /data/power/disable      # ignored: unplug to turn off
+    echo "POWER: ignored (session not in RAM: debug/no-power-suspend, or the copy to RAM failed)"
   fi
   echo "buttons daemon running (${BUTTONS_PID})"
 else
@@ -312,10 +364,16 @@ if [ -f "${PW_MARK}" ]; then
       sleep 1; i=$((i + 1)); done ) &
 fi
 echo "starting the frontend: $(cut -d' ' -f1 /proc/uptime) s since power-on"
-sh "${LUMEN_HOME}/run.sh"
+LUMEN_HOME="${LUMEN_HOME}" sh "${SCRIPTS}/run.sh"
 SESSION_RC=$?
 echo "session ended: ${SESSION_RC}"
 sync
+if [ -f /tmp/lumen-resume-failed ]; then
+  # the stick did not come back after a suspend: nothing of Lumen can start (it lives on
+  # the stick). A restart finds it again, or ends in the stock menu when it is gone
+  echo "resume failed (no stick): restarting the console"
+  sync; reboot; sleep 30
+fi
 if [ "${SESSION_RC}" = 12 ]; then   # Display settings changed: start over with the new setup
   echo "restart requested by the frontend"
   [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
