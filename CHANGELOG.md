@@ -3,6 +3,29 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.14.1] - 2026-11-15
+
+The POWER button works: it suspends the console and brings the session back.
+
+### Fixed
+- POWER suspends the console (red LED) and POWER again resumes the Lumen session; it was
+  ignored since 0.3.0 because the session did not come back. Cause: Sony's power manager
+  unmounts the USB stick before it suspends, and at the resume the kernel disconnects the
+  stick and finds it again a few seconds later, while Lumen's session scripts and its
+  button daemon ran from the stick and kept logs open on it.
+  Now `boot.sh`, `run.sh`, `power.sh` and `lumen-buttons` run from copies in RAM
+  (`/tmp/lumen-run`) and log there (`logsync.sh` appends the logs to the stick);
+  `power.sh suspend` closes the game (saved) and the frontend, writes the logs out and
+  unmounts the stick; `power.sh resume` waits up to 20 s for the stick (sda1 / sdb1, label
+  SONY*), mounts it and only then starts the compositor and the frontend. If the stick
+  does not come back the console restarts instead of staying on a black screen.
+  Verified on the console with a FAT32 stick (three suspend / resume cycles); not tested
+  with an exFAT stick. An empty file `lumen/debug/no-power-suspend` on the stick turns it
+  off (POWER ignored, everything runs from the stick as before).
+  `lumen/logs/suspend.log` records every suspend and resume step.
+- The power LED no longer stays orange during a Lumen session: Sony's start-up leaves the
+  red LED on next to the green one and nothing turned it off; `boot.sh` now does.
+
 ## [0.14.0] - 2026-11-15
 
 Menus that speak the dashboard's language, and a generic launch animation for systems
