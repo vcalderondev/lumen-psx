@@ -233,15 +233,21 @@ static void minutes_text(char *buf, size_t n, int m)
    trf(buf, n, "ss.minutes", "n", v, NULL);
 }
 
-/* graphics.<system id>: 1 = enhanced, 0 = original (default and any other value) */
+/* graphics.<system id>: 0 = original (default and any other value), 1 = enhanced,
+ * 2 = native (internal resolution of the display; only systems that declare it) */
 static void gfx_key(char *buf, size_t n, int plat) { snprintf(buf, n, "graphics.%s", g_plat[plat].id); }
 
-static int gfx_enhanced(int plat)
+static int gfx_level(int plat)
 {
    char k[48];
+   const char *v;
    gfx_key(k, sizeof(k), plat);
-   return !strcmp(settings_get(k, "original"), "enhanced");
+   v = settings_get(k, "original");
+   if (!strcmp(v, "native")) return g_plat[plat].has_native ? 2 : 1;
+   return !strcmp(v, "enhanced");
 }
+static const char *const gfx_names[3] = { "original", "enhanced", "native" };
+static const char *const gfx_labels[3] = { "gfx.original", "gfx.enhanced", "gfx.native" };
 
 static void page_build(void)
 {
@@ -361,11 +367,11 @@ static void page_build(void)
    case P_GRAPHICS:
       for (i = 0; i < g_nplat; i++)
       {
-         int enh;
+         int lv;
          if (!g_plat[i].has_gfx) continue;
-         enh = gfx_enhanced(i);
-         if ((r = row_add(R_CHOICE, ID_GFX + i, g_plat[i].name, tr(enh ? "gfx.enhanced" : "gfx.original"))))
-         { r->at_lo = !enh; r->at_hi = enh; }
+         lv = gfx_level(i);
+         if ((r = row_add(R_CHOICE, ID_GFX + i, g_plat[i].name, tr(gfx_labels[lv]))))
+         { r->at_lo = lv == 0; r->at_hi = lv == (g_plat[i].has_native ? 2 : 1); }
       }
       snprintf(s_foot, sizeof(s_foot), "%s", tr(s_nrows ? "gfx.note" : "gfx.none"));
       break;
@@ -632,8 +638,9 @@ static void row_change(const row_t *r, int dir)
       if (r->id >= ID_GFX && r->id < ID_GFX + g_nplat)
       {
          char k[48];
-         gfx_key(k, sizeof(k), r->id - ID_GFX);
-         settings_set(k, dir > 0 ? "enhanced" : "original");
+         int p = r->id - ID_GFX, lv = gfx_level(p) + (dir > 0 ? 1 : -1), top = g_plat[p].has_native ? 2 : 1;
+         gfx_key(k, sizeof(k), p);
+         settings_set(k, gfx_names[lv < 0 ? 0 : (lv > top ? top : lv)]);
       }
       break;
    }
@@ -658,7 +665,15 @@ static void row_cycle(const row_t *r)
    case ID_SS_LENGTH: settings_set_int("demo_seconds", k_seconds[0]); break;
    case ID_DSP_CRT:   settings_set("crt", crt_id(CRT_OFF)); break;
    case ID_SND_VOLUME: settings_set_int("music_volume", 0); ui_sound_changed(); break;
-   default: row_change(r, -1); break;   /* Sí/No, Original/Mejorado */
+   default:
+      if (r->id >= ID_GFX && r->id < ID_GFX + g_nplat)
+      {  /* Original / Mejorado (/ Nativa): wrap to the first */
+         char k[48];
+         gfx_key(k, sizeof(k), r->id - ID_GFX);
+         settings_set(k, gfx_names[0]);
+      }
+      else row_change(r, -1);   /* Sí/No */
+      break;
    }
 }
 
