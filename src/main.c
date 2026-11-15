@@ -917,7 +917,7 @@ static void build_platform_index(void)
 /* GL resources                                                              */
 static GLuint g_prog_box, g_prog_2d, g_vbo_quad, g_vao_quad;
 static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam, u_phase, u_refl, u_aux, u_aux2, u_aux3;
-static GLint  u2_mvp, u2_tex, u2_color, u2_mode, u2_rect, u2_aux0, u2_aux1, u2_aux2;
+static GLint  u2_mvp, u2_tex, u2_color, u2_mode, u2_rect, u2_aux0, u2_aux1, u2_aux2, u2_uvw;
 static GLuint g_white;
 TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
 
@@ -1059,8 +1059,8 @@ static const char *FS_BOX =
 static const char *VS_2D =
    "#version 300 es\n"
    "layout(location=0) in vec3 pos; layout(location=1) in vec2 uv;\n"
-   "uniform mat4 mvp; out vec2 v_uv;\n"
-   "void main(){ v_uv=uv; gl_Position=mvp*vec4(pos,1.0); }\n";
+   "uniform mat4 mvp; uniform vec4 uvw; out vec2 v_uv;\n"   /* uvw: the part of the shape this quad is (offset, size) */
+   "void main(){ v_uv=uvw.xy+uv*uvw.zw; gl_Position=mvp*vec4(pos,1.0); }\n";
 
 static const char *FS_2D =
    "#version 300 es\n"
@@ -1215,11 +1215,15 @@ static void gl_setup(void)
    u2_aux0 = glGetUniformLocation(g_prog_2d, "aux0");
    u2_aux1 = glGetUniformLocation(g_prog_2d, "aux1");
    u2_aux2 = glGetUniformLocation(g_prog_2d, "aux2");
+   u2_uvw = glGetUniformLocation(g_prog_2d, "uvw");
+   glUseProgram(g_prog_2d);
+   glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
    g_prog_tex = link_prog(VS_2D, FS_TEX);
    ut_mvp = glGetUniformLocation(g_prog_tex, "mvp");
    ut_color = glGetUniformLocation(g_prog_tex, "color");
    glUseProgram(g_prog_tex);
    glUniform1i(glGetUniformLocation(g_prog_tex, "tex"), 0);
+   glUniform4f(glGetUniformLocation(g_prog_tex, "uvw"), 0.0f, 0.0f, 1.0f, 1.0f);
    g_prog_mix = link_prog(VS_MIX, FS_MIX);
    um_mvp = glGetUniformLocation(g_prog_mix, "mvp");
    um_ma = glGetUniformLocation(g_prog_mix, "ma");
@@ -2079,8 +2083,26 @@ static void make_tile_shadow(void)
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
+/* one rectangle (px, py, pw, ph inside the w x h tile) of a tile, same pixels as the
+ * whole tile would give there */
+static void tile_part(GLuint tex, float x, float y, float w, float h, float px, float py, float pw, float ph,
+                      const float rgba[4], int opaque)
+{
+   glUniform4f(u2_uvw, px / w, py / h, pw / w, ph / h);
+   if (opaque) glDisable(GL_BLEND);
+   draw_2d(tex, x + px, y + py, pw, ph, rgba, 6);
+   if (opaque) glEnable(GL_BLEND);
+}
+
 /* textured rounded tile (mode 6), the texture (tw x th) cover-fitted into w x h;
- * sheen < -1 = none */
+ * sheen < -1 = none.
+ * A fully opaque tile is drawn in parts: its inside (everything but the rounded sides
+ * and a 1 px rim) without blending, then the four edge strips blended as before. The
+ * GPU is a tile-based deferred renderer: pixels under an unblended quad are never shaded,
+ * so the full-screen background (the most expensive pass of the frame) and the focused
+ * tile's shadow are skipped under the covers; a blended tile made it shade both.
+ * Setting tile_split=0 draws them whole again (to compare frame rates on the console). */
+static int g_tile_split = -1;
 static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, float h, float radius,
                       float sheen, float light, const float rgba[4])
 {
@@ -2094,6 +2116,18 @@ static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, flo
    glUniform4f(u2_rect, w * g_ui_scale, h * g_ui_scale, radius * g_ui_scale, 0.0f);
    glUniform4f(u2_aux0, u0, v0, us, vs);
    glUniform4f(u2_aux1, sheen, light, 0.0f, 0.0f);
+   if (g_tile_split < 0) g_tile_split = settings_get_int("tile_split", 1, 0, 1);
+   if (g_tile_split && rgba[3] >= 0.999f && w > 2.0f * radius + 12.0f && h > 12.0f)
+   {
+      const float ix = radius + 1.0f, iy = 1.0f;
+      tile_part(tex, x, y, w, h, ix, iy, w - 2 * ix, h - 2 * iy, rgba, 1);
+      tile_part(tex, x, y, w, h, 0, 0, ix, h, rgba, 0);
+      tile_part(tex, x, y, w, h, w - ix, 0, ix, h, rgba, 0);
+      tile_part(tex, x, y, w, h, ix, 0, w - 2 * ix, iy, rgba, 0);
+      tile_part(tex, x, y, w, h, ix, h - iy, w - 2 * ix, iy, rgba, 0);
+      glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+      return;
+   }
    draw_2d(tex, x, y, w, h, rgba, 6);
 }
 
