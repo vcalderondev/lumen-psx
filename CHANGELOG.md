@@ -3,7 +3,9 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.9.0] - 2026-11-15
+
+The real hardware in every launch: 3D models of each console, cartridge and case.
 
 ### Added
 - Launch animations for every system, with the real hardware modelled in 3D (Blender, by
@@ -17,7 +19,7 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
     the PS1 jewel case, DVD and UMD keep cases, the UMD.
   - Each cartridge goes in the way it really does, as deep as it really does: N64 and Super
     Famicom stand in their top slot, the Mega Drive cartridge in the disc's slot, the NES
-    cartridge slides through the door and is pushed down, the HuCard lies in the PC Engine's
+    cartridge slides connector first through the door and is pushed down, the HuCard lies in the PC Engine's
     tray, the Game Boy and GBA take it at the back and turn round to light their screen.
 - A click the moment the cartridge seats (synthesised; a firm latch on top loaders, a latch
   with a spring on front loaders, a small snap on handhelds), even with the music off.
