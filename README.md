@@ -213,7 +213,8 @@ Screensaver page starts the scene at once.
 | Input | Action |
 |---|---|
 | D-pad left/right (hold to scroll) | browse |
-| L1 / R1 (or D-pad up/down) | previous / next platform |
+| L2 / R2 | previous / next platform |
+| D-pad up / down | move the focus: games, system tabs (left / right change the system), profile (Cross opens its settings) |
 | Cross, Start | play |
 | Triangle, or Select tapped alone | open the settings panel |
 | Select, then Start | leave Lumen (opens the stock Sony menu) |

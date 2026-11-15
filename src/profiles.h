@@ -1,5 +1,5 @@
 /* Profiles: each one has its own memory cards and save states (docs/settings-design.md 7).
- * <home>/profiles/<id>/profile.ini (name, color, created) + saves/ + states/.
+ * <home>/profiles/<id>/profile.ini (name, color, created) + saves/ + states/ + avatar.png (optional).
  * "main" is built in, always exists and keeps the save folders RetroArch already uses. */
 #ifndef LUMEN_PROFILES_H
 #define LUMEN_PROFILES_H
@@ -8,7 +8,7 @@
 #define MAX_PROFILES 8
 #define PROFILE_COLORS 8
 
-typedef struct { char id[16]; char name[52]; int color; long created; } profile_t;
+typedef struct { char id[16]; char name[52]; int color; long created; int avatar; } profile_t;   /* avatar: has avatar.png */
 
 int              profiles_load(const char *home);        /* scans <home>/profiles, adds "main" first */
 int              profiles_count(void);
@@ -25,5 +25,13 @@ int              profiles_set_color(const char *id, int color);       /* 0 / -3 
 int              profiles_delete(const char *id);        /* 0 / -1 main / -3 I/O */
 int              profiles_name_taken(const char *name, const char *except_id);  /* case-insensitive */
 void             profiles_color(int idx, float rgb[3]);
+
+/* Avatar: <home>/profiles/<id>/avatar.png, a square of at most AVATAR_PX (else initials). */
+#define AVATAR_PX 256
+int              profiles_set_avatar(const char *id, const char *image);
+                 /* centre square of any image file, scaled down, written as avatar.png;
+                    0 / -3. Slow (decodes the file) and thread-safe: meant for a worker */
+int              profiles_clear_avatar(const char *id);  /* back to the initials; 0 / -3 */
+void             profiles_avatar_refresh(const char *id);  /* render thread: re-read profile_t.avatar */
 
 #endif
