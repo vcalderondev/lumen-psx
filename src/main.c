@@ -55,7 +55,7 @@
 #include "theme.h"
 #include "crt.h"
 
-#define TEX_WINDOW 6       /* covers kept on the GPU around the selection */
+#define COVER_CACHE_BYTES (32.0 * 1024 * 1024)   /* covers kept on the GPU */
 
 /* ------------------------------------------------------------------------ */
 /* logging                                                                   */
@@ -4349,31 +4349,33 @@ int main(int argc, char **argv)
          }
          if (n)
          {
-            int placed = 0;
-            for (k = 0; k <= TEX_WINDOW && !placed; k++)
+            /* what is on screen first (the selection, the row to its right, the tile
+             * leaving on the left), then the page R1 would show and the one L1 would:
+             * a page turn finds its covers decoded instead of filling in one by one */
+            static const signed char order[] = { 0, 1, -1, 2, 3, 4, 5, 6, 7, -2,
+                                                 8, 9, 10, 11, 12, 13, -3, -4, -5, -6, -7, -8 };
+            int placed = 0, oldest = -1;
+            double bytes = 0.0;
+            for (k = 0; k < (int)sizeof(order); k++)
             {
-               int cand[2], c;
-               cand[0] = (sel + k) % n; cand[1] = (sel - k + n) % n;
-               for (c = 0; c < 2 && !placed; c++)
-               {
-                  int gi = pl->first + cand[c];
-                  game_t *g = &g_games[gi];
-                  if (g->tex_state) continue;
-                  if (g->has_cover) { if (!cv_busy) { g->tex_state = 2; cover_request(gi, g->cover); } placed = 1; }
-                  else { double ps = now_s(); game_placeholder(g); placed = 1; perf_stall("placeholder", ps); }
-               }
+               int gi = pl->first + ((sel + order[k]) % n + n) % n;
+               game_t *g = &g_games[gi];
+               g->tex_used = t;
+               if (placed || g->tex_state) continue;
+               if (g->has_cover) { if (!cv_busy) { g->tex_state = 2; cover_request(gi, g->cover); } placed = 1; }
+               else { double ps = now_s(); game_placeholder(g); placed = 1; perf_stall("placeholder", ps); }
             }
+            /* covers away from the selection (and other systems' rows) stay on the GPU,
+             * so coming back does not decode them again, up to COVER_CACHE_BYTES: past
+             * that the one that has been away longest goes, one a frame */
             for (k = 0; k < g_ngames; k++)
             {
                game_t *g = &g_games[k];
-               int d = 9999;
-               if (k >= pl->first && k < pl->first + n)   /* games of the row on screen */
-               {
-                  int o = abs((k - pl->first) - sel);
-                  d = o < n - o ? o : n - o;
-               }
-               if ((g->tex_state == 1 || g->tex_state == -1) && d > TEX_WINDOW + 3) game_free_tex(g);
+               if (g->tex_state != 1 && g->tex_state != -1) continue;
+               bytes += (g->tex_state == 1 ? (double)g->tex_w * g->tex_h : (double)SP(256) * SP(256)) * 5.34;   /* RGBA with its mipmaps */
+               if (g->tex_used < t && (oldest < 0 || g->tex_used < g_games[oldest].tex_used)) oldest = k;
             }
+            if (bytes > COVER_CACHE_BYTES && oldest >= 0) game_free_tex(&g_games[oldest]);
          }
       }
 
