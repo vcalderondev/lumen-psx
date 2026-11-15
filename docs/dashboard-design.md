@@ -108,4 +108,7 @@ the cover colours (computed when the cover is decoded, worker thread):
   `<home>/profiles/<profile>/playlog.tsv` after every normal session; src/stats.c
   aggregates it per profile (time played; "last played" only with a synced clock).
 - Avatar: `<home>/profiles/<id>/avatar.png`, else initials on the profile colour.
+  Set from Settings > Profile > Avatar: the file picker (`src/filepicker.h`, reusable for
+  any other "choose a file" need) returns an image from the stick and
+  `profiles_set_avatar()` writes its centre square at 256 px.
 - MSAA default 2x (`msaa` setting, 0..4; the log line "MSAA samples" shows what the driver gave).
