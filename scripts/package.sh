@@ -44,6 +44,7 @@ chmod 755 "$L/lumen" "$L/lumen-buttons"
 for f in dist/*; do [ -f "$f" ] && cp "$f" "$L/"; done
 cp dist/systems/* "$L/systems/"
 cp dist/lang/*.lang "$L/lang/"
+mkdir -p "$L/themes"; cp -R dist/themes/. "$L/themes/"   # example themes (docs/themes.md)
 cp assets/splash.png assets/splash-1080.png "$L/assets/"
 for d in icons glyphs fonts; do mkdir -p "$L/assets/$d"; cp assets/$d/* "$L/assets/$d/"; done
 mkdir -p "$L/assets/brand"; cp assets/brand/*.png "$L/assets/brand/"   # the SVGs stay in the repo

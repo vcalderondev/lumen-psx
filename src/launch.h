@@ -8,6 +8,8 @@ typedef struct {
    int demo, demo_seconds;
    const char *graphics, *opt_core_name;   /* NULL until step 4 */
    const char *opt_list, *ra_list;         /* "k=v, k=v" from the declaration, or NULL */
+   int resume;                             /* 1: load the Save and exit state (run.sh --entryslot) */
+   int app;                                /* 1: a native homebrew app (content = executable) */
 } launch_req_t;
 
 int launch_write(const char *path, const launch_req_t *r);   /* 0 ok, -1 invalid, -2 I/O */
