@@ -4317,10 +4317,16 @@ int main(int argc, char **argv)
                      const float yc = (cs.slot_y + (nes ? 4.5f - 9.0f * press : 0.0f)) * k;
                      const float ins0 = 0.25f / (0.25f + seat * L), flap = clampf((ins - ins0) / 0.12f, 0, 1) * (1.0f - shut);
                      const float cy = 0.10f - (1.0f - con) * 1.4f, cz = -0.80f;
+                     /* lying label up. The NES Game Pak goes in connector end first, so it
+                      * turns round and tips forward (rot_x(+90) after rot_y(180)); the
+                      * HuCard's contacts are at its top end, so it just tips back */
+                     const float tilt = nes ? tc + PI / 2 : tc - PI / 2, turn = nes ? PI : 0.0f;
+                     const float ss = lerpf(g->sc.x, sc, align);
                      mat4 cm = m4_mul(m4_translate(0, cy, cz), m4_rot_x(tc));
-                     tgt = m4_mul(cm, m4_mul(m4_translate(cs.slot_x * k, yc, zc), m4_mul(m4_rot_x(-PI / 2), m4_scale(sc, sc, sc))));
+                     tgt = m4_mul(cm, m4_mul(m4_translate(cs.slot_x * k, yc, zc),
+                           m4_mul(m4_rot_x(tilt - tc), m4_mul(m4_rot_y(turn), m4_scale(sc, sc, sc)))));
                      base = m4_mul(m4_translate(lerpf(g->x.x, tgt.m[12], align), lerpf(bob + ty, tgt.m[13], align), lerpf(g->z.x, tgt.m[14], align)),
-                            m4_mul(m4_rot_y(ry0), m4_mul(m4_rot_x((tc - PI / 2) * align), m4_scale(lerpf(g->sc.x, sc, align), lerpf(g->sc.x, sc, align), lerpf(g->sc.x, sc, align)))));
+                            m4_mul(m4_rot_x(tilt * align), m4_mul(m4_rot_y(ry0 + turn * align), m4_scale(ss, ss, ss))));
                      if (con > 0.0f) draw_frontcon(gp, &cs, m4_mul(cm, m4_scale(k, k, k)), sw_mm, sh_mm, tl_mm, flap, led);
                   }
                   else if (gp->slot == SLOT_HANDHELD)
