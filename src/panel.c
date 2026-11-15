@@ -16,6 +16,7 @@
 #include "profiles.h"
 #include "version.h"
 #include "theme.h"
+#include "crt.h"
 
 /* ------------------------------------------------------------------------ */
 /* geometry and colours                                                      */
@@ -70,7 +71,7 @@ enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
        ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500,
-       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_INFO = 900 };
+       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_DSP_CRT, ID_INFO = 900 };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
  * next boot (settings display / scanout). The compositor is not a choice: boot.sh runs
@@ -335,6 +336,12 @@ static void page_build(void)
          { r->at_lo = ti <= 0; r->at_hi = ti >= theme_count() - 1; if (theme_count() < 2) { r->enabled = 0; r->dim = 1; r->why = "display.no_themes"; } }
          if ((r = row_add(R_ACTION, ID_DSP_THEME_APPLY, tr("display.theme_apply"), NULL)) && ti == theme_active_index())
          { r->enabled = 0; r->dim = 1; r->why = "display.theme_in_use"; }
+      }
+      {  /* CRT filter: the dashboard changes at once, games from their next launch */
+         static const char *const k_crt_key[CRT_LEVELS] = { "value.off", "display.crt_soft", "display.crt_strong" };
+         int cl = crt_level();
+         if ((r = row_add(R_CHOICE, ID_DSP_CRT, tr("display.crt"), tr(k_crt_key[cl]))))
+         { r->at_lo = cl == CRT_OFF; r->at_hi = cl == CRT_LEVELS - 1; }
       }
       snprintf(s_foot, sizeof(s_foot), "%s", tr("display.note"));
       break;
@@ -609,6 +616,10 @@ static void row_change(const row_t *r, int dir)
    case ID_DSP_SCANOUT:
       settings_set_int("scanout", dir > 0);
       break;
+   case ID_DSP_CRT:
+      i = crt_level() + dir;
+      if (i >= CRT_OFF && i < CRT_LEVELS) { settings_set("crt", crt_id(i)); logf_("panel: crt %s", crt_id(i)); }
+      break;
    case ID_DSP_THEME:
       i = theme_setting_index() + dir;
       if (i >= 0 && i < theme_count()) settings_set("theme", theme_id(i));
@@ -645,6 +656,7 @@ static void row_cycle(const row_t *r)
    case ID_PROFILE_COLOR: s_pcolor = 0; break;
    case ID_SS_AFTER:  settings_set_int("screensaver_minutes", k_minutes[0]); break;
    case ID_SS_LENGTH: settings_set_int("demo_seconds", k_seconds[0]); break;
+   case ID_DSP_CRT:   settings_set("crt", crt_id(CRT_OFF)); break;
    case ID_SND_VOLUME: settings_set_int("music_volume", 0); ui_sound_changed(); break;
    default: row_change(r, -1); break;   /* Sí/No, Original/Mejorado */
    }
