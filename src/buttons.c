@@ -11,8 +11,13 @@
  * every process on the USB stick: a task waiting on the exFAT/FUSE stick cannot be
  * frozen, the suspend would hang); when <power>/resume_count changes (the console woke
  * up) it runs power.sh resume.
- * RESET quits a running RetroArch, which returns the session to Lumen.
- * OPEN is logged (reserved for disc swapping).
+ * RESET restarts a running game (RetroArch), quits a homebrew app, or restarts the dashboard.
+ * OPEN in a game pauses it and asks (lumen --dialog): continue, change disc, save and exit,
+ * exit; in a homebrew app it quits the app.
+ *
+ * Power LED: green pulses (breathes) while the Lumen dashboard is on screen, solid green
+ * in a game ("powered by LPSX"); settings.ini led=pulse|solid. A gpio LED without
+ * brightness levels (max_brightness 1) gives a long-on / short-off beat instead.
  *
  * Usage: lumen-buttons [--log file] [--power-dir /data/power]
  *
@@ -23,6 +28,7 @@
  * button is pressed. Exit: 0 <pid> ended by itself, 1 input, 2 timeout, 3 error.
  */
 #include <dirent.h>
+#include <math.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -392,6 +398,83 @@ static int read_int_file(const char *path, int def)
    if (f) { if (fscanf(f, "%d", &v) != 1) v = def; fclose(f); }
    return v;
 }
+/* ---- power LED (/sys/class/leds/green; red stays as Sony / power.sh leave it) */
+#define LED_DIR "/sys/class/leds/green"
+static int    g_led_max = -1;       /* max_brightness, 0 = no LED */
+static int    g_led_last = -1;      /* last value written */
+static int    g_led_pulse_on = 1;   /* settings led= */
+static int    g_led_dash;           /* the dashboard is on screen (lumen without retroarch) */
+static double g_led_checked = -10, g_led_cfg_t = -100;
+
+static void led_write(int v)
+{
+   int f;
+   char b[16];
+   if (v == g_led_last || g_led_max <= 0) return;
+   if ((f = open(LED_DIR "/brightness", O_WRONLY)) < 0) return;
+   snprintf(b, sizeof(b), "%d", v);
+   if (write(f, b, strlen(b)) > 0) g_led_last = v;
+   close(f);
+}
+
+static void led_init(void)
+{
+   long m = read_long(LED_DIR "/max_brightness");
+   g_led_max = m > 0 ? (int)m : 0;
+   logf_("led: green max_brightness %d (%s)", g_led_max, g_led_max > 1 ? "breathing" : (g_led_max ? "beat" : "none"));
+}
+
+static void led_read_setting(void)
+{
+   char path[300], line[128];
+   FILE *f;
+   snprintf(path, sizeof(path), "%s/settings.ini", g_home);
+   g_led_pulse_on = 1;
+   if (!(f = fopen(path, "r"))) return;
+   while (fgets(line, sizeof(line), f))
+      if (!strncmp(line, "led=", 4)) g_led_pulse_on = strncmp(line + 4, "solid", 5) != 0;
+   fclose(f);
+}
+
+/* called every loop turn; returns the poll timeout to use next (ms) */
+static int led_tick(int paused)
+{
+   double t = log_clock();
+   if (g_led_max <= 0 || paused) { g_led_last = -1; return 150; }   /* suspend: power.sh owns it */
+   if (t - g_led_cfg_t > 5.0) { g_led_cfg_t = t; led_read_setting(); }
+   if (t - g_led_checked > 1.0)
+   {
+      g_led_checked = t;
+      g_led_dash = find_proc("lumen") && !find_proc("retroarch") && !exists("/tmp/lumen-app.pid");
+   }
+   if (!g_led_dash || !g_led_pulse_on) { led_write(g_led_max); return 150; }
+   if (g_led_max > 1)
+   {  /* breathing: 3.2 s period, never fully off (a dark LED reads as "powered off") */
+      double ph = fmod(t, 3.2) / 3.2, k = 0.5 - 0.5 * cos(ph * 2 * M_PI);
+      int v = (int)(g_led_max * (0.12 + 0.88 * k) + 0.5);
+      led_write(v < 1 ? 1 : v);
+      return 33;
+   }
+   led_write(fmod(t, 2.0) < 1.75 ? 1 : 0);   /* on/off LED: a slow beat */
+   return 60;
+}
+
+/* a native homebrew app started by run.sh (kind=app) */
+static pid_t app_pid(void)
+{
+   long p = read_long("/tmp/lumen-app.pid");
+   if (p > 1 && kill((pid_t)p, 0) == 0) return (pid_t)p;
+   return 0;
+}
+static void app_quit(pid_t p)
+{
+   int i;
+   logf_("app: quitting pid %d", (int)p);
+   kill(p, SIGTERM);
+   for (i = 0; i < 30 && kill(p, 0) == 0; i++) usleep(100000);
+   if (kill(p, 0) == 0) kill(p, SIGKILL);
+}
+
 static void open_in_game(void)
 {
    char cmd[700], kind[48];
@@ -419,6 +502,18 @@ static void open_in_game(void)
       ra_cmd("PAUSE_TOGGLE");
    }
    else if (rc == 2) { ra_cmd("PAUSE_TOGGLE"); usleep(100000); ra_cmd("QUIT"); }
+   else if (rc == 3)
+   {  /* Save and exit: state in the current slot (run.sh sets the resume slot at launch),
+       * give RetroArch time to write it to the stick, then quit; run.sh records the mark */
+      int f;
+      ra_cmd("PAUSE_TOGGLE"); usleep(150000);
+      ra_cmd("SAVE_STATE");
+      if ((f = open("/tmp/lumen-save-exit", O_WRONLY | O_CREAT | O_TRUNC, 0644)) >= 0) close(f);
+      usleep(2000000);
+      sync();
+      ra_cmd("QUIT");
+      logf_("open: saved the state and quit");
+   }
    else ra_cmd("PAUSE_TOGGLE");
 }
 
@@ -455,11 +550,12 @@ int main(int argc, char **argv)
    logf_("watching %s, power handshake in %s", dev, power_dir);
    /* ready marker for boot.sh */
    printf("ready\n"); fflush(stdout);
+   led_init();
 
    for (;;)
    {
       struct pollfd pfd = { fd, POLLIN, 0 };
-      int r = poll(&pfd, 1, 150);
+      int r = poll(&pfd, 1, led_tick(paused));
       log_tick();
 
       /* suspend handshake: answer once per request, after pausing the USB users */
@@ -502,16 +598,18 @@ int main(int argc, char **argv)
             if (ev.type != EV_KEY || ev.value != 1) continue;
             if (ev.code == KEY_PLAYPAUSE)
             {  /* RESET: restart the game, or the dashboard */
-               pid_t ra = find_proc("retroarch"), lu = find_proc("lumen");
-               logf_("reset pressed: %s", ra ? "resetting the game" : "restarting the dashboard");
+               pid_t ra = find_proc("retroarch"), lu = find_proc("lumen"), ap = app_pid();
+               logf_("reset pressed: %s", ra ? "resetting the game" : (ap ? "quitting the app" : "restarting the dashboard"));
                if (ra) ra_cmd("RESET");
+               else if (ap) app_quit(ap);
                else if (lu) { int f = open("/tmp/lumen-restart", O_WRONLY | O_CREAT, 0644); if (f >= 0) close(f); kill(lu, SIGTERM); }
             }
             else if (ev.code == KEY_EJECTCD)
             {  /* OPEN: in a game, pause and ask (change disc / exit / continue) */
-               pid_t ra = find_proc("retroarch");
-               logf_("open pressed%s", ra ? "" : " (dashboard: nothing)");
+               pid_t ra = find_proc("retroarch"), ap = app_pid();
+               logf_("open pressed%s", ra ? "" : (ap ? " (app: quit)" : " (dashboard: nothing)"));
                if (ra && !find_proc("lumen")) open_in_game();
+               else if (ap) app_quit(ap);
             }
             else if (ev.code == KEY_SLEEP) logf_("power pressed");
             else logf_("key %d pressed", ev.code);
