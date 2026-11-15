@@ -3,6 +3,31 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- Launch animations for every system, with the real hardware modelled in 3D (Blender, by
+  script, from published measurements, design-patent drawings and photos measured to scale;
+  `tools/models/`, no logos or lettering). Lumen loads them from `assets/models/*.lmdl`
+  (`src/meshes.inc`) with plastic shading; a missing model falls back to a procedural one.
+  - Consoles: Nintendo 64, Super Famicom / PAL Super Nintendo, Mega Drive (model 1), NES,
+    PC Engine, Game Boy and Game Boy Advance, each with its moving parts (dust flaps, the
+    NES door, power switches, the PC Engine's card lock, LEDs, the handheld screens).
+  - Media: N64, Super Famicom, Mega Drive, NES, Game Boy and GBA cartridges, the HuCard,
+    the PS1 jewel case, DVD and UMD keep cases, the UMD.
+  - Each cartridge goes in the way it really does, as deep as it really does: N64 and Super
+    Famicom stand in their top slot, the Mega Drive cartridge in the disc's slot, the NES
+    cartridge slides through the door and is pushed down, the HuCard lies in the PC Engine's
+    tray, the Game Boy and GBA take it at the back and turn round to light their screen.
+- A click the moment the cartridge seats (synthesised; a firm latch on top loaders, a latch
+  with a spring on front loaders, a small snap on handhelds), even with the music off.
+- `systems/gb.ini` (Game Boy / Color, Gambatte). `[media] shape` is read (it was ignored).
+
+### Changed
+- `megadrive.ini` and `snes.ini` declare the real cartridge proportions (109 x 70 and
+  128 x 87 mm); `apps.ini` the HuCard's.
+- Model assets are installed with the others (`tools/install.sh`, `scripts/package.sh`).
+
 ## [0.8.0] - 2026-11-14
 
 ### Added

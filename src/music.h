@@ -12,6 +12,11 @@ void music_play(const char *path, float fade_s);/* crossfade to path ("" or NULL
                                                    same path as the current target = no-op */
 void music_set_volume(float v);                 /* 0..1 master, applied with a 0.2 s ramp */
 void music_duck(float amount);                  /* 0..1 extra attenuation (panel open: 0.5), ramped */
+/* one-shot effect: the click of a cartridge seating in its console. kind: 0 top-loader
+ * (a firm latch and a low thud), 1 front-loader (latch with a spring), 2 handheld (a
+ * small snap). Synthesised at init; mixed over the music at a fixed level (the music
+ * volume setting does not mute it). */
+void music_click(int kind);
 void music_shutdown(void);                      /* stop, close the device, join the loader (before exit) */
 
 #endif
