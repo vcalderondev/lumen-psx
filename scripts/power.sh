@@ -13,7 +13,7 @@
 #
 # Sony's power manager unmounts the stick (umount /dev/sda1, /dev/sdb1) before it writes
 # "mem" to /sys/power/state, and the stick can come back as a new device. When the session
-# runs from RAM (boot.sh, /tmp/lumen-run: the POWER test path) this script does it
+# runs from RAM (boot.sh, /tmp/lumen-run: the default) this script does it
 # properly: the stick is unmounted here, once nothing of ours uses it, and mounted again
 # after the resume, before the compositor and the frontend start. Every step is logged
 # to RAM and copied to <home>/logs/suspend.log when the stick is there.
