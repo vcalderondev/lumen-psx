@@ -22,8 +22,9 @@
 #   LUMEN_RESUME_SLOT    RetroArch save-state slot of "Save and exit" (default 9): every
 #                        normal session starts on it, a resumed one loads it
 #   run_retroarch()      function(core, content, logfile) to launch a game; it must
-#                        apply the extra config in $LUMEN_RA_EXTRA (RetroArch cfg lines)
-#                        and pass --entryslot $LUMEN_RA_ENTRYSLOT when it is set (resume)
+#                        apply the extra config in $LUMEN_RA_EXTRA (RetroArch cfg lines),
+#                        pass --entryslot $LUMEN_RA_ENTRYSLOT when it is set (resume) and
+#                        --set-shader $LUMEN_RA_SHADER when it is set (CRT filter)
 #
 # Save and exit (OPEN in a game, lumen-buttons): the state goes to the resume slot and
 # /tmp/lumen-save-exit is left; after RetroArch exits the content is recorded in
@@ -47,11 +48,11 @@ chmod +x "${LUMEN_HOME}/lumen" 2>/dev/null
 slog() { echo "$*" >> "${LOG}/session.log"; }
 
 # lumen_parse_launch FILE: sets L_CORE L_CONTENT L_SYSTEM L_TITLE L_PROFILE L_MODE
-# L_DEMO_SECONDS L_GRAPHICS L_OPT_CORE_NAME; writes the opt.* pairs to /tmp/lumen-opt.kv
+# L_DEMO_SECONDS L_GRAPHICS L_OPT_CORE_NAME L_CRT; writes the opt.* pairs to /tmp/lumen-opt.kv
 # and the ra.* pairs to /tmp/lumen-ra.kv ("key=value" lines). Fails without core/content.
 lumen_parse_launch() {
   L_CORE=""; L_CONTENT=""; L_SYSTEM=""; L_TITLE=""; L_PROFILE=main; L_MODE=normal
-  L_DEMO_SECONDS=60; L_GRAPHICS=""; L_OPT_CORE_NAME=""; L_RESUME=0; L_KIND=game
+  L_DEMO_SECONDS=60; L_GRAPHICS=""; L_OPT_CORE_NAME=""; L_RESUME=0; L_KIND=game; L_CRT=""
   : > /tmp/lumen-opt.kv; : > /tmp/lumen-ra.kv
   [ -f "$1" ] || return 1
   first="$(sed -n 1p "$1")"
@@ -71,6 +72,7 @@ lumen_parse_launch() {
           opt_core_name) L_OPT_CORE_NAME=$val ;;
           resume) L_RESUME=$val ;;
           kind) L_KIND=$val ;;
+          crt) L_CRT=$val ;;
           opt.*) echo "${key#opt.}=${val}" >> /tmp/lumen-opt.kv ;;
           ra.*) echo "${key#ra.}=${val}" >> /tmp/lumen-ra.kv ;;
         esac
@@ -86,6 +88,7 @@ lumen_parse_launch() {
   case "$L_DEMO_SECONDS" in *[!0-9]*|"") L_DEMO_SECONDS=60 ;; esac
   case "$L_RESUME" in 1) ;; *) L_RESUME=0 ;; esac
   case "$L_KIND" in app) ;; *) L_KIND=game ;; esac
+  case "$L_CRT" in soft|strong) ;; *) L_CRT="" ;; esac
   [ "$L_KIND" = app ] && [ -n "$L_CONTENT" ] && return 0
   [ -n "$L_CORE" ] && [ -n "$L_CONTENT" ]
 }
@@ -154,8 +157,21 @@ lumen_merge_opt() {
 # handed over with --appendconfig. RetroArch keeps the FIRST copy of a key within one
 # file, so these lines must never just be concatenated after its retroarch.cfg.
 # The merged .opt needs no line here: RetroArch reads its per-core file by itself.
+# CRT filter (request crt=soft|strong): shaders on, before the ra.* lines so it wins, and
+# the preset in LUMEN_RA_SHADER for run_retroarch's --set-shader (RetroArch 1.22 has no
+# cfg key for the shader path: --set-shader acts as a global auto-shader preset).
 lumen_build_ra_extra() {
   : > "${LUMEN_RA_EXTRA}"
+  LUMEN_RA_SHADER=""
+  if [ -n "$L_CRT" ]; then
+    if [ -f "${LUMEN_HOME}/shaders/crt-lumen-${L_CRT}.glslp" ]; then
+      LUMEN_RA_SHADER="${LUMEN_HOME}/shaders/crt-lumen-${L_CRT}.glslp"
+      echo 'video_shader_enable = "true"' >> "${LUMEN_RA_EXTRA}"
+    else
+      slog "crt: ${LUMEN_HOME}/shaders/crt-lumen-${L_CRT}.glslp missing, game without the filter"
+    fi
+  fi
+  export LUMEN_RA_SHADER
   [ -n "$L_SAVES" ] && echo "savefile_directory = \"${L_SAVES}\"" >> "${LUMEN_RA_EXTRA}"
   [ -n "$L_STATES" ] && echo "savestate_directory = \"${L_STATES}\"" >> "${LUMEN_RA_EXTRA}"
   if [ "${LUMEN_DISPLAY}" = 1080p ]; then   # boot.sh started Weston at 1920x1080
@@ -247,7 +263,7 @@ lumen_playlog() {
 
 run_retroarch() {  # core content logfile
   "${RETROARCH}" --appendconfig "${LUMEN_RA_EXTRA}" ${LUMEN_RA_ENTRYSLOT:+--entryslot "${LUMEN_RA_ENTRYSLOT}"} \
-    -L "$1" "$2" > "$3" 2>&1
+    ${LUMEN_RA_SHADER:+--set-shader "${LUMEN_RA_SHADER}"} -L "$1" "$2" > "$3" 2>&1
 }
 
 # lumen_resume_mark T0REF: after Save and exit, record the content in the profile's
@@ -350,7 +366,7 @@ while true; do
   [ "${L_RESUME}" = 1 ] && LUMEN_RA_ENTRYSLOT=${LUMEN_RESUME_SLOT}
   export LUMEN_RA_ENTRYSLOT
   rm -f /tmp/lumen-save-exit; : > /tmp/lumen-t0
-  slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default}, graphics ${L_GRAPHICS:-default}${L_OPT_FILE:+, options ${L_OPT_FILE}}${LUMEN_RA_ENTRYSLOT:+, resume slot ${LUMEN_RA_ENTRYSLOT}})"
+  slog "launch: ${L_CONTENT} (system ${L_SYSTEM:-?}, profile ${L_PROFILE}, saves ${L_SAVES:-default}, graphics ${L_GRAPHICS:-default}${L_CRT:+, crt ${L_CRT}}${L_OPT_FILE:+, options ${L_OPT_FILE}}${LUMEN_RA_ENTRYSLOT:+, resume slot ${LUMEN_RA_ENTRYSLOT}})"
   t0=$(date +%s)
   lumen_discs
   run_retroarch "${L_CORE}" "${RA_CONTENT}" "${LOG}/retroarch.log"

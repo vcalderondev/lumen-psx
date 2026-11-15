@@ -124,7 +124,7 @@ the Spanish key set and keeps its placeholders.
 `settings.ini` holds one `key=value` per line; unknown keys are kept. Keys:
 `language`, `profile`, `screensaver_minutes` (0 = off), `demo_enabled`, `demo_seconds`,
 `attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`),
-`show_stock_games` (`0`/`1`), `version`.
+`show_stock_games` (`0`/`1`), `crt` (`off` / `soft` / `strong`), `version`.
 It is written atomically (temporary file + rename) and only when something changed.
 
 ## Enhanced graphics
@@ -136,6 +136,36 @@ the other shipped systems smooth the picture with RetroArch's bilinear filter. T
 choice is applied at every launch: `run.sh` merges the core options into RetroArch's
 per-core `.opt` file (keeping a `.lumen-bak` copy of the original) and passes the
 RetroArch overrides in the extra config.
+
+## CRT filter
+
+Settings → Display → CRT filter (`crt=` in `settings.ini`: Off, Soft, Strong) gives the
+dashboard and the games the look of a CRT: gaussian scanlines that widen on bright
+pixels, an aperture grille (R, G, B stripes one device pixel wide), a slight curvature
+with rounded edges, halation and a vignette. Soft keeps the picture bright and nearly
+flat; Strong is a curved consumer TV.
+
+- **Dashboard** (`src/crt.c`): the frame is drawn into an offscreen target the size of
+  the output and put on screen by one more full-screen pass (one triangle, 5 bilinear
+  fetches per pixel, the rest ALU). MSAA is kept: on the console the target is
+  multisampled on chip (`GL_EXT_multisampled_render_to_texture`, resolved for free);
+  where that is missing a multisampled renderbuffer is resolved with one blit. The
+  target's depth and the window's old contents are invalidated, so neither costs memory
+  bandwidth. The splash, the launch animation and the in-game dialog go through it too.
+  Cost (`LUMEN_COST=1`, psc-sim): +0.92 Mpx/frame at 720p, +2.07 Mpx/frame at 1080p, one
+  draw call; check it on the console with the `bench` file.
+- **Games**: `lumen/shaders/crt-lumen-{soft,strong}.glslp` (one-pass GLSL,
+  `dist/shaders/crt-lumen.glsl`, same maths and values). When the setting is on, the
+  launch request carries `crt=soft|strong`; `run.sh` puts `video_shader_enable = "true"`
+  first in the extra config and hands the preset to RetroArch with `--set-shader`
+  (`LUMEN_RA_SHADER`; RetroArch 1.22 has no config key for the shader path). It works the
+  same for software cores and for the GLES 3 cores (Mupen64Plus-Next, PPSSPP), whose
+  image RetroArch passes through the shader too. Scanlines follow the core's lines:
+  224/240p are drawn line by line; above 300 lines (480i, enhanced resolutions) the
+  density is halved until it fits, so upscaled 3D keeps its detail. A custom
+  `run_retroarch()` in `lumen.conf` must pass `--set-shader "$LUMEN_RA_SHADER"` when it
+  is set (the shipped `lumen.conf` does). Without the presets the game runs unfiltered
+  (logged in `session.log`).
 
 ## Profiles
 
@@ -197,7 +227,7 @@ Backspace (back), Escape (leave).
 ## Settings panel
 
 Pages: **Language** (applied live, no restart), **Profile** (switch, create, rename,
-colour, delete), **Screensaver** (start
+colour, delete), **Display** (output and theme after a restart, CRT filter live), **Screensaver** (start
 after Never/1–30 min, game demos on/off, length of each demo, preview), **Graphics**
 (per-system presets; empty until a system declares them), **Library** (built-in games
 Hidden / Visible, rescanned live) and **About** (version,
