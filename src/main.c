@@ -49,6 +49,7 @@
 #include "collections.h"
 #include "gamemenu.h"
 #include "filepicker.h"
+#include "ui.h"
 #include "theme.h"
 #include "crt.h"
 
@@ -406,11 +407,19 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "media", "color", v, sizeof(v), ""); parse_color(v, pl->color);
    decl_get(ini, "media", "art", pl->art, sizeof(pl->art), "cover");
    decl_get(ini, "media", "media_art", pl->media_art, sizeof(pl->media_art), pl->kind == KIND_DISC ? "disc" : "cart");
-   decl_get(ini, "animation", "launch", v, sizeof(v), "");
-   pl->launch = !strcmp(v, "insert_cartridge") ? ANIM_INSERT_CART : (!strcmp(v, "insert_coin") ? ANIM_INSERT_COIN :
-                (!strcmp(v, "open_case_disc") ? ANIM_OPEN_CASE_DISC :
-                 (pl->kind == KIND_CART ? ANIM_INSERT_CART : (pl->kind == KIND_ARCADE ? ANIM_INSERT_COIN : ANIM_OPEN_CASE_DISC))));
-   decl_get(ini, "media", "shape", v, sizeof(v), "");
+   {  /* the launch animation: the one declared; else the hardware one of a declared shape;
+       * else (nothing says what the medium looks like) the generic cover animation, which
+       * simulates no console, cartridge or disc */
+      char an[32], known;
+      decl_get(ini, "animation", "launch", an, sizeof(an), "");
+      decl_get(ini, "media", "shape", v, sizeof(v), "");
+      known = v[0] != 0;
+      pl->launch = !strcmp(an, "insert_cartridge") ? ANIM_INSERT_CART : !strcmp(an, "insert_coin") ? ANIM_INSERT_COIN :
+                   !strcmp(an, "open_case_disc") ? ANIM_OPEN_CASE_DISC : !strcmp(an, "cover") ? ANIM_COVER :
+                   !known ? ANIM_COVER :
+                   pl->kind == KIND_CART ? ANIM_INSERT_CART : pl->kind == KIND_ARCADE ? ANIM_INSERT_COIN : ANIM_OPEN_CASE_DISC;
+      if (an[0] && pl->launch == ANIM_COVER && strcmp(an, "cover")) logf_("system %s: unknown launch animation '%s', using cover", pl->id, an);
+   }
    pl->shape = shape_from_name(v, pl->kind, decl_is_card(ini));
    decl_get(ini, "animation", "slot", v, sizeof(v), "");
    pl->slot = !strcmp(v, "top") ? SLOT_TOP : !strcmp(v, "front") ? SLOT_FRONT : !strcmp(v, "handheld") ? SLOT_HANDHELD :
@@ -930,6 +939,7 @@ static GLint  u_mvp, u_model, u_tex, u_tint, u_alpha, u_mode, u_light, u_cam, u_
 static GLint  u2_mvp, u2_tex, u2_color, u2_mode, u2_rect, u2_aux0, u2_aux1, u2_aux2, u2_uvw;
 static GLuint g_white;
 TTF_Font *g_font_title, *g_font_sub, *g_font_small, *g_font_cover;
+TTF_Font *g_font_caps, *g_font_medium;
 
 static const char *VS_BOX =
    "#version 300 es\n"
@@ -2077,11 +2087,34 @@ static void draw_cart_photo(const game_t *g, const platform_t *pl, mat4 base, fl
    case_part(base, 0, 0, hd, 0, 0, w, h, g_disc_tex, one, alpha, 11);         /* front: the photo */
 }
 
+/* Generic medium (launch = cover): the game's cover as a thin card with a dark back and a
+ * halo of its accent colour behind it (glow 0..1.5). Its width follows the cover's aspect. */
+static float cover_card_w(const game_t *g, const platform_t *pl)
+{
+   float ar = g->tex_w > 0 && g->tex_h > 0 ? (float)g->tex_w / (float)g->tex_h : pl->w / pl->h;
+   return pl->h * clampf(ar, 0.62f, 1.60f);
+}
+static void draw_cover_card(const game_t *g, const platform_t *pl, mat4 base, float alpha, float glow)
+{
+   static const float one[3] = { 1, 1, 1 }, back[3] = { 0.05f, 0.05f, 0.065f };
+   const float w = cover_card_w(g, pl), h = pl->h, hd = 0.012f, PI = (float)M_PI;
+   float halo[3];
+   halo[0] = g->acc[0] * glow; halo[1] = g->acc[1] * glow; halo[2] = g->acc[2] * glow;
+   scene_blend_add();
+   glDepthMask(GL_FALSE);
+   case_part(base, 0, 0, -hd - 0.02f, 0, 0, w * 2.1f, h * 2.1f, 0, halo, alpha * 0.60f, 8);
+   glDepthMask(GL_TRUE);
+   scene_blend_over();
+   case_part(base, 0, 0, -hd, PI, 0, w, h, 0, back, alpha, 1);
+   case_part(base, 0, 0, hd, 0, 0, w, h, g->tex, one, alpha, 7);
+}
+
 /* dispatcher: one renderer per declared media kind */
 static void draw_media(const game_t *g, const platform_t *pl, mat4 base, float alpha,
                        float open, float lift, float fly, float spin, float lit)
 {
-   if (pl->kind == KIND_CART && cart_photo_ok(g)) draw_cart_photo(g, pl, base, alpha);
+   if (pl->launch == ANIM_COVER) draw_cover_card(g, pl, base, alpha, lit);
+   else if (pl->kind == KIND_CART && cart_photo_ok(g)) draw_cart_photo(g, pl, base, alpha);
    else if (pl->kind == KIND_CART) draw_cart(g, pl, base, alpha);
    else if (pl->kind == KIND_ARCADE) draw_marquee(g, pl, base, alpha, lit);
    else if (pl->shape == SHAPE_DVD || pl->shape == SHAPE_UMD) draw_keepcase(g, pl, base, alpha, open, lift, fly, spin);
@@ -3643,6 +3676,7 @@ static struct { char id[16]; GLuint tex; int w, h; label_t initials; } g_avatar;
 /* dashboard focus: Up from the games reaches the system tabs, Up again the profile */
 enum { FOCUS_GAMES, FOCUS_TABS, FOCUS_PROFILE };
 static int g_focus;
+static float g_dash_body = 1.0f;   /* tabs, tiles and title block: fade out under the settings, the status row stays */
 static int g_avatar_dirty;   /* avatar.png of the active profile was replaced or removed */
 
 /* first letter of up to two words of the name (UTF-8 sequences kept whole) */
@@ -3697,6 +3731,30 @@ int ui_avatar(GLuint *tex, int *w, int *h)
 }
 
 GLuint tex_from_surface(SDL_Surface *s) { return surface_to_tex(s, 1, NULL); }
+
+void ui_shape(float x, float y, float w, float h, float radius, float stroke, const float rgba[4])
+{
+   draw_shape(x, y, w, h, radius, stroke, rgba);
+}
+
+void ui_avatar_draw(float x, float y, float d, float a)
+{
+   const profile_t *ap = profiles_active();
+   const float c[4] = { 1, 1, 1, a }, ring[4] = { 1, 1, 1, 0.35f * a };
+   if (a <= 0.003f) return;
+   if (ui_avatar(NULL, NULL, NULL)) draw_tile(g_avatar.tex, g_avatar.w, g_avatar.h, x, y, d, d, d * 0.5f, -2.0f, 0.0f, c);
+   else
+   {
+      float sw[4], k = d / 48.0f;
+      profiles_color(ap->color, sw); sw[3] = a;
+      draw_shape(x, y, d, d, d * 0.5f, 0, sw);
+      if (g_avatar.initials.tex)
+         draw_2d(g_avatar.initials.tex, x + d * 0.5f - g_avatar.initials.w * k * 0.5f, y + d * 0.5f - g_avatar.initials.h * k * 0.5f,
+                 g_avatar.initials.w * k, g_avatar.initials.h * k, c, 0);
+   }
+   if (d >= 40.0f) draw_shape(x - 3, y - 3, d + 6, d + 6, d * 0.5f + 3, 1.5f, ring);
+   gl_use_2d();
+}
 
 void draw_image(GLuint tex, int tw, int th, float x, float y, float w, float h, float radius, const float rgba[4])
 {
@@ -4026,6 +4084,9 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          x -= 8;
       }
    }
+
+   ua *= g_dash_body;   /* from here on: the part of the home a full-screen menu replaces */
+   if (ua <= 0.003f) return;
 
    /* system tabs: L1 [pills] R1. Each pill is translucent glass with a soft shadow and a
     * hairline border; the selected one is brighter */
@@ -4655,6 +4716,8 @@ int main(int argc, char **argv)
    g_font_hero  = open_font(fonts_semi, 50);
    g_font_tab   = open_font(fonts_med, 19);
    g_font_name  = open_font(fonts_med, 21);
+   g_font_medium = g_font_name ? g_font_name : g_font_sub;
+   g_font_caps  = open_font(fonts_med, 15);
    boot_mark("fx+fonts");
    splash_step(win, 0.2f);
    if (dialog)   /* in-game dialog: no library, no music */
@@ -5064,6 +5127,7 @@ int main(int argc, char **argv)
          float hflip = 0.0f, screen_on = 0.0f;         /* handheld: turn round, screen on */
          float press = 0.0f, shut = 0.0f, seat_t = -1.0f;  /* NES: push down, door shuts; seat time (click) */
          float coin_x = 0.0f, coin_spin = 0.0f, coin_in = 0.0f, credit = 0.0f, insert = 0.0f;
+         float turn = 0.0f, rush = 0.0f;               /* cover: one turn about itself, then to the camera */
          int covered, blackout, panel_cleared = 0;
          float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          int anim = pl ? pl->launch : ANIM_OPEN_CASE_DISC;
@@ -5077,7 +5141,18 @@ int main(int argc, char **argv)
 #define SMOOTH(x) ((x) * (x) * (3 - 2 * (x)))
             launching = 1.0f;
             zoom = SMOOTH(clampf(pt / 0.5f, 0, 1));
-            if (anim == ANIM_INSERT_CART)
+            if (anim == ANIM_COVER)
+            {
+               /* generic: the cover rises a little and turns once about itself while its
+                * halo brightens, then accelerates into the camera until it fills the
+                * screen; the flash takes over from there */
+               u = clampf((pt - 0.25f) / 0.80f, 0, 1); turn = SMOOTH(u) * 2.0f * (float)M_PI;
+               lift = SMOOTH(clampf((pt - 0.30f) / 0.50f, 0, 1)) * 0.45f;
+               lit = 0.55f + 0.95f * SMOOTH(clampf((pt - 0.75f) / 0.45f, 0, 1));
+               u = clampf((pt - 1.00f) / 0.50f, 0, 1); rush = u * u;
+               fl_t = 1.50f; end = 1.95f;
+            }
+            else if (anim == ANIM_INSERT_CART)
             {
                /* a top-loading console rises from below (ease-out), the cartridge turns
                 * to line up over its slot, pushes in until it seats (a small knock),
@@ -5205,9 +5280,8 @@ int main(int argc, char **argv)
          glViewport(0, 0, g_dw, g_dh);
          /* settings fully open: an opaque full-screen section. The clear takes its colour
           * (free on a tile-based GPU) instead of a full-screen quad drawn over the clear */
-         panel_cleared = !blackout && panel_active() && panel_amount() >= 0.999f;
+         panel_cleared = 0;   /* the settings sit on the art now (lumen-design): nothing is cleared to a slab */
          if (blackout) glClearColor(0, 0, 0, 1);
-         else if (panel_cleared) { float pc[4]; theme_color(TC_PANEL, pc); glClearColor(pc[0], pc[1], pc[2], 1); }
          else glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
          glClearDepthf(1.0f);
          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -5216,7 +5290,7 @@ int main(int argc, char **argv)
 
          glUseProgram(g_prog_2d);
          glUniform1i(u2_tex, 0);
-         covered = (panel_active() && panel_amount() > 0.995f) || welcome_amount() > 0.995f || blackout;   /* a full-screen section is open */
+         covered = welcome_amount() > 0.995f || blackout;   /* a full-screen section is open */
          if (!covered)
          {  /* full-screen art (current layer, next one crossfading over it), then the
              * legibility overlay (left side, top and bottom bands) in one pass */
@@ -5230,7 +5304,8 @@ int main(int argc, char **argv)
          {  /* dashboard UI: dimmed under the panel, gone in the attract scene, fading out
              * as the launch starts (the 3D media is drawn over it) */
             const float pa = panel_amount();
-            const float ua = (1 - fade) * (1 - 0.6f * pa) * (1 - att.amount) * launch_ui;
+            const float ua = (1 - fade) * (1 - att.amount) * launch_ui;
+            g_dash_body = 1.0f - pa;
             dash_draw(pl, sel_plat, n, sel, dpos.x, sel_t, t, ua, info_a.x, info_y.x);
          }
 
@@ -5295,8 +5370,8 @@ int main(int argc, char **argv)
                   launch_refl(100.0f);
                   glEnable(GL_DEPTH_TEST);
                }
-               base = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x),
-                      m4_mul(m4_rot_y(g->ry.x + sway), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
+               base = m4_mul(m4_translate(g->x.x, bob + ty, g->z.x + (o == 0 ? rush * 2.95f : 0.0f)),
+                      m4_mul(m4_rot_y(g->ry.x + sway + (o == 0 ? turn : 0.0f)), m4_mul(m4_rot_x(-tx_), m4_scale(g->sc.x, g->sc.x, g->sc.x))));
                if (o == 0 && play_t >= 0 && anim == ANIM_INSERT_CART)
                {  /* the console (consoles.inc, real size in mm: k world units per mm) and
                    * the cartridge at the same scale, from where the carousel left it to its
@@ -5406,11 +5481,7 @@ int main(int argc, char **argv)
             }
             if (pa > 0.003f && !panel_cleared)
             {
-               /* the settings are a full-screen section: opaque, so nothing under it is drawn
-                * once it is fully open (see `covered`) */
-               float back[4];
-               theme_color(TC_PANEL, back); back[3] = pa;
-               draw_2d(0, 0, 0, W, H, back, 0);
+               ui_scrim(pa);   /* scrim.menu: the art and the status row stay, quieter */
             }
             {  /* help bar: the set follows the panel, crossfading over 0.15 s; while the
                 * panel is open it is centred in the free space left of it */
@@ -5437,6 +5508,11 @@ int main(int argc, char **argv)
                draw_2d(lb->tex, (W - lb->w) * 0.5f, 640, lb->w, lb->h, yc, 0);
             }
             gamemenu_draw(t);
+            if (gamemenu_active())
+            {  /* its scrim covered the help bar: the hints describe the focused layer, never dimmed */
+               glUseProgram(g_prog_2d);
+               hints_draw(gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU, 672, gamemenu_amount() * (1 - fade));
+            }
             panel_draw(t);
             filepicker_draw(t);
             if (filepicker_active())

@@ -20,17 +20,18 @@
 #include "panel.h"
 #include "settings.h"
 #include "theme.h"
+#include "ui.h"
 
 /* ------------------------------------------------------------------------ */
 /* geometry (logical 1280x720)                                               */
 #define CW       940.0f    /* card                         */
-#define CH       540.0f
+#define CH       520.0f
 #define PADX     28.0f
-#define LIST_X   16.0f     /* list, relative to the card   */
-#define LIST_Y   98.0f
-#define LIST_W   580.0f
-#define ROW      44.0f
-#define VIS      9         /* rows visible                 */
+#define LIST_X   14.0f     /* list, relative to the card   */
+#define LIST_Y   110.0f
+#define LIST_W   590.0f
+#define ROW      46.0f
+#define VIS      8         /* rows visible                 */
 #define PV       220.0f    /* preview box                  */
 #define PV_PX    384       /* preview texture, longest side */
 #define POOL     16        /* row labels (> VIS + 2)       */
@@ -50,7 +51,7 @@ static double  s_t0;
 static float   s_dt = 1.0f / 60.0f;
 static spring  s_fade, s_pill, s_scroll, s_busy_a;
 
-static label_t s_title, s_path, s_count, s_empty, s_pname, s_pinfo, s_busy_l;
+static label_t s_title, s_kick, s_path, s_count, s_empty, s_pname, s_pinfo, s_busy_l;
 static label_t s_rl[POOL];
 static int     s_slot_ent[POOL], s_slot_gen[POOL];
 static char    s_path_txt[400];
@@ -319,7 +320,7 @@ static void free_gl(void)
 {
    int i;
    if (s_pv_tex) { glDeleteTextures(1, &s_pv_tex); s_pv_tex = 0; }
-   label_free(&s_title); label_free(&s_path); label_free(&s_count); label_free(&s_empty);
+   label_free(&s_title); label_free(&s_kick); label_free(&s_path); label_free(&s_count); label_free(&s_empty);
    label_free(&s_pname); label_free(&s_pinfo); label_free(&s_busy_l);
    for (i = 0; i < POOL; i++) { label_free(&s_rl[i]); s_slot_ent[i] = -1; }
 }
@@ -494,7 +495,7 @@ static void draw_preview(float px, float py, float pw, double t, float a)
    if (e->dir)
    {
       draw_round_rect(bx, by, PV, PV, 14, box, 0.06f * a);
-      draw_folder(bx + PV * 0.5f - 44, by + PV * 0.5f - 36, 4.0f, acc);
+      draw_folder(bx + PV * 0.5f - 44, by + PV * 0.5f - 36, 4.0f, txt);
       snprintf(info, sizeof(info), "%s", tr("fp.folder"));
    }
    else
@@ -530,27 +531,28 @@ static void draw_preview(float px, float py, float pw, double t, float a)
 
 void filepicker_draw(double t)
 {
-   float a = filepicker_amount(), cx = (W - CW) * 0.5f, cy = (H - CH) * 0.5f - 22 + (1 - a) * 16;
+   /* lumen-design, file-picker.html: one glass card; the kicker asks, the title is the
+    * folder we are in, its path sits at the right */
+   float a = filepicker_amount(), cx = (W - CW) * 0.5f, cy = 112.0f + (1 - a) * 16;
    float lx = cx + LIST_X, ly = cy + LIST_Y, lh = VIS * ROW;
-   float txt[4], dim[4], acc[4], pill[4], card[4], back[4], sep[4];
+   float txt[4], dim[4], acc[4], sep[4];
    char buf[420], num1[16], num2[16];
+   const char *here;
    int i;
    if (a <= 0.003f) return;
-   col4(txt, TC_TEXT, a); col4(dim, TC_DIM, a); col4(acc, TC_ACCENT, a); col4(pill, TC_PILL, a);
-   col4(card, TC_CARD, (theme_card_alpha() > 0.96f ? theme_card_alpha() : 0.96f) * a);
-   col4(back, TC_BACKDROP, 0.62f * a); col4(sep, TC_TEXT, 0.08f * a);
+   col4(txt, TC_TEXT, a); col4(dim, TC_DIM, a); col4(acc, TC_ACCENT, a); col4(sep, TC_TEXT, 0.08f * a);
 
    gl_use_2d();
-   draw_2d(0, 0, 0, W, H, back, 0);
-   ui_shadow(cx, cy, CW, CH, 26, 40, 14, 0.55f * a);
-   draw_round_rect(cx, cy, CW, CH, 26, card, 0.10f * a);
+   ui_scrim(a * (1.0f - panel_amount()));   /* over the settings the scrim is already there */
+   ui_card(cx, cy, CW, CH, a);
 
-   /* header: title, where we are */
-   label_set(&s_title, g_font_sub, tr(s_req.title_key ? s_req.title_key : "fp.title"));
-   label_set(&s_path, g_font_small, fit_path(g_font_small, s_path_txt, CW - 2 * PADX, buf, sizeof(buf)));
-   draw_label(&s_title, cx + PADX, cy + 22, txt);
-   draw_label(&s_path, cx + PADX, cy + 54, acc);
-   draw_2d(0, cx + PADX, cy + LIST_Y - 12, CW - 2 * PADX, 1, sep, 0);
+   here = at_root() ? tr("fp.root") : strrchr(s_dir, '/') + 1;
+   ui_kicker(&s_kick, tr(s_req.title_key ? s_req.title_key : "fp.title"), cx + PADX, cy + 24, a);
+   label_set(&s_title, g_font_title, ui_fit(g_font_title, here, CW * 0.5f, buf, sizeof(buf)));
+   draw_label(&s_title, cx + PADX, cy + 42, txt);
+   label_set(&s_path, g_font_small, fit_path(g_font_small, s_path_txt, CW * 0.5f - 2 * PADX, buf, sizeof(buf)));
+   draw_label(&s_path, cx + CW - PADX - s_path.w, cy + 58, dim);
+   draw_2d(0, cx + PADX, cy + 96, CW - 2 * PADX, 1, sep, 0);
 
    if (!s_n)
    {
@@ -568,9 +570,8 @@ void filepicker_draw(double t)
    {
       /* rows, clipped to the list */
       glEnable(GL_SCISSOR_TEST);
-      gl_scissor(lx, ly, LIST_W, lh);
-      ui_shadow(lx + 4, ly + s_pill.x - s_scroll.x + 4, LIST_W - 8, ROW - 8, (ROW - 8) * 0.5f, 10, 3, 0.30f * a);
-      draw_round_rect(lx + 4, ly + s_pill.x - s_scroll.x + 4, LIST_W - 8, ROW - 8, (ROW - 8) * 0.5f, pill, 0.0f);
+      gl_scissor(lx - 8, ly - 8, LIST_W + 16, lh + 16);   /* room for the ring */
+      ui_focus(lx, ly + s_pill.x - s_scroll.x + 2, LIST_W, ROW - 4, (ROW - 4) * 0.5f, a);
       for (i = (int)(s_scroll.x / ROW) - 1; i < s_n; i++)
       {
          const ent_t *e;
@@ -578,8 +579,8 @@ void filepicker_draw(double t)
          int slot;
          if (i < 0) continue;
          y = ly + i * ROW - s_scroll.x;
-         if (y > ly + lh) break;
-         if (y + ROW < ly) continue;
+         if (y >= ly + lh - 1) break;
+         if (y + ROW <= ly + 1) continue;
          e = &s_ent[i];
          slot = i % POOL;
          if (s_slot_ent[slot] != i || s_slot_gen[slot] != s_scan_gen)
@@ -589,7 +590,7 @@ void filepicker_draw(double t)
          }
          memcpy(c, txt, sizeof(c));
          if (i != s_sel) c[3] *= 0.86f;
-         if (e->dir) draw_folder(lx + 22, y + (ROW - 18) * 0.5f, 1.0f, i == s_sel ? txt : acc);
+         if (e->dir) draw_folder(lx + 22, y + (ROW - 18) * 0.5f, 1.0f, txt);
          else draw_file(lx + 22, y + (ROW - 18) * 0.5f, 1.0f, i == s_sel ? txt : dim);
          draw_label(&s_rl[slot], lx + 58, y + (ROW - s_rl[slot].h) * 0.5f, c);
          if (e->dir)
@@ -612,19 +613,19 @@ void filepicker_draw(double t)
       }
       /* vertical rule, then the preview of the highlighted entry */
       draw_2d(0, lx + LIST_W + 22, ly, 1, lh, sep, 0);
-      draw_preview(lx + LIST_W + 38, ly + 26, CW - LIST_X - LIST_W - 38 - PADX, t, a);
+      draw_preview(lx + LIST_W + 38, ly + 20, CW - LIST_X - LIST_W - 38 - PADX, t, a);
       gl_use_2d();
       snprintf(num1, sizeof(num1), "%d", s_sel + 1);
       snprintf(num2, sizeof(num2), "%d", s_n);
       label_set(&s_count, g_font_small, trf(buf, sizeof(buf), "fp.count", "i", num1, "n", num2, NULL));
-      draw_label(&s_count, cx + PADX, cy + CH - 18 - s_count.h, dim);
+      draw_label(&s_count, cx + PADX, cy + CH - 14 - s_count.h, dim);
    }
 
    if (s_busy_a.x > 0.01f)
    {  /* accept() is running on the worker */
       float ba = clampf(s_busy_a.x, 0.0f, 1.0f) * a, veil[4], bt[4];
       col4(veil, TC_CARD, 0.82f * ba); col4(bt, TC_TEXT, ba);
-      draw_round_rect(cx, cy, CW, CH, 26, veil, 0.0f);
+      draw_round_rect(cx, cy, CW, CH, UI_CARD_R, veil, 0.0f);
       label_set(&s_busy_l, g_font_sub, tr(s_req.busy_key ? s_req.busy_key : "fp.working"));
       draw_label(&s_busy_l, cx + (CW - s_busy_l.w) * 0.5f, cy + CH * 0.5f - 34, bt);
       draw_dots(cx + CW * 0.5f, cy + CH * 0.5f + 18, t, bt);
