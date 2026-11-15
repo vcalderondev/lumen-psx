@@ -27,6 +27,7 @@ else
   copy_file scripts/boot.sh "$VOL/lumen/boot.sh"
   for f in dist/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/$(basename "$f")"; done
   for f in dist/lang/*.lang; do copy_file "$f" "$VOL/lumen/lang/$(basename "$f")"; done
+  for f in dist/shaders/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/shaders/$(basename "$f")"; done
   for f in dist/systems/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/systems/$(basename "$f")"; done
   for f in dist/themes/*/*; do [ -f "$f" ] || continue; t=${f#dist/themes/}; mkdir -p "$VOL/lumen/themes/${t%/*}"; copy_file "$f" "$VOL/lumen/themes/$t"; done
   copy_file assets/splash.png "$VOL/lumen/assets/splash.png"
