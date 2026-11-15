@@ -3,7 +3,7 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.8.0] - 2026-11-14
 
 ### Added
 - PlayStation Portable (`systems/psp.ini`, games in `/media/games/psp`: iso, cso, chd, pbp)
@@ -13,6 +13,24 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 
 ### Changed
 - psc-platform 2.3.0 (`platform.lock`).
+
+## [0.8.0] - 2026-11-14
+
+### Added
+- Launch animations for every system the console runs, with the real hardware modelled
+  in millimetres (`src/consoles.inc`, no logos):
+  - Cartridges shaped like the real ones: Super Famicom / PAL Super Nintendo, Mega Drive,
+    NES, Nintendo 64, Game Boy, Game Boy Advance and HuCard (`[media] shape`, which was
+    not read before).
+  - Top loaders (Super Nintendo, Mega Drive, Nintendo 64): the cartridge pushes the dust
+    flaps in and seats, and the power switch slides on.
+  - NES: the cartridge slides in through the door and is pushed down, then the door shuts.
+  - PC Engine: the card goes into the front slot and the power lever locks it.
+  - Game Boy / Game Boy Advance: the cartridge goes into the back, the handheld turns
+    round and its screen lights up with the game.
+  - PSP: a UMD keep case; the UMD lifts out in its caddy. DVD keep case (`shape = dvd`).
+- A click when the cartridge seats (synthesised; it plays even with the music off).
+- `systems/gb.ini` (Game Boy / Color, Gambatte).
 
 ## [0.7.0] - 2026-11-14
 
