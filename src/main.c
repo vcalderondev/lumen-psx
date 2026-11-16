@@ -226,6 +226,80 @@ static void perf_stall(const char *what, double since)
    double ms = (now_s() - since) * 1000.0;
    if (g_perf_on && ms > 2.0) logf_("perf: stall %s %.1f ms", what, ms);
 }
+/* Where the main thread is when a frame hangs (debug/perf): a watchdog thread sees that no
+ * frame has ended for 150 ms and signals the main thread, whose handler notes the program
+ * counter, the link register and every word of the stack that points into the program's
+ * code. The frame that finally ends logs them ("perf: stuck at ..."); addr2line on the
+ * unstripped binary of the same build names the functions. */
+#include <signal.h>
+#include <ucontext.h>
+extern char __executable_start[], etext[];
+static volatile unsigned g_hb;                  /* frames ended */
+static volatile int      g_stuck_n;
+static uintptr_t         g_stuck_at[20];
+static pthread_t         g_main_pt;
+static uintptr_t         g_stack_hi;            /* end of the main thread's stack (/proc/self/maps) */
+static void stuck_handler(int sig, siginfo_t *si, void *ctx)
+{
+   const ucontext_t *uc = ctx;
+   const uintptr_t lo = (uintptr_t)__executable_start, hi = (uintptr_t)etext;
+   const uintptr_t *sp;
+   int n = 0, i;
+   (void)sig; (void)si;
+   if (g_stuck_n) return;
+#if defined(__arm__)
+   g_stuck_at[n++] = uc->uc_mcontext.arm_pc; g_stuck_at[n++] = uc->uc_mcontext.arm_lr; sp = (const uintptr_t *)uc->uc_mcontext.arm_sp;
+#elif defined(__aarch64__)
+   g_stuck_at[n++] = uc->uc_mcontext.pc; g_stuck_at[n++] = uc->uc_mcontext.regs[30]; sp = (const uintptr_t *)uc->uc_mcontext.sp;
+#else
+   (void)uc; sp = (const uintptr_t *)&uc;
+#endif
+   for (i = 0; i < 6000 && n < 20 && (uintptr_t)(sp + i + 1) <= g_stack_hi; i++)
+      if (sp[i] >= lo && sp[i] < hi && (n < 3 || sp[i] != g_stuck_at[n - 1])) g_stuck_at[n++] = sp[i];
+   g_stuck_n = n;
+}
+static void *stuck_watch(void *unused)
+{
+   unsigned seen = g_hb, sent = (unsigned)-1; int same = 0;
+   (void)unused;
+   for (;;)
+   {
+      struct timespec ts = { 0, 50000000L };
+      nanosleep(&ts, NULL);
+      if (g_hb != seen) { seen = g_hb; same = 0; continue; }
+      if (++same == 3 && sent != seen) { sent = seen; pthread_kill(g_main_pt, SIGUSR2); }
+   }
+   return NULL;
+}
+static void stuck_start(void)
+{
+   struct sigaction sa;
+   pthread_t th;
+   memset(&sa, 0, sizeof(sa));
+   sa.sa_sigaction = stuck_handler;
+   sa.sa_flags = SA_SIGINFO | SA_RESTART;
+   sigemptyset(&sa.sa_mask);
+   {
+      FILE *f = fopen("/proc/self/maps", "r");
+      char ln[300]; unsigned long a, b;
+      while (f && fgets(ln, sizeof(ln), f))
+         if (strstr(ln, "[stack]") && sscanf(ln, "%lx-%lx", &a, &b) == 2) g_stack_hi = (uintptr_t)b;
+      if (f) fclose(f);
+   }
+   if (!g_stack_hi || sigaction(SIGUSR2, &sa, NULL) != 0) return;
+   g_main_pt = pthread_self();
+   if (pthread_create(&th, NULL, stuck_watch, NULL) == 0) pthread_detach(th);
+   logf_("perf: code at 0x%lx - 0x%lx", (unsigned long)(uintptr_t)__executable_start, (unsigned long)(uintptr_t)etext);
+}
+static void stuck_report(void)
+{
+   char line[400]; int i, k = 0;
+   if (!g_stuck_n) return;
+   for (i = 0; i < g_stuck_n && k < (int)sizeof(line) - 12; i++) k += snprintf(line + k, sizeof(line) - k, " 0x%lx", (unsigned long)g_stuck_at[i]);
+   logf_("perf: stuck at%s", line);
+   g_stuck_n = 0;
+}
+
 static double g_pf_text_ms; static int g_pf_text_n;   /* text rendered and uploaded during this frame */
 static struct { int frames, slow, nin; double upd, draw, swap, upd_max, draw_max, swap_max, in_sum, in_max; Uint32 in_ts[8]; int in_n; } g_pf;
 static void perf_input(Uint32 ts) { if (g_perf_on && g_pf.in_n < 8) g_pf.in_ts[g_pf.in_n++] = ts; }
@@ -235,6 +309,8 @@ static void perf_frame(double t, double t_upd, double t_pre, double t_end)
    const double u = t_upd - t, d = t_pre - t_upd, w = t_end - t_pre;
    int i;
    if (!g_perf_on) return;
+   g_hb++;
+   stuck_report();
    g_pf.frames++; g_pf.upd += u; g_pf.draw += d; g_pf.swap += w;
    if (u > g_pf.upd_max) g_pf.upd_max = u;
    if (d > g_pf.draw_max) g_pf.draw_max = d;
@@ -4142,6 +4218,7 @@ int main(int argc, char **argv)
    boot_mark("last splash");
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
+   if (g_perf_on) stuck_start();
    rec_start();
 
    while (running)

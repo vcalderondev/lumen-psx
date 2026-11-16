@@ -370,9 +370,19 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
    if (g && g->port)
    {
       char ini[400];
+      /* asked once per system: this runs every frame while a port is selected, and a
+       * question to the stick can hang for as long as the stick is busy */
+      static char known[8][48]; static signed char has[8]; static int nknown;
+      int q;
       snprintf(nkey, sizeof(nkey), "%s-native", pl->flat);
-      snprintf(ini, sizeof(ini), "%s/assets/launch/%s/launch.ini", g_home, nkey);
-      key = file_exists(ini) ? nkey : "-";
+      for (q = 0; q < nknown && strcmp(known[q], nkey); q++) { }
+      if (q == nknown)
+      {
+         snprintf(ini, sizeof(ini), "%s/assets/launch/%s/launch.ini", g_home, nkey);
+         if (nknown < 8) { snprintf(known[nknown], sizeof(known[0]), "%s", nkey); has[nknown++] = (signed char)file_exists(ini); }
+         else q = -1;
+      }
+      key = (q >= 0 ? has[q] : file_exists(ini)) ? nkey : "-";
    }
    if (strcmp(f->key, key))
    {
