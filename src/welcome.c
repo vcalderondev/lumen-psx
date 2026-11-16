@@ -1,19 +1,26 @@
 /* First-run presentation: what Lumen changes compared with the stock PlayStation
  * Classic, in a few full-screen pages. Shown at start while the setting welcome_hide
  * is 0; the "don't show again" box (Triangle) sets it when the presentation ends.
- * Pages: Cross next / finish, Circle back, Triangle toggles the box. */
+ * Pages: Cross next / finish, Circle back, Triangle toggles the box.
+ * On a new install (setting language_asked = 0, set by main.c when settings.ini was
+ * missing) a language page comes first: Up / Down pick, Cross applies and goes on. It is
+ * shown even when the presentation itself is hidden, and never again once answered. */
 #include <stdio.h>
 #include <string.h>
 #include "lumen.h"
 #include "welcome.h"
 #include "i18n.h"
 #include "settings.h"
+#include "ui.h"
 
 #define PAGES   4
 #define LINES   4
 #define COL_W   900.0f
 
 static int    s_on, s_page, s_hide;
+static int    s_lang, s_lang_sel, s_intro;   /* language page up; its focus; presentation follows */
+static spring s_ring;                         /* focus ring position (row index) */
+static label_t s_lang_row[I18N_MAX_LANGS];
 static spring s_fade, s_slide;
 static label_t s_kicker, s_title, s_line[LINES], s_box;
 /* per page: kicker, title, up to LINES lines (tr keys) */
@@ -26,11 +33,17 @@ static const char *const k_text[PAGES][2 + LINES] = {
 
 void welcome_init(void)
 {
-   s_on = !settings_get_int("welcome_hide", 0, 0, 1);
-   s_page = 0; s_hide = 0;
-   memset(&s_fade, 0, sizeof(s_fade)); memset(&s_slide, 0, sizeof(s_slide));
+   int i;
+   s_intro = !settings_get_int("welcome_hide", 0, 0, 1);
+   s_lang = !settings_get_int("language_asked", 1, 0, 1) && i18n_count() > 1;
+   s_on = s_intro || s_lang;
+   s_page = 0; s_hide = 0; s_lang_sel = 0;
+   for (i = 0; i < i18n_count(); i++)
+      if (!strcmp(i18n_code(i), i18n_language())) s_lang_sel = i;
+   memset(&s_fade, 0, sizeof(s_fade)); memset(&s_slide, 0, sizeof(s_slide)); memset(&s_ring, 0, sizeof(s_ring));
+   s_ring.x = (float)s_lang_sel;
    s_fade.x = s_on ? 1.0f : 0.0f;
-   if (s_on) logf_("welcome: shown");
+   if (s_on) logf_("welcome: shown (language page: %d, presentation: %d)", s_lang, s_intro);
 }
 
 int   welcome_active(void) { return s_on || s_fade.x > 0.003f; }
@@ -47,9 +60,35 @@ static void finish(void)
    logf_("welcome: closed (hide next time: %d)", s_hide);
 }
 
+/* Cross on the language page: apply it, remember it was asked, go on */
+static void choose_language(void)
+{
+   const char *code = i18n_code(s_lang_sel);
+   if (code && strcmp(code, i18n_language()) && i18n_set_language(code) == 0)
+   {
+      char keep[16];
+      snprintf(keep, sizeof(keep), "%s", code);
+      settings_set("language", keep);
+      ui_language_changed();
+   }
+   settings_set_int("language_asked", 1);
+   settings_save();
+   logf_("welcome: language %s", i18n_language());
+   s_lang = 0;
+   if (s_intro) s_slide.x = 60.0f;
+   else finish();
+}
+
 void welcome_update(const ui_nav_t *nav, float dt)
 {
-   if (s_on)
+   if (s_on && s_lang)
+   {
+      const int n = i18n_count();
+      if (nav->down && s_lang_sel < n - 1) s_lang_sel++;
+      else if (nav->up && s_lang_sel > 0) s_lang_sel--;
+      else if (nav->confirm) choose_language();
+   }
+   else if (s_on)
    {
       if (nav->options) s_hide = !s_hide;
       if (nav->confirm || nav->right)
@@ -61,6 +100,37 @@ void welcome_update(const ui_nav_t *nav, float dt)
    }
    spring_step(&s_fade, s_on ? 1.0f : 0.0f, 90, 14, dt);
    spring_step(&s_slide, 0.0f, 170, 18, dt);
+   spring_step(&s_ring, (float)s_lang_sel, 260, 26, dt);
+}
+
+/* the language page: kicker, title, one row per installed language in its own name */
+#define LROW_W 440.0f
+#define LROW_H 46.0f
+#define LROW_STEP 54.0f
+static void draw_language(float x, float y, float a, const float acc[4], const float c1[4], const float c2[4])
+{
+   const int n = i18n_count();
+   float rx = (W - LROW_W) * 0.5f + s_slide.x, ry;
+   int i;
+   (void)x;
+   label_set(&s_kicker, g_font_small, tr("welcome.lang.kicker"));
+   if (s_kicker.tex) draw_2d(s_kicker.tex, (W - s_kicker.w) * 0.5f + s_slide.x, y, s_kicker.w, s_kicker.h, acc, 0);
+   y += 30;
+   label_set(&s_title, g_font_title, tr("welcome.lang.title"));
+   if (s_title.tex) draw_2d(s_title.tex, (W - s_title.w) * 0.5f + s_slide.x, y, s_title.w, s_title.h, c1, 0);
+   y += (s_title.h ? s_title.h : 40) + 34;
+   /* fit the list between the title and the help bar */
+   ry = y;
+   if (ry + n * LROW_STEP > 640.0f) ry = 640.0f - n * LROW_STEP;
+   for (i = 0; i < n; i++) ui_rest(rx, ry + i * LROW_STEP, LROW_W, LROW_H, LROW_H * 0.5f, a);
+   ui_focus(rx, ry + s_ring.x * LROW_STEP, LROW_W, LROW_H, LROW_H * 0.5f, a);
+   for (i = 0; i < n && i < I18N_MAX_LANGS; i++)
+   {
+      label_set(&s_lang_row[i], g_font_sub, i18n_name(i));
+      if (s_lang_row[i].tex)
+         draw_2d(s_lang_row[i].tex, rx + (LROW_W - s_lang_row[i].w) * 0.5f, ry + i * LROW_STEP + (LROW_H - s_lang_row[i].h) * 0.5f,
+                 s_lang_row[i].w, s_lang_row[i].h, i == s_lang_sel ? c1 : c2, 0);
+   }
 }
 
 static void text(label_t *l, TTF_Font *f, const char *key, float x, float y, const float c[4])
@@ -81,6 +151,7 @@ void welcome_draw(double t)
    if (a <= 0.003f) return;
    gl_use_2d();
    draw_2d(0, 0, 0, W, H, bg, 0);
+   if (s_lang) { draw_language(x, y, a, acc, c1, c2); return; }
    /* kicker, title, lines */
    text(&s_kicker, g_font_small, k_text[s_page][0], x, y, acc);
    y += 30;
@@ -117,4 +188,5 @@ void welcome_draw(double t)
    }
 }
 
-int welcome_last_page(void) { return s_page == PAGES - 1; }
+int welcome_last_page(void) { return !s_lang && s_page == PAGES - 1; }
+int welcome_language_page(void) { return s_on && s_lang; }
