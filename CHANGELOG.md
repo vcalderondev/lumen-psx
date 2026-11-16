@@ -11,7 +11,7 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   shows a pill on the Home for 8 s (Square opens the transfer; nothing opens by itself),
   and Settings, Library has "Transfer files". One card with two panes, one per drive:
   Left / Right change pane, Cross opens a folder or marks a file, Square marks, Start
-  copies what is marked to the other drive, Triangle ejects the second drive. The
+  copies what is marked to the other drive, Triangle opens the options. The
   destination is the folder open in the other pane or, on the Lumen stick, the games
   folder of any system declared in `systems/`. Both directions.
 - The copy runs on its own thread with a progress card (bytes, file count, time left) and
@@ -32,11 +32,13 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   disc without its `.sbi`: the serial is read from the image (`SYSTEM.CNF`) and looked up
   in `systems/psx.protected` (197 serials, from PSX Data Center's SBI list). Each
   problem shows the file and the folder. Read-only; the scan runs on its own thread.
+- USB transfer, Triangle: options. "Eject USB", and "Delete N items" for what is marked on
+  either drive, after a confirmation (Cancel focused). Lumen's own folder cannot be deleted.
 - `LUMEN_USB2=<folder>` makes a folder play the second drive (psc-sim) and
   `LUMEN_USB2_KBPS=<n>` slows the copy down, to test the flow without hardware.
 
 Checked in psc-sim only (transfer: browse, copy both ways, stop, the drive vanishing mid-copy,
-not enough space, the FAT32 4 GB limit, the offer, Settings; library check: a library broken
+not enough space, the FAT32 4 GB limit, delete, the offer, Settings; library check: a library broken
 on purpose, LibCrypt images, a case-sensitive disk). Not yet verified on the console: detecting and mounting a real second
 drive, remounting it writable, power drop-outs on the front ports.
 

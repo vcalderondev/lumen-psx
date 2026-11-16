@@ -400,7 +400,7 @@ static struct { int pending; unsigned id; char dir[PATH_LEN], select[NAME_LEN]; 
 static struct { int ready, ok, n; unsigned id; long long free_b; char dir[PATH_LEN], select[NAME_LEN]; ent_t ent[MAX_ENT]; } s_lres[2];
 
 static struct {
-   int  pending, n, dst_side;
+   int  pending, n, dst_side, del;   /* del: delete names from src (dst_side = that side) */
    char src[PATH_LEN], dst[PATH_LEN];
    char names[MAX_SEL][NAME_LEN];
 } s_creq;
@@ -624,20 +624,69 @@ static int mkdirs(const char *dst)
    return (mkdir(p, 0755) == 0 || errno == EEXIST) ? 0 : -1;
 }
 
+/* everything under path, then path itself; counts the files removed */
+static int rm_tree(const char *path, int depth, int *count)
+{
+   struct stat st;
+   if (s_lost) return -1;
+   if (lstat(path, &st) != 0) return errno == ENOENT ? 0 : -1;
+   if (S_ISDIR(st.st_mode))
+   {
+      DIR *d;
+      struct dirent *e;
+      int rc = 0;
+      if (depth > 32 || !(d = opendir(path))) return -1;
+      while (!rc && (e = readdir(d)))
+      {
+         char p[PATH_LEN];
+         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+         rc = join(p, sizeof(p), path, e->d_name) ? rm_tree(p, depth + 1, count) : -1;
+      }
+      closedir(d);
+      return rc ? rc : rmdir(path);
+   }
+   if (unlink(path) != 0) return -1;
+   (*count)++;
+   return 0;
+}
+
+static void do_delete(const char *dir, char names[][NAME_LEN], int n, int side)
+{
+   char p[PATH_LEN];
+   walk_t w;
+   int i, fd, count = 0;
+   memset(&w, 0, sizeof(w));
+   logf_("transfer: delete %d item(s) in %s", n, dir);
+   if (side == SIDE_OTHER && dev_set_rw(1) != 0) cp_fail(&w, s_lost ? C_LOST : C_RO, "");
+   for (i = 0; i < n && w.status == C_OK; i++)
+      if (join(p, sizeof(p), dir, names[i]) && rm_tree(p, 0, &count) != 0) cp_fail(&w, io_status(&w, C_WRITE), names[i]);
+   if (w.status != C_LOST)
+   {
+      if ((fd = open(dir, O_RDONLY | O_CLOEXEC)) >= 0) { if (syncfs(fd) != 0) sync(); close(fd); }
+      if (side == SIDE_OTHER) dev_set_rw(0);
+   }
+   logf_("transfer: delete ended status %d: %d file(s) removed%s%s", w.status, count, w.err_name[0] ? ", at " : "", w.err_name);
+   SDL_LockMutex(s_mx);
+   s_cp.running = 0; s_cp.done = 1; s_cp.status = w.status; s_cp.files_done = count;
+   snprintf(s_cp.cur, sizeof(s_cp.cur), "%s", w.err_name);
+   SDL_UnlockMutex(s_mx);
+}
+
 static void do_copy(void)
 {
    static char names[MAX_SEL][NAME_LEN];
    char src[PATH_LEN], dst[PATH_LEN], s2[PATH_LEN], d2[PATH_LEN], fs[16] = "";
    walk_t w;
-   int n, i, dst_side, fd;
+   int n, i, dst_side, fd, del;
    long long avail = 0, need = 0;
    memset(&w, 0, sizeof(w));
    SDL_LockMutex(s_mx);
-   n = s_creq.n; dst_side = s_creq.dst_side; s_creq.pending = 0;
+   n = s_creq.n; dst_side = s_creq.dst_side; del = s_creq.del; s_creq.pending = 0;
    snprintf(src, sizeof(src), "%s", s_creq.src); snprintf(dst, sizeof(dst), "%s", s_creq.dst);
    memcpy(names, s_creq.names, sizeof(names[0]) * (size_t)n);
    snprintf(fs, sizeof(fs), "%s", dst_side == SIDE_OTHER ? s_dev.fs : s_root_fs);
    SDL_UnlockMutex(s_mx);
+   if (del) { do_delete(src, names, n, dst_side); return; }
    w.fat = !strcmp(fs, "vfat") || !strcmp(fs, "msdos");
    logf_("transfer: copy %d item(s) from %s to %s", n, src, dst);
 
@@ -707,7 +756,7 @@ static int worker_main(void *arg)
 
 /* ------------------------------------------------------------------------ */
 /* UI state                                                                  */
-enum { V_BROWSE, V_DEST, V_COPY, V_STOP, V_RESULT, V_EJECT };
+enum { V_BROWSE, V_DEST, V_COPY, V_STOP, V_RESULT, V_EJECT, V_MENU, V_DELQ, V_DEL };
 
 typedef struct {
    int     side;
@@ -725,7 +774,7 @@ typedef struct {
 
 static pane_t  s_pane[2];
 static int     s_act;                      /* pane with the focus */
-static int     s_open, s_view, s_btn;
+static int     s_open, s_view, s_btn, s_msel, s_del;   /* s_del: the running job deletes */
 static unsigned s_req_id;
 static double  s_t0, s_offer_t = -100.0, s_copy_t0;
 static int     s_offer_wait, s_home;
@@ -909,7 +958,7 @@ float transfer_amount(void) { return clampf(s_fade.x, 0.0f, 1.0f); }
 
 int transfer_hint_set(void)
 {
-   if (s_view == V_BROWSE || s_view == V_EJECT) return HINTS_TRANSFER;
+   if (s_view == V_BROWSE || s_view == V_EJECT || s_view == V_DEL) return HINTS_TRANSFER;
    if (s_view == V_COPY) return HINTS_TRANSFER_COPY;
    return HINTS_CONFIRM;
 }
@@ -1023,7 +1072,7 @@ static void copy_start(double t)
    SDL_LockMutex(s_mx);
    for (i = 0; i < a->n && n < MAX_SEL; i++)
       if (a->nmark ? a->ent[i].mark : i == a->sel) snprintf(s_creq.names[n++], NAME_LEN, "%s", a->ent[i].name);
-   s_creq.n = n; s_creq.dst_side = o->side;
+   s_creq.n = n; s_creq.dst_side = o->side; s_creq.del = 0;
    snprintf(s_creq.src, PATH_LEN, "%s", a->dir);
    snprintf(s_creq.dst, PATH_LEN, "%s", s_dest[s_dsel].path);
    memset(&s_cp, 0, sizeof(s_cp));
@@ -1033,8 +1082,46 @@ static void copy_start(double t)
    SDL_CondSignal(s_cv);
    SDL_UnlockMutex(s_mx);
    path_text(s_dst_txt, sizeof(s_dst_txt), o->side, o->root, s_dest[s_dsel].path);
-   s_res.dst_side = o->side;
+   s_res.dst_side = o->side; s_del = 0;
    s_view = V_COPY; s_copy_t0 = t;
+}
+
+/* the Lumen stick's own folder, and anything that holds it, is not deleted from here */
+static int delete_refused(void)
+{
+   const pane_t *a = &s_pane[s_act];
+   size_t hl = strlen(g_home);
+   int i;
+   if (a->side != SIDE_LUMEN) return 0;
+   for (i = 0; i < a->n; i++)
+   {
+      char p[PATH_LEN];
+      size_t pl;
+      if (!(a->nmark ? a->ent[i].mark : i == a->sel) || !join(p, sizeof(p), a->dir, a->ent[i].name)) continue;
+      pl = strlen(p);
+      if (!strncmp(p, g_home, hl) && (p[hl] == 0 || p[hl] == '/')) return 1;      /* in it */
+      if (!strncmp(g_home, p, pl) && g_home[pl] == '/') return 1;                   /* around it */
+   }
+   return 0;
+}
+
+static void delete_start(void)
+{
+   const pane_t *a = &s_pane[s_act];
+   int i, n = 0;
+   SDL_LockMutex(s_mx);
+   for (i = 0; i < a->n && n < MAX_SEL; i++)
+      if (a->nmark ? a->ent[i].mark : i == a->sel) snprintf(s_creq.names[n++], NAME_LEN, "%s", a->ent[i].name);
+   s_creq.n = n; s_creq.dst_side = a->side; s_creq.del = 1;
+   snprintf(s_creq.src, PATH_LEN, "%s", a->dir);
+   memset(&s_cp, 0, sizeof(s_cp));
+   s_cp.running = 1;
+   s_stop = 0;
+   s_creq.pending = 1;
+   SDL_CondSignal(s_cv);
+   SDL_UnlockMutex(s_mx);
+   s_res.dst_side = a->side; s_del = 1;
+   s_view = V_DEL;
 }
 
 static void copy_collect(double t)
@@ -1051,6 +1138,15 @@ static void copy_collect(double t)
    }
    SDL_UnlockMutex(s_mx);
    if (!done) return;
+   if (s_del && s_res.status == C_OK)
+   {  /* a delete that went well needs no card: back to the list */
+      s_view = V_BROWSE;
+      pane_reload(0, t); pane_reload(1, t);
+      if (s_res.dst_side == SIDE_LUMEN) ui_library_changed();
+      panel_toast("xfer.deleted");
+      music_sfx(SFX_CONFIRM);
+      return;
+   }
    s_view = V_RESULT; s_btn = 0;
    s_sub.x = 0.6f;
    if (s_res.status != C_LOST) { pane_reload(0, t); pane_reload(1, t); }
@@ -1071,7 +1167,13 @@ static void browse_input(const ui_nav_t *nav, double t)
 {
    pane_t *pn = &s_pane[s_act];
    int before = pn->sel, circle = nav->back && !nav->erase;
-   if (nav->options) { music_sfx(SFX_CONFIRM); eject_start(); return; }
+   if (nav->options)
+   {  /* Triangle: the options (eject, delete what is marked) */
+      s_nsel = pn->nmark ? pn->nmark : (pn->n ? 1 : 0);
+      s_msel = 0; s_view = V_MENU; s_sub.x = s_sub.v = 0;
+      music_sfx(SFX_OPEN);
+      return;
+   }
    if (circle)
    {
       music_sfx(SFX_BACK);
@@ -1164,9 +1266,9 @@ void transfer_update(const ui_nav_t *nav, double t, float dt, int home_free)
       return;
    }
 
-   if (s_view == V_COPY || s_view == V_STOP) copy_collect(t);
+   if (s_view == V_COPY || s_view == V_STOP || s_view == V_DEL) copy_collect(t);
    /* the drive went away under the card: a copy reports it itself, anything else closes */
-   if (s_dev_state != DEV_READY && s_view != V_COPY && s_view != V_STOP && s_view != V_RESULT && s_view != V_EJECT)
+   if (s_dev_state != DEV_READY && s_view != V_COPY && s_view != V_STOP && s_view != V_RESULT && s_view != V_EJECT && s_view != V_DEL)
    { close_card(); panel_toast("xfer.removed"); return; }
    if (s_view == V_EJECT && s_dev_state == DEV_NONE) { close_card(); panel_toast("xfer.removed"); return; }
 
@@ -1190,6 +1292,28 @@ void transfer_update(const ui_nav_t *nav, double t, float dt, int home_free)
       }
       case V_COPY:
          if (circle) { s_view = V_STOP; s_btn = 0; music_sfx(SFX_OPEN); }
+         break;
+      case V_MENU:
+         if (circle || nav->options) { s_view = V_BROWSE; music_sfx(SFX_BACK); break; }
+         if (nav->up && s_msel) { s_msel = 0; music_sfx(SFX_FOCUS); }
+         if (nav->down && !s_msel && s_nsel) { s_msel = 1; music_sfx(SFX_FOCUS); }
+         if (nav->confirm)
+         {
+            music_sfx(SFX_CONFIRM);
+            if (!s_msel) eject_start();
+            else if (delete_refused()) { s_view = V_BROWSE; panel_toast("xfer.del_protected"); }
+            else { s_view = V_DELQ; s_btn = 0; }
+         }
+         break;
+      case V_DELQ:   /* Cancel has the focus; the destructive answer is never the default */
+         if (nav->left && s_btn) { s_btn = 0; music_sfx(SFX_MOVE_PREV); }
+         if (nav->right && !s_btn) { s_btn = 1; music_sfx(SFX_MOVE_NEXT); }
+         if (circle) { s_view = V_BROWSE; music_sfx(SFX_BACK); }
+         else if (nav->confirm)
+         {
+            music_sfx(s_btn ? SFX_CONFIRM : SFX_BACK);
+            if (s_btn) delete_start(); else s_view = V_BROWSE;
+         }
          break;
       case V_STOP:
          if (nav->left && s_btn) { s_btn = 0; music_sfx(SFX_MOVE_PREV); }
@@ -1525,15 +1649,50 @@ static void draw_result(float a)
    case C_BIG: snprintf(title, sizeof(title), "%s", tr("xfer.err_big")); snprintf(l1, sizeof(l1), "%s", s_res.name); break;
    case C_RO:  snprintf(title, sizeof(title), "%s", tr("xfer.err_ro")); break;
    case C_READ: snprintf(title, sizeof(title), "%s", tr("xfer.err_read")); snprintf(l1, sizeof(l1), "%s", s_res.name); break;
-   default:    snprintf(title, sizeof(title), "%s", tr("xfer.err_write")); snprintf(l1, sizeof(l1), "%s", s_res.name); break;
+   default:    snprintf(title, sizeof(title), "%s", tr(s_del ? "xfer.err_del" : "xfer.err_write")); snprintf(l1, sizeof(l1), "%s", s_res.name); break;
    }
-   if (!ok && s_res.status != C_STOPPED && s_res.status != C_SPACE && s_res.status != C_RO && s_res.files_done > 0)
+   if (!ok && !s_del && s_res.status != C_STOPPED && s_res.status != C_SPACE && s_res.status != C_RO && s_res.files_done > 0)
    {  /* what did get across before the error */
       static char kept[200];
       trf(kept, sizeof(kept), "xfer.stopped_note", "n", n, NULL);
       l2 = kept;
    }
    draw_dialog(title, l1[0] ? l1 : NULL, l2, tr("xfer.ok"), b1, 1, 0, a);
+}
+
+static void draw_menu(float a)
+{
+   const float w = 480, h = 212, x = (W - w) * 0.5f, y = 246 + (1 - a) * 12, lx = x + 14, ly = y + 58, lw = w - 28;
+   float txt[4], dim[4], red[4];
+   char buf[560], num[16];
+   const pane_t *pn = &s_pane[s_act];
+   col4(txt, TC_TEXT, a); col4(dim, TC_DIM, a); col4(red, TC_DANGER, a * (s_nsel ? 1.0f : 0.4f));
+   ui_card(x, y, w, h, a);
+   ui_kicker(&s_sk, tr("hint.options"), x + PADX, y + 24, a);
+   ui_focus(lx, ly + s_msel * ROW + 1, lw, ROW - 2, (ROW - 2) * 0.5f, a);
+   label_set(&s_st, g_font_sub, tr("xfer.eject"));
+   draw_label(&s_st, lx + 20, ly + (ROW - s_st.h) * 0.5f, txt);
+   snprintf(num, sizeof(num), "%d", s_nsel);
+   label_set(&s_l2, g_font_sub, s_nsel == 1 ? tr("xfer.del_one") : trf(buf, sizeof(buf), "xfer.del_n", "n", num, NULL));
+   draw_label(&s_l2, lx + 20, ly + ROW + (ROW - s_l2.h) * 0.5f, red);
+   label_set(&s_l1, g_font_small, fit_path(g_font_small, pn->path_txt, w - 2 * PADX, buf, sizeof(buf)));
+   draw_label(&s_l1, x + PADX, y + h - 20 - s_l1.h, dim);
+}
+
+static void draw_delq(float a)
+{
+   const pane_t *pn = &s_pane[s_act];
+   char title[300], num[16];
+   const char *one = NULL;
+   int i;
+   snprintf(num, sizeof(num), "%d", s_nsel);
+   if (s_nsel == 1)
+   {  /* one entry: its name goes on the second line */
+      for (i = 0; i < pn->n; i++) if (pn->nmark ? pn->ent[i].mark : i == pn->sel) { one = pn->ent[i].name; break; }
+      trf(title, sizeof(title), "xfer.del_q_one", "drive", side_name(pn->side), NULL);
+   }
+   else trf(title, sizeof(title), "xfer.del_q", "n", num, "drive", side_name(pn->side), NULL);
+   draw_dialog(title, one, tr("xfer.del_note"), tr("confirm.cancel"), tr("confirm.delete"), 0, 1, a);
 }
 
 static void draw_offer(double t)
@@ -1593,8 +1752,10 @@ void transfer_draw(double t)
       case V_COPY: draw_copy(t, sa); break;
       case V_STOP: draw_dialog(tr("xfer.stop_q"), tr("xfer.stop_note"), NULL, tr("xfer.stop_no"), tr("xfer.stop_yes"), 0, 1, sa); break;
       case V_RESULT: draw_result(sa); break;
-      case V_EJECT:
-         label_set(&s_busy_l, g_font_sub, tr("xfer.ejecting"));
+      case V_MENU: draw_menu(sa); break;
+      case V_DELQ: draw_delq(sa); break;
+      case V_EJECT: case V_DEL:
+         label_set(&s_busy_l, g_font_sub, tr(s_view == V_DEL ? "xfer.deleting" : "xfer.ejecting"));
          draw_label(&s_busy_l, cx + (CW - s_busy_l.w) * 0.5f, cy + CH * 0.5f - 34, txt);
          draw_dots(cx + CW * 0.5f, cy + CH * 0.5f + 18, t, txt);
          break;

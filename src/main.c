@@ -2095,7 +2095,7 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "cross" },    "btn.cross",        "hint.open" },
       { { "square" },   "btn.square",       "hint.mark" },
       { { "start" },    "btn.start",        "hint.copy" },
-      { { "triangle" }, "btn.triangle",     "hint.eject" },
+      { { "triangle" }, "btn.triangle",     "hint.options" },
       { { "circle" },   "btn.circle",       "hint.back" } },
    [HINTS_TRANSFER_COPY] = {  /* USB transfer, a copy running */
       { { "circle" },   "btn.circle",       "hint.cancel" } },
