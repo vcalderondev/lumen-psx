@@ -11,6 +11,7 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 #include "lumen.h"
+#include "music.h"
 #include "panel.h"
 #include "i18n.h"
 #include "settings.h"
@@ -84,7 +85,7 @@ enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
        ID_PROFILE_AVATAR, ID_PROFILE_AVATAR_REMOVE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
-       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_LIB_STOCK = 500,
+       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_SND_UI, ID_LIB_STOCK = 500,
        ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_DSP_CRT, ID_INFO = 900 };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
@@ -178,7 +179,8 @@ static int nearest(const int *list, int n, int v)
 /* ------------------------------------------------------------------------ */
 /* modal: on-screen keyboard / confirm dialog                                */
 enum { M_NONE, M_OSK, M_CONFIRM };
-static int     s_modal, s_modal_drawn;  /* open modal / modal still fading out */
+static int     s_modal, s_modal_drawn;
+static int     s_sfx = -1;         /* sound the input of this frame asked for (panel_update plays it) */  /* open modal / modal still fading out */
 static spring  s_mod;
 
 /* keyboard (6.6) */
@@ -382,6 +384,9 @@ static void page_build(void)
       trf(v, sizeof(v), "sound.vol_value", "n", num, NULL);
       if ((r = row_add(R_CHOICE, ID_SND_VOLUME, tr("sound.volume"), v)))
       { r->at_lo = vol <= 0; r->at_hi = vol >= 100; }
+      on = settings_get_int("ui_sounds", 1, 0, 1);
+      if ((r = row_add(R_CHOICE, ID_SND_UI, tr("sound.ui"), tr(on ? "value.on" : "value.off"))))
+      { r->at_lo = !on; r->at_hi = on; }
       snprintf(s_foot, sizeof(s_foot), "%s", tr("sound.note"));
       break;
    }
@@ -669,6 +674,10 @@ static void row_change(const row_t *r, int dir)
       settings_set_int("music", dir > 0);
       ui_sound_changed();
       break;
+   case ID_SND_UI:
+      settings_set_int("ui_sounds", dir > 0);
+      ui_sound_changed();
+      break;
    case ID_DSP_OUTPUT:
       settings_set("display", dir > 0 ? "1080p" : "720p");
       break;
@@ -746,12 +755,16 @@ static void page_input(const ui_nav_t *nav)
    if (r && r->type == R_CHOICE && (nav->left || nav->right))
    {
       if (!r->enabled && r->why) panel_toast(r->why);
-      else row_change(r, nav->right ? 1 : -1);
+      else
+      {
+         if (r->enabled && !(nav->right ? r->at_hi : r->at_lo)) s_sfx = SFX_CONFIRM;   /* not at its end */
+         row_change(r, nav->right ? 1 : -1);
+      }
    }
    if (nav->options) { panel_close(); return; }   /* Triangle: out of the whole flow */
    if (nav->confirm && r && !r->enabled && r->why) panel_toast(r->why);
-   else if (nav->confirm && r && r->type == R_ACTION && r->enabled) row_action(r);
-   else if (nav->confirm && r && r->type == R_CHOICE) row_cycle(r);
+   else if (nav->confirm && r && r->type == R_ACTION && r->enabled) { s_sfx = SFX_CONFIRM; row_action(r); }
+   else if (nav->confirm && r && r->type == R_CHOICE && r->enabled) { s_sfx = SFX_CONFIRM; row_cycle(r); }
    else if (nav->back || (nav->left && !(r && r->type == R_CHOICE)))
    {  /* back to the rail */
       color_commit();
@@ -888,7 +901,7 @@ static void osk_input(const ui_nav_t *nav)
    /* Square (and Backspace) erase; Circle cancels like Triangle and like ○ everywhere
     * else in the panel */
    if (nav->options || (nav->back && !nav->erase)) { s_modal = M_NONE; return; }
-   if (nav->start) { osk_ok(); return; }
+   if (nav->start) { s_sfx = SFX_CONFIRM; osk_ok(); return; }
    if (nav->erase) osk_erase();
    if (nav->l1) osk_accent(-1);
    if (nav->r1) osk_accent(1);
@@ -902,6 +915,7 @@ static void osk_input(const ui_nav_t *nav)
    }
    if (nav->confirm)
    {
+      s_sfx = SFX_CONFIRM;
       if (s_orow < 4)
       {
          int k = s_orow * 10 + s_ocol;
@@ -987,6 +1001,7 @@ static void confirm_input(const ui_nav_t *nav)
    if (nav->confirm)
    {
       s_modal = M_NONE;
+      s_sfx = s_csel == 1 ? SFX_CONFIRM : SFX_BACK;
       if (s_csel == 1 && s_con_yes) s_con_yes();
    }
 }
@@ -1039,6 +1054,7 @@ void panel_osk(const char *title_key, const char *initial, const char *(*accept)
 {
    if (s_open) return;
    s_open = 1; s_osk_only = 1;
+   music_sfx(SFX_OPEN);
    osk_open(title_key, initial, accept);
    logf_("panel: keyboard (%s)", title_key);
 }
@@ -1047,6 +1063,7 @@ void panel_open(void)
 {
    if (s_open) return;
    s_open = 1;
+   music_sfx(SFX_OPEN);
    if (s_slide.x > SLIDE_OFF - 20.0f) { s_slide.x = SLIDE_OFF; s_slide.v = 0; }
    s_in_card = 0;
    page_enter(s_page >= 1 && s_page < P_COUNT ? s_page : P_LANGUAGE, 0);
@@ -1085,14 +1102,32 @@ int panel_hint_set(void)
    }
 }
 
+/* interface sounds (guidelines/06 "Sound"): what the input of this frame changed */
+static void panel_sound(int open, int page, int sel, int card, int modal, int orow, int ocol, int csel)
+{
+   int id = -1;
+   if (s_sfx >= 0) id = s_sfx;
+   else if (open && !s_open) id = SFX_BACK;
+   else if (s_modal != modal) id = s_modal != M_NONE ? SFX_OPEN : SFX_BACK;
+   else if (card != s_in_card) id = s_in_card ? SFX_CONFIRM : SFX_BACK;
+   else if (page != s_page || sel != s_sel || orow != s_orow) id = SFX_FOCUS;
+   else if (ocol != s_ocol || csel != s_csel) id = s_ocol > ocol || s_csel > csel ? SFX_MOVE_NEXT : SFX_MOVE_PREV;
+   s_sfx = -1;
+   if (id >= 0) music_sfx(id);
+}
+
 void panel_update(const ui_nav_t *nav, double t, float dt)
 {
    (void)t;
    if (s_open)
    {
+      int open = s_open, page = s_page, sel = s_sel, card = s_in_card, modal = s_modal;
+      int orow = s_orow, ocol = s_ocol, csel = s_csel;
+      s_sfx = -1;
       if (s_modal == M_OSK) osk_input(nav);
       else if (s_modal == M_CONFIRM) confirm_input(nav);
       else page_input(nav);
+      panel_sound(open, page, sel, card, modal, orow, ocol, csel);
    }
    else if (s_modal != M_NONE) s_modal = M_NONE;
    if (s_open && s_osk_only && s_modal == M_NONE) { s_open = 0; s_osk_only = 0; }

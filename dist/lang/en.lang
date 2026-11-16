@@ -85,6 +85,7 @@ ss.note = Demos never save. Press any button to come back.
 sound.music = Menu music
 sound.volume = Volume
 sound.vol_value = {n}%
+sound.ui = Interface sounds
 sound.note = Each game can bring its own track (music.ogg in its folder); without one, the menu theme plays.
 
 # graphics

@@ -2202,11 +2202,13 @@ void ui_request_restart(void)
    logf_("frontend restart requested (theme)");
 }
 
-/* the Sound page changed music / music_volume */
+/* the Sound page changed music / music_volume / ui_sounds */
 void ui_sound_changed(void)
 {
    int on = settings_get_int("music", 1, 0, 1);
-   music_set_volume(on ? settings_get_int("music_volume", 60, 0, 100) / 100.0f : 0.0f);
+   float vol = settings_get_int("music_volume", 60, 0, 100) / 100.0f;
+   music_set_volume(on ? vol : 0.0f);
+   music_sfx_level(settings_get_int("ui_sounds", 1, 0, 1) ? vol : 0.0f);   /* guidelines/06 "Sound" */
 }
 
 /* "Preview now" in the screensaver page */
@@ -3930,12 +3932,12 @@ int main(int argc, char **argv)
          if (attract_active() || play_t >= 0 || !g_nplat) g_focus = FOCUS_GAMES;
          else if (free_)
          {
-            if (in_pressed[IN_UP] && g_focus < FOCUS_PROFILE) g_focus++;
-            else if (in_pressed[IN_DOWN] && g_focus > FOCUS_GAMES) g_focus--;
+            if (in_pressed[IN_UP] && g_focus < FOCUS_PROFILE) { g_focus++; music_sfx(SFX_FOCUS); }
+            else if (in_pressed[IN_DOWN] && g_focus > FOCUS_GAMES) { g_focus--; music_sfx(SFX_FOCUS); }
             else if (g_focus != FOCUS_GAMES)
             {
-               if (in_pressed[IN_BACK]) g_focus = FOCUS_GAMES;
-               else if (g_focus == FOCUS_TABS && in_pressed[IN_PLAY]) g_focus = FOCUS_GAMES;
+               if (in_pressed[IN_BACK]) { g_focus = FOCUS_GAMES; music_sfx(SFX_BACK); }
+               else if (g_focus == FOCUS_TABS && in_pressed[IN_PLAY]) { g_focus = FOCUS_GAMES; music_sfx(SFX_CONFIRM); }
                else if (g_focus == FOCUS_TABS && move) { plat_move = move; }
                else if (g_focus == FOCUS_PROFILE && in_pressed[IN_PLAY]) open_profile = 1;
                move = page = play = want_menu = 0; held_dir = 0;
@@ -4014,17 +4016,22 @@ int main(int argc, char **argv)
          if (att.launch_demo && play_t < 0) { exit_code = 11; running = 0; }
       }
 
-      if (n && move) { sel = (sel + move + n) % n; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; }
+      if (n && move)
+      {
+         sel = (sel + move + n) % n; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t;
+         if (!attract_active() && n > 1) music_sfx(move > 0 ? SFX_MOVE_NEXT : SFX_MOVE_PREV);
+      }
       if (n > 1 && page)
       {  /* a page is what the row shows to the right of the selection; from the last
           * (first) game the next (previous) page wraps to the other end */
          int ns = page > 0 ? (sel == n - 1 ? 0 : sel + DASH_PAGE) : (sel == 0 ? n - 1 : sel - DASH_PAGE);
          ns = ns < 0 ? 0 : (ns > n - 1 ? n - 1 : ns);
-         if (ns != sel) { sel = ns; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; }
+         if (ns != sel) { sel = ns; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; music_sfx(page > 0 ? SFX_PAGE_NEXT : SFX_PAGE_PREV); }
       }
       if (g_nplat > 1 && plat_move)
       {
          int np = restore >= 0 ? restore : (sel_plat + plat_move + g_nplat) % g_nplat;
+         if (restore < 0 && !attract_active()) music_sfx(plat_move > 0 ? SFX_SYSTEM_NEXT : SFX_SYSTEM_PREV);
          sel_plat = np; sel = 0; pl = &g_plat[sel_plat]; n = pl->count; sel_t = t;
          if (restore >= 0 && home_sel < n) sel = home_sel;
          info_y.x = 18.0f; info_a.x = 0.0f; plat_x.v = plat_move * 900.0f;
@@ -4034,6 +4041,7 @@ int main(int argc, char **argv)
       {
          game_t *pg = &g_games[pl->first + sel];
          play_t = t;
+         music_sfx(SFX_PLAY);
          logf_("play: %s", pg->content);
          play_pt = 0.0f;
          flat_begin(pl, pg);

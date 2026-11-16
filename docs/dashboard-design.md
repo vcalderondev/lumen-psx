@@ -104,6 +104,9 @@ the cover colours (computed when the cover is decoded, worker thread):
   `<stem>-music.ogg|wav` for file libraries), else `<home>/assets/music/menu.ogg`;
   settings `music` (0/1) and `music_volume` (0..100) on the Sound page; ducked under the
   panel; faded out on launch; the audio device is closed before RetroArch starts.
+- Interface sounds: `music_sfx()` (src/music.h), synthesised at init next to the launch
+  clicks and mixed in four slots over the music; setting `ui_sounds` on the Sound page,
+  gain `music_volume` (lumen-design guidelines/06 "Sound").
 - Play statistics: scripts/run.sh appends `<epoch>\t<seconds>\t<system>\t<content>` to
   `<home>/profiles/<profile>/playlog.tsv` after every normal session; src/stats.c
   aggregates it per profile (time played; "last played" only with a synced clock).

@@ -85,6 +85,7 @@ ss.note = As demos não salvam o progresso. Pressione qualquer botão para volta
 sound.music = Música do menu
 sound.volume = Volume
 sound.vol_value = {n}%
+sound.ui = Sons da interface
 sound.note = Cada jogo pode trazer sua própria faixa (music.ogg na pasta dele); sem ela, toca o tema do menu.
 
 # gráficos
