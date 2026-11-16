@@ -2102,6 +2102,9 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "cross" },    "btn.cross",        "hint.next" },
       { { "circle" },   "btn.circle",       "hint.back" },
       { { "triangle" }, "btn.triangle",     "hint.dont_show" } },
+   [HINTS_WELCOME_LANG] = {
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "dpad" },     "btn.dpad",         "hint.move" } },
    [HINTS_WELCOME_LAST] = {
       { { "cross" },    "btn.cross",        "hint.start" },
       { { "circle" },   "btn.circle",       "hint.back" },
@@ -3653,7 +3656,8 @@ int main(int argc, char **argv)
    for (i = 0; i < SDL_NumJoysticks(); i++) in_open(i);
    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
    TTF_Init();
-   settings_load(g_home);
+   if (settings_load(g_home) < 0)
+      settings_set_int("language_asked", 0);   /* new install: the welcome asks for the language */
    theme_init(g_home);
    {  /* a theme may bring its own fonts (themes/<id>/fonts/<weight>.ttf) */
       theme_asset(font_b, sizeof(font_b), "fonts/bold.ttf");
@@ -3662,7 +3666,7 @@ int main(int argc, char **argv)
       theme_asset(font_sb, sizeof(font_sb), "fonts/semibold.ttf");
    }
    i18n_init(g_home);
-   i18n_set_language(settings_get("language", "es"));
+   i18n_set_language(settings_get("language", "en"));
    profiles_load(g_home);
    coll_load(g_home, profiles_active()->id);
    boot_mark("sdl+config");
@@ -4219,7 +4223,7 @@ int main(int argc, char **argv)
                 * panel is open it is centred in the free space left of it */
                static int h_cur = HINTS_CAROUSEL, h_prev = -1;
                static float h_mix = 1.0f;
-               int want = welcome_active() ? (welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
+               int want = welcome_active() ? (welcome_language_page() ? HINTS_WELCOME_LANG : welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
                           filepicker_open_now() ? HINTS_FILEPICKER :
                           panel_active() ? panel_hint_set() :
                           gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
@@ -4250,7 +4254,7 @@ int main(int argc, char **argv)
             attract_draw(t);
             if (welcome_active())
             {  /* over everything; the help bar is drawn again on top of it */
-               int hs = welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME;
+               int hs = welcome_language_page() ? HINTS_WELCOME_LANG : welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME;
                welcome_draw(t);
                hints_draw(hs, 672, welcome_amount());
             }

@@ -147,7 +147,8 @@ Format: one `key=value` per line, `#` comments, no sections, UTF-8, whitespace a
 | key | values | default | used by |
 |---|---|---|---|
 | `version` | `1` | `1` | future migrations |
-| `language` | code of a file in `<home>/lang/` | `es` | i18n |
+| `language` | code of a file in `<home>/lang/` | `en` | i18n |
+| `language_asked` | 0 / 1 | `0` on a new install (absent = 1) | welcome: 0 shows the language page first |
 | `profile` | profile id | `main` | profiles, launch |
 | `screensaver_minutes` | `0` (off), 1–60 | `5` | attract |
 | `demo_enabled` | `0`/`1` | `1` | attract |
