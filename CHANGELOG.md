@@ -21,11 +21,21 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   writable only while it is the destination. A drive that disappears mid-copy ends the
   copy with a message and the unfinished file is removed. After a copy to the Lumen stick
   the library is rescanned.
+- Library check: Settings, Library, "Check library" (`docs/library-check.md`; lumen-design
+  `library-audit.html`). It reads every system declared in `systems/` and lists, game by
+  game, what keeps a game from being listed or from starting: a folder without `Game.ini`,
+  a `Game.ini` without `Discs=` or naming a disc that is not there, a `.cue` or `.m3u`
+  that points to a missing file (or writes its name with other capitals on a
+  case-sensitive stick), empty files, a `.bin` without its `.cue`, an empty game folder, a
+  system whose core is missing, a homebrew app without `app.ini` or its program, an
+  unfinished copy, and an `.sbi` that is not named like its disc. Discs listed in an
+  optional `systems/<id>.protected` are reported when their `.sbi` is missing. Each
+  problem shows the file and the folder. Read-only; the scan runs on its own thread.
 - `LUMEN_USB2=<folder>` makes a folder play the second drive (psc-sim) and
   `LUMEN_USB2_KBPS=<n>` slows the copy down, to test the flow without hardware.
 
-Checked in psc-sim only (browse, copy both ways, stop, the drive vanishing mid-copy, the
-offer, Settings). Not yet verified on the console: detecting and mounting a real second
+Checked in psc-sim only (transfer: browse, copy both ways, stop, the drive vanishing mid-copy,
+the offer, Settings; library check: a library broken on purpose). Not yet verified on the console: detecting and mounting a real second
 drive, remounting it writable, power drop-outs on the front ports.
 
 ## [0.17.0] - 2026-11-15
