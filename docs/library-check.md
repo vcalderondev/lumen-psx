@@ -7,7 +7,8 @@ checks again, Circle goes back. Source: `src/audit.c`; design: lumen-design
 
 It reads every `<home>/systems/<id>.ini` itself (a system whose games are all broken is
 not loaded by the frontend, and that is the one to report) and walks its `paths` with the
-scanner's own rules (`docs/systems.md`). The built-in games (`layout = stock`) are the
+scanner's own rules (`docs/systems.md`), and its native ports (`[library] ports`, by default
+`games/<id>-native/`) with the rules of homebrew apps. The built-in games (`layout = stock`) are the
 console's and are not checked.
 
 | Problem | Layout | Meaning |
@@ -25,7 +26,7 @@ console's and are not checked.
 | The `.sbi` is not named like the disc | psc | the core looks for `<disc>.sbi`: any other name is ignored |
 | Empty game folder | psc, apps | |
 | The system's core is missing | psc, files | `<home>/cores/<core>` of a system that has games |
-| The folder has no `app.ini` / `app.ini` points to a program that is not there | apps | |
+| The folder has no `app.ini` / `app.ini` points to a program that is not there | apps, native ports | |
 | Unfinished copy | psc, files | a `*.lumen-part` left by an interrupted USB transfer |
 
 Each row is one problem (a game with two problems has two rows), sorted by system and
