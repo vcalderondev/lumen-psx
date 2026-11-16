@@ -4230,6 +4230,7 @@ int main(int argc, char **argv)
       /* the launch: the system's illustration and the game's painted cover, ready before Play */
       if (n && play_t < 0 && t - sel_t > 0.4) flat_want(pl, &g_games[pl->first + sel], 0);
       flat_poll();
+      if (n && play_t < 0 && t - sel_t > 0.4) flat_ahead(pl, &g_games[pl->first + sel]);
 
       /* background: once the selection has settled, the game's image (decoded on the
        * worker) or a background generated from its cover colours */
