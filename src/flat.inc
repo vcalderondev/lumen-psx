@@ -245,16 +245,16 @@ static void flat_art_take(flat_t *f, flat_ajob_t *j)
 
 /* The game's art into the hole of its layer: cover-fit in the art's box, through the
  * hole's shape (art.png), under whatever the layer draws over it. One upload, at Play. */
-static void flat_paint_layer(flat_t *f)
+static SDL_Surface *flat_paint_compute(const flat_t *f)
 {
    const SDL_Surface *b = f->base, *m = f->mask, *a = f->art_s;
    const float k = b ? b->w / FLAT_CW : 1.0f;
    SDL_Surface *o;
    int x0, y0, x1, y1, x, y;
    float aw, ah, ox, oy;
-   if (!b || !m || f->art_layer < 0) return;
+   if (!b || !m || f->art_layer < 0) return NULL;
    /* ABGR8888 by its masks: the console's SDL has no SDL_CreateRGBSurfaceWithFormat */
-   if (!(o = SDL_CreateRGBSurface(0, b->w, b->h, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000))) return;
+   if (!(o = SDL_CreateRGBSurface(0, b->w, b->h, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000))) return NULL;
    for (y = 0; y < b->h; y++) memcpy((unsigned char *)o->pixels + y * o->pitch, (const unsigned char *)b->pixels + y * b->pitch, (size_t)b->w * 4);
    x0 = (int)floorf(f->art[0] * k); y0 = (int)floorf((f->art[1] - FLAT_CY) * k);
    x1 = (int)ceilf((f->art[0] + f->art[2]) * k); y1 = (int)ceilf((f->art[1] + f->art[3] - FLAT_CY) * k);
@@ -292,14 +292,55 @@ static void flat_paint_layer(flat_t *f)
          for (q = 0; q < 3; q++) p[q] = (unsigned char)(p[q] + c[q] * w + 0.5f);
          p[3] = (unsigned char)(p[3] + 255.0f * w + 0.5f);
       }
+   return o;
+}
+static void flat_paint_upload(flat_t *f, SDL_Surface *o)
+{
+   if (!o) return;
    if (f->tex[f->art_layer]) glDeleteTextures(1, &f->tex[f->art_layer]);
    f->tex[f->art_layer] = surface_to_tex(o, 1, NULL);
    SDL_FreeSurface(o);
+}
+static void flat_paint_layer(flat_t *f) { flat_paint_upload(f, flat_paint_compute(f)); }
+
+/* The painting done ahead, on a thread, once the selection has settled and both its
+ * illustration and its cover are in: Play then finds the layer painted instead of
+ * computing and uploading it on the launch's first frame. While the job runs it reads
+ * the illustration's surfaces and the cover, so nothing replaces them (flat_poll and
+ * flat_want wait for it). */
+typedef struct { SDL_Surface *o; SDL_atomic_t done; char cover[512]; } flat_pjob_t;
+static flat_pjob_t *g_flat_pjob;
+static int flat_paint_thread(void *p)
+{
+   flat_pjob_t *j = p;
+   const double t0 = now_s();
+   j->o = flat_paint_compute(&g_flat);
+   if (g_perf_on) logf_("perf: launch art painted ahead in %.1f ms (its thread)", (now_s() - t0) * 1000.0);
+   SDL_AtomicSet(&j->done, 1);
+   return 0;
+}
+static void flat_paint_wait(void)
+{
+   if (!g_flat_pjob) return;
+   while (!SDL_AtomicGet(&g_flat_pjob->done)) SDL_Delay(1);
 }
 
 /* results of the workers: called once per frame */
 static void flat_poll(void)
 {
+   if (g_flat_pjob)
+   {
+      double ps = now_s();
+      if (!SDL_AtomicGet(&g_flat_pjob->done)) return;   /* it is reading the surfaces the results below replace */
+      if (!strcmp(g_flat_pjob->cover, g_flat.art_path) && !g_flat.generic && g_flat.ok && g_flat_pjob->o)
+      {
+         flat_paint_upload(&g_flat, g_flat_pjob->o);
+         snprintf(g_flat.painted, sizeof(g_flat.painted), "%s", g_flat_pjob->cover); g_flat.painted_ok = 1;
+      }
+      else if (g_flat_pjob->o) SDL_FreeSurface(g_flat_pjob->o);
+      free(g_flat_pjob); g_flat_pjob = NULL;
+      perf_stall("flat art upload", ps);
+   }
    if (g_flat_ljob && SDL_AtomicGet(&g_flat_ljob->done))
    {
       double ps = now_s();
@@ -325,6 +366,7 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
     * A system without one: "-" is no folder, so the cover is the object (flat_draw) */
    char nkey[48];
    const char *key = pl->flat;
+   if (g_flat_pjob) { if (!now) return; flat_paint_wait(); flat_poll(); }   /* see flat_pjob_t */
    if (g && g->port)
    {
       char ini[400];
@@ -385,11 +427,46 @@ static float flat_fade_t(void) { return g_flat.fx ? EN_FADE : FLAT_FADE; }
 static float flat_end_t(void) { return g_flat.fx ? EN_END : FLAT_END; }
 
 /* Play: everything must be there now. */
+/* the launch's texts for g (cached labels: nothing to do when they are these already) */
+static void flat_labels(const platform_t *pl, const game_t *g)
+{
+   flat_t *f = &g_flat;
+   char up[64];
+   int i;
+   for (i = 0; pl->name[i] && i < (int)sizeof(up) - 1; i++) up[i] = (char)toupper((unsigned char)pl->name[i]);
+   up[i] = 0;
+   if (g->port)
+   {  /* "PLAYSTATION · NATIVE PORT" */
+      char k[160];
+      snprintf(k, sizeof(k), "%s \xc2\xb7 %s", up, tr("badge.port"));
+      label_set(&f->l_kicker, g_font_caps, k);
+      label_set(&f->l_port, g_font_caps, tr("badge.port"));
+   }
+   else
+   label_set(&f->l_kicker, g_font_caps, up);
+   label_set(&f->l_title, g_font_title, g->title);
+}
+
+/* The selection has settled and its illustration and cover are in: the texts, and the
+ * painting on its thread. Called every frame after flat_want / flat_poll. */
+static void flat_ahead(const platform_t *pl, const game_t *g)
+{
+   flat_t *f = &g_flat;
+   flat_pjob_t *j;
+   if (!f->ok || g_flat_ljob || g_flat_ajob || g_flat_pjob) return;
+   flat_labels(pl, g);
+   if (f->generic || strcmp(f->art_path, g->cover) || !f->art_s || !f->base || !f->mask) return;
+   if (f->painted_ok && !strcmp(f->painted, g->cover)) return;
+   if (!(j = calloc(1, sizeof(*j)))) return;
+   snprintf(j->cover, sizeof(j->cover), "%s", g->cover);
+   g_flat_pjob = j;
+   SDL_DetachThread(SDL_CreateThread(flat_paint_thread, "flat-paint", j));
+}
+
 static void flat_begin(const platform_t *pl, const game_t *g)
 {
    flat_t *f = &g_flat;
    int i, k;
-   char up[64];
    flat_want(pl, g, 1);
    if (!f->art_s)
    {  /* no cover file (a placeholder card): five tones between the card's two colours */
@@ -403,19 +480,8 @@ static void flat_begin(const platform_t *pl, const game_t *g)
       snprintf(f->painted, sizeof(f->painted), "%s", g->cover); f->painted_ok = 1;
       perf_stall("flat art paint", ps);
    }
-   for (i = 0; pl->name[i] && i < (int)sizeof(up) - 1; i++) up[i] = (char)toupper((unsigned char)pl->name[i]);
-   up[i] = 0;
    f->port = g->port;
-   if (g->port)
-   {  /* "PLAYSTATION · NATIVE PORT" */
-      char k[160];
-      snprintf(k, sizeof(k), "%s \xc2\xb7 %s", up, tr("badge.port"));
-      label_set(&f->l_kicker, g_font_caps, k);
-      label_set(&f->l_port, g_font_caps, tr("badge.port"));
-   }
-   else
-   label_set(&f->l_kicker, g_font_caps, up);
-   label_set(&f->l_title, g_font_title, g->title);
+   flat_labels(pl, g);
 }
 
 /* ---- drawing ---------------------------------------------------------------------------- */
