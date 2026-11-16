@@ -4207,9 +4207,9 @@ int main(int argc, char **argv)
          if (play_t >= 0)
          {
             /* the flat launch (flat.inc) is drawn from pt alone; here: the click, the fade, the end */
-            const float pt = play_pt, end = FLAT_END, fl_t = FLAT_FADE;
+            const float pt = play_pt, end = flat_end_t(), fl_t = flat_fade_t();
             if (pdt > 0.0f && play_pt - pdt < FLAT_SEAT && play_pt >= FLAT_SEAT && (g_flat.medium != FM_NONE || g_flat.port))
-               music_click(g_flat.medium == FM_FRONT ? 1 : (g_flat.medium == FM_BEHIND || g_flat.port ? 2 : 0));   /* a port switches on with the small snap */
+               music_click(g_flat.medium == FM_FRONT ? 1 : (g_flat.medium == FM_BEHIND || (g_flat.port && g_flat.generic) ? 2 : 0));   /* a port's card switches on with the small snap */
             fade = clampf((pt - fl_t) / 0.30f, 0, 1);
             if (pt > end)
             {

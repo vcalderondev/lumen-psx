@@ -11,9 +11,10 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   PlayStation; `[library] ports` in the declaration), in the layout of a homebrew app
   (`app.ini`, the program, `cover.png`), and is listed among that system's games like any
   other, not under Homebrew. Its tile carries a "Native port" chip, and its launch is its
-  own (lumen-design guidelines/06, "Launch: a native port"): no machine and no medium, the
-  cover drops in as a card, switches itself on (its frame lights, two rings leave it, the
-  chip shows) and grows into the frame. It starts as a program (`kind=app`); graphics
+  own (lumen-design guidelines/06, "Launch: a native port"): the PlayStation takes the disc
+  as always, then charges up: energy runs along its edges, an aura builds, arcs flicker,
+  it shakes, rises on a shockwave and the energy floods the frame (3.4 s). A system
+  without an energized machine shows the cover as a card that switches itself on. It starts as a program (`kind=app`); graphics
   levels, the CRT filter and attract-mode demos do not apply to it. Checked in psc-sim.
 - Record mode, for videos made in a simulator: `LUMEN_RECORD=<file or fifo>` makes time
   advance exactly `1/LUMEN_RECORD_FPS` (default 60) per presented frame and appends every

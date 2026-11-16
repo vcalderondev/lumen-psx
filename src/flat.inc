@@ -24,9 +24,9 @@
 
 #include "image.h"
 
-enum { FL_BODY, FL_UNDER, FL_MEDIUM, FL_OVER, FL_LIT, FL_TICK, FL_N };
+enum { FL_BODY, FL_UNDER, FL_MEDIUM, FL_OVER, FL_LIT, FL_TICK, FL_AURA, FL_TRACE, FL_BOLT, FL_BOLT2, FL_N };
 enum { FM_NONE, FM_BEHIND, FM_OVER, FM_CLIP, FM_FRONT, FM_COIN };
-static const char *const FL_NAME[FL_N] = { "body", "under", "medium", "over", "lit", "tick" };
+static const char *const FL_NAME[FL_N] = { "body", "under", "medium", "over", "lit", "tick", "aura", "trace", "bolt", "bolt2" };   /* the last four: fx = energy */
 #define FLAT_X0 400.0f      /* where the canvas's (0, 0) sits on the 1280x720 layout */
 #define FLAT_Y0 150.0f
 #define FLAT_CY (-60.0f)    /* the canvas: x 0..480, y -60..300 */
@@ -35,6 +35,15 @@ static const char *const FL_NAME[FL_N] = { "body", "under", "medium", "over", "l
 #define FLAT_SEAT 1.32f     /* the medium seats: the click */
 #define FLAT_FADE 2.28f     /* the fade to black starts */
 #define FLAT_END  2.70f
+/* fx = energy (a native port on its system's machine): it charges up after the click, so
+ * the fade comes later. Times in s after Play. */
+#define EN_TRACE   1.36f    /* the edges light, from the middle out, until 1.62 */
+#define EN_BOLTS   1.66f    /* the arcs flicker, in turn, until 2.30; then both stay */
+#define EN_SHAKE   1.75f    /* it shakes harder and harder until 2.25 */
+#define EN_CROUCH  2.25f    /* it crouches, then rises 46 px on a shockwave by 2.55 */
+#define EN_FLOOD   2.52f    /* the energy floods the frame from the lid by 2.85 */
+#define EN_FADE    2.95f
+#define EN_END     3.40f
 
 typedef struct { float sx, sy, tx, ty; } fxf;   /* p' = s * p + t (no rotation anywhere) */
 static fxf fx_id(void) { fxf r = { 1, 1, 0, 0 }; return r; }
@@ -57,6 +66,7 @@ typedef struct {
    float pal[5][3];              /* its five tones, dark to light */
    char painted[512]; int painted_ok;   /* the cover now in the layer's hole */
    int port;                     /* this launch is a native port's (set at Play) */
+   int fx;                       /* launch.ini fx: 0 none, 1 energy */
    label_t l_kicker, l_title, l_port;   /* l_port: the chip of a native port */
 } flat_t;
 static flat_t g_flat;
@@ -180,7 +190,7 @@ static int flat_read_ini(flat_t *f, const char *key)
    FILE *fp;
    snprintf(path, sizeof(path), "%s/assets/launch/%s/launch.ini", g_home, key);
    if (!(fp = fopen(path, "r"))) return 0;
-   f->medium = FM_NONE; f->door = 0; f->has_clip_y = f->has_screen = 0; f->art_layer = -1; f->shadow = 300;
+   f->medium = FM_NONE; f->door = 0; f->has_clip_y = f->has_screen = 0; f->art_layer = -1; f->shadow = 300; f->fx = 0;
    while (fgets(line, sizeof(line), fp))
    {
       char k[32], v[256];
@@ -196,6 +206,7 @@ static int flat_read_ini(flat_t *f, const char *key)
       else if (!strcmp(k, "tick_origin")) flat_floats(v, f->tick_o, 2);
       else if (!strcmp(k, "screen")) f->has_screen = flat_floats(v, f->screen, 4) == 4;
       else if (!strcmp(k, "shadow")) f->shadow = (float)atof(v);
+      else if (!strcmp(k, "fx")) f->fx = !strcmp(v, "energy");
       else if (!strcmp(k, "art"))
       {
          f->art_layer = !strncmp(v, "medium,", 7) ? FL_MEDIUM : !strncmp(v, "body,", 5) ? FL_BODY : -1;
@@ -310,9 +321,17 @@ static void flat_poll(void)
 static void flat_want(const platform_t *pl, const game_t *g, int now)
 {
    flat_t *f = &g_flat;
-   /* a native port is not put into a machine: nothing is emulated. "-" is no folder, so it
-    * gets the cover as the object, drawn its own way (flat_draw) */
-   const char *key = g && g->port ? "-" : pl->flat;
+   /* a native port runs on the system's machine energized: <flat>-native/ (fx = energy).
+    * A system without one: "-" is no folder, so the cover is the object (flat_draw) */
+   char nkey[48];
+   const char *key = pl->flat;
+   if (g && g->port)
+   {
+      char ini[400];
+      snprintf(nkey, sizeof(nkey), "%s-native", pl->flat);
+      snprintf(ini, sizeof(ini), "%s/assets/launch/%s/launch.ini", g_home, nkey);
+      key = file_exists(ini) ? nkey : "-";
+   }
    if (strcmp(f->key, key))
    {
       if (g_flat_ljob && !now) return;   /* one job at a time: asked again next frame */
@@ -332,7 +351,7 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
          for (i = 0; i < FL_N; i++) if (f->tex[i]) { glDeleteTextures(1, &f->tex[i]); f->tex[i] = 0; }
          if (f->base) { SDL_FreeSurface(f->base); f->base = NULL; }
          if (f->mask) { SDL_FreeSurface(f->mask); f->mask = NULL; }
-         f->generic = 1; f->ok = 1; f->medium = FM_NONE; f->door = 0; f->art_layer = -1; f->has_clip_y = 0;
+         f->generic = 1; f->ok = 1; f->fx = 0; f->medium = FM_NONE; f->door = 0; f->art_layer = -1; f->has_clip_y = 0;
          f->has_screen = 1; f->screen[0] = 140; f->screen[1] = 50; f->screen[2] = 200; f->screen[3] = 200; f->shadow = 200;
       }
    }
@@ -361,6 +380,9 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
       flat_poll();
    }
 }
+
+static float flat_fade_t(void) { return g_flat.fx ? EN_FADE : FLAT_FADE; }
+static float flat_end_t(void) { return g_flat.fx ? EN_END : FLAT_END; }
 
 /* Play: everything must be there now. */
 static void flat_begin(const platform_t *pl, const game_t *g)
@@ -470,6 +492,20 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
          const float zs = 1.12f * (W / f->screen[2] > H / f->screen[3] ? W / f->screen[2] : H / f->screen[3]);
          u = flat_ramp(pt, 1.98f, 2.46f); u = u * u * u;
          end = fx_mul(fx_move((W * 0.5f - FLAT_X0 - cx) * u, (H * 0.5f - FLAT_Y0 - cy) * u), fx_about(cx, cy, lerpf(1, zs, u), lerpf(1, zs, u)));
+      }
+      else if (f->fx)
+      {  /* energized: crouch, then rise on the shockwave */
+         if (pt > EN_CROUCH && pt < EN_CROUCH + 0.08f) { u = flat_smooth(flat_ramp(pt, EN_CROUCH, EN_CROUCH + 0.08f)); end = fx_mul(fx_move(0, 8.0f * u), fx_about(240, 300, lerpf(1, 1.04f, u), lerpf(1, 0.95f, u))); }
+         else if (pt >= EN_CROUCH + 0.08f)
+         {
+            u = flat_ramp(pt, EN_CROUCH + 0.08f, EN_CROUCH + 0.30f); u = 1.0f - (1.0f - u) * (1.0f - u) * (1.0f - u);
+            end = fx_mul(fx_move(0, lerpf(8.0f, -46.0f, u)), fx_about(240, 300, lerpf(1.04f, 1, u), lerpf(0.95f, 1, u)));
+         }
+         if (pt > EN_SHAKE && pt < EN_CROUCH)
+         {  /* the shake grows from 2 to 5 px */
+            const float a = lerpf(2.0f, 5.0f, flat_ramp(pt, EN_SHAKE, EN_CROUCH));
+            end = fx_mul(end, fx_move(a * sinf(pt * 173.0f), 0.3f * a * sinf(pt * 241.0f)));
+         }
       }
       else if (pt > 1.90f)
       {  /* no screen to enter: it hops */
@@ -589,7 +625,21 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
       return;
    }
 
+   if (f->fx && pt > EN_CROUCH + 0.08f && pt < EN_CROUCH + 0.45f)
+   {  /* the shockwave on the floor */
+      const float e = flat_ramp(pt, EN_CROUCH + 0.08f, EN_CROUCH + 0.45f), w = f->shadow * lerpf(0.6f, 2.6f, e), h = 12.0f * lerpf(0.6f, 1.6f, e);
+      const float c1[4] = { 0.37f, 0.96f, 1.0f, 0.30f * (1.0f - e) }, c2[4] = { 0.72f, 0.98f, 1.0f, 1.0f - e };
+      draw_shape(W * 0.5f - w * 0.5f - 3, 470.0f - 3, w + 6, h + 6, h * 0.5f + 3, 7.0f, c1);
+      draw_shape(W * 0.5f - w * 0.5f, 470.0f, w, h, h * 0.5f, 3.0f, c2);
+   }
    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   /* the layers are premultiplied */
+   if (f->fx && pt > EN_TRACE)
+   {  /* the aura builds behind the machine, with a flicker */
+      static const float k[][2] = { { 1.36f, 0 }, { 1.40f, 0.5f }, { 1.46f, 0.25f }, { 1.70f, 0.7f }, { 1.85f, 0.55f }, { 2.10f, 1.0f } };
+      float a = 1.0f;
+      for (i = 0; i < 5; i++) if (pt < k[i + 1][0]) { a = lerpf(k[i][1], k[i + 1][1], flat_ramp(pt, k[i][0], k[i + 1][0])); break; }
+      flat_layer(f->tex[FL_AURA], body, a, NULL);
+   }
    if (f->medium == FM_BEHIND)
    {
       flat_layer(f->tex[FL_MEDIUM], fx_mul(body, med), med_a, NULL);
@@ -618,5 +668,32 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
       const float s = lerpf(0.7f, 1.0f, in) + 0.25f * out;
       flat_layer(f->tex[FL_TICK], fx_mul(body, fx_about(f->tick_o[0], f->tick_o[1], s, s)), in * (1.0f - out), NULL);
    }
+   if (f->fx && pt > EN_TRACE)
+   {  /* the edges light from the middle out; then the arcs, in turn, then both */
+      const float p = flat_smooth(flat_ramp(pt, EN_TRACE, EN_TRACE + 0.26f));
+      flat_clip_t tc = { 1, { { 0 } } };
+      flat_rect(body, 240.0f - 260.0f * p, FLAT_CY, 520.0f * p, FLAT_CH, tc.r[0]);
+      flat_layer(f->tex[FL_TRACE], body, 1.0f, p < 1.0f ? &tc : NULL);
+      if (pt > EN_BOLTS)
+      {
+         const int ph = (int)((pt - EN_BOLTS) / 0.075f), both = pt > 2.30f;
+         if (both || !(ph & 1)) flat_layer(f->tex[FL_BOLT], body, 1.0f, NULL);
+         if (both || (ph & 1)) flat_layer(f->tex[FL_BOLT2], body, 1.0f, NULL);
+      }
+   }
    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   if (f->fx && pt > EN_FLOOD)
+   {  /* the energy floods the frame from the lid, in flat rings */
+      static const float col[6][3] = { { 0.039f, 0.165f, 0.267f }, { 0.086f, 0.384f, 0.557f }, { 0.165f, 0.659f, 0.816f },
+                                       { 0.373f, 0.957f, 1.0f }, { 0.659f, 0.976f, 1.0f }, { 0.949f, 0.996f, 1.0f } };
+      static const float rad[6] = { 1e9f, 580, 400, 260, 150, 70 };
+      float e = flat_ramp(pt, EN_FLOOD, EN_FLOOD + 0.33f), c = 1600.0f * e * e, cx = body.sx * 240.0f + body.tx, cy = body.sy * 130.0f + body.ty;
+      e = flat_ramp(pt, EN_FLOOD, EN_FLOOD + 0.03f);
+      for (i = 0; i < 6; i++)
+      {
+         const float r = c < rad[i] ? c : rad[i], fc[4] = { col[i][0], col[i][1], col[i][2], 0.95f + 0.05f * e };
+         if (i == 0 && c > 1500.0f) { glDisable(GL_BLEND); draw_2d(0, 0, 0, W, H, fc, 0); glEnable(GL_BLEND); }   /* covers the frame: one opaque quad */
+         else if (r > 1.0f) draw_shape(cx - r, cy - r, 2 * r, 2 * r, r, 0.0f, fc);
+      }
+   }
 }
