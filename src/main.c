@@ -49,6 +49,8 @@
 #include "collections.h"
 #include "gamemenu.h"
 #include "filepicker.h"
+#include "transfer.h"
+#include "audit.h"
 #include "ui.h"
 #include "theme.h"
 #include "crt.h"
@@ -2111,6 +2113,19 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
       { { "circle" },   "btn.circle",       "hint.back" },
       { { "triangle" }, "btn.triangle",     "hint.cancel" } },
+   [HINTS_TRANSFER] = {       /* USB transfer, browsing (transfer.h) */
+      { { "cross" },    "btn.cross",        "hint.open" },
+      { { "square" },   "btn.square",       "hint.mark" },
+      { { "start" },    "btn.start",        "hint.copy" },
+      { { "triangle" }, "btn.triangle",     "hint.options" },
+      { { "circle" },   "btn.circle",       "hint.back" } },
+   [HINTS_TRANSFER_COPY] = {  /* USB transfer, a copy running */
+      { { "circle" },   "btn.circle",       "hint.cancel" } },
+   [HINTS_AUDIT] = {          /* library check (audit.h) */
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
+      { { "cross" },    "btn.cross",        "hint.recheck" },
+      { { "circle" },   "btn.circle",       "hint.back" } },
    [HINTS_DASH_TABS] = {      /* dashboard, focus on the system tabs */
       { { "dpad" },     "btn.dpad",         "hint.platform" },
       { { "cross" },    "btn.cross",        "hint.select" },
@@ -3886,6 +3901,7 @@ int main(int argc, char **argv)
    boot_mark("audio");
    hints_load(g_home);
    panel_init();
+   transfer_init();
    welcome_init();
    attract_init(start_attract, g_home);
    boot_mark("ui");
@@ -3955,7 +3971,7 @@ int main(int argc, char **argv)
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
-         attract_update(t, dt, !panel_active() && !filepicker_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
+         attract_update(t, dt, !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
          att_swallow = was || attract_active() || att.amount > 0.02f;
          if (att_swallow) g_want_settings = 0;
       }
@@ -3988,7 +4004,7 @@ int main(int argc, char **argv)
       {  /* focus: games <-> system tabs <-> profile with Up / Down. Away from the games,
           * Left / Right change the system (tabs), Cross goes back to the games (tabs) or
           * opens the profile settings (profile), Circle returns to the games */
-         const int free_ = !panel_active() && !filepicker_active() && !gamemenu_active() && !welcome_active() &&
+         const int free_ = !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !gamemenu_active() && !welcome_active() &&
                            !att_swallow && play_t < 0;
          open_profile = 0;
          if (attract_active() || play_t >= 0 || !g_nplat) g_focus = FOCUS_GAMES;
@@ -4024,6 +4040,25 @@ int main(int argc, char **argv)
          if (!fp_open || att_swallow) memset(&pn, 0, sizeof(pn));
          filepicker_update(&pn, t, dt);
          if (fp_open) { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; }
+      }
+      {  /* USB transfer: a card over the panel or the Home; owns the input while open. On
+          * the free Home it only listens for Square while its offer is up */
+         ui_nav_t tn = fnav;
+         const int tr_open = transfer_open_now();
+         const int home = !tr_open && !fp_open && !panel_active() && !gamemenu_active() && !welcome_active() &&
+                          !attract_active() && !att_swallow && play_t < 0 && g_focus == FOCUS_GAMES;
+         if (att_swallow || fp_open || (!tr_open && !home)) memset(&tn, 0, sizeof(tn));
+         transfer_update(&tn, t, dt, home);
+         if (tr_open || transfer_open_now())
+         { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
+      }
+      {  /* library check: a card over the panel; owns the input while open */
+         ui_nav_t an = fnav;
+         const int au_open = audit_open_now();
+         if (!au_open || att_swallow || fp_open) memset(&an, 0, sizeof(an));
+         audit_update(&an, t, dt);
+         if (au_open || audit_open_now())
+         { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
       }
       {  /* settings panel: owns the input while open or closing (6.3) */
          ui_nav_t nav = fnav;
@@ -4295,6 +4330,8 @@ int main(int argc, char **argv)
                static float h_mix = 1.0f;
                int want = welcome_active() ? (welcome_language_page() ? HINTS_WELCOME_LANG : welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
                           filepicker_open_now() ? HINTS_FILEPICKER :
+                          transfer_open_now() ? transfer_hint_set() :
+                          audit_open_now() ? HINTS_AUDIT :
                           panel_active() ? panel_hint_set() :
                           gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
                           (attract_active() ? HINTS_ATTRACT : g_focus == FOCUS_TABS ? HINTS_DASH_TABS :
@@ -4318,6 +4355,18 @@ int main(int argc, char **argv)
             {  /* its backdrop covered the help bar: draw the picker's set again on top */
                glUseProgram(g_prog_2d);
                hints_draw(HINTS_FILEPICKER, 672, filepicker_amount() * (1 - fade));
+            }
+            transfer_draw(t);
+            if (transfer_active())
+            {  /* same as the picker: its scrim covered the help bar */
+               glUseProgram(g_prog_2d);
+               hints_draw(transfer_hint_set(), 672, transfer_amount() * (1 - fade));
+            }
+            audit_draw(t);
+            if (audit_active())
+            {
+               glUseProgram(g_prog_2d);
+               hints_draw(HINTS_AUDIT, 672, audit_amount() * (1 - fade));
             }
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);
@@ -4458,6 +4507,7 @@ int main(int argc, char **argv)
    /* persist settings and selection; hand the launch request to the launcher script.
     * In the attract scene the selection saved is the user's, from before it started (10.5). */
    music_shutdown();   /* release the audio device before RetroArch starts */
+   transfer_shutdown();   /* stop a copy, unmount the second USB drive */
    panel_shutdown();   /* a colour picked or settings changed with the panel still open */
    if (settings_dirty()) settings_save();
    {

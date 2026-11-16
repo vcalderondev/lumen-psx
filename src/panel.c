@@ -20,6 +20,8 @@
 #include "theme.h"
 #include "crt.h"
 #include "filepicker.h"
+#include "transfer.h"
+#include "audit.h"
 #include "stats.h"
 #include "ui.h"
 
@@ -85,7 +87,7 @@ enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
        ID_PROFILE_AVATAR, ID_PROFILE_AVATAR_REMOVE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
-       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_SND_UI, ID_LIB_STOCK = 500,
+       ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_SND_UI, ID_LIB_STOCK = 500, ID_LIB_TRANSFER, ID_LIB_AUDIT,
        ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_DSP_CRT, ID_INFO = 900 };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
@@ -406,6 +408,8 @@ static void page_build(void)
       int stock = settings_get_int("show_stock_games", 0, 0, 1);
       if ((r = row_add(R_CHOICE, ID_LIB_STOCK, tr("lib.stock"), tr(stock ? "lib.visible" : "lib.hidden"))))
       { r->at_lo = !stock; r->at_hi = stock; }
+      if ((r = row_add(R_ACTION, ID_LIB_AUDIT, tr("audit.title"), NULL))) r->enter = 1;
+      if ((r = row_add(R_ACTION, ID_LIB_TRANSFER, tr("xfer.title"), NULL))) r->enter = 1;
       snprintf(s_foot, sizeof(s_foot), "%s", tr("lib.stock_note"));
       break;
    }
@@ -627,6 +631,14 @@ static void row_action(const row_t *r)
    else if (r->id == ID_DSP_RESTART)
    {
       confirm_open_ex(tr("display.restart_confirm"), NULL, "confirm.restart", restart_yes);
+   }
+   else if (r->id == ID_LIB_AUDIT)
+   {
+      audit_open();
+   }
+   else if (r->id == ID_LIB_TRANSFER)
+   {
+      transfer_open();   /* a toast when no second drive is plugged in */
    }
    else if (r->id == ID_SS_PREVIEW)
    {
@@ -1187,7 +1199,7 @@ void panel_draw(double t)
 {
    /* the section rises 0..34 px into place while it fades in; a modal or the file picker
     * over it takes the stage: the section fades out under them */
-   const float m = clampf(s_mod.x, 0.0f, 1.0f), fp = filepicker_amount(), over = m > fp ? m : fp;
+   const float m = clampf(s_mod.x, 0.0f, 1.0f), fp = fmaxf(filepicker_amount(), fmaxf(transfer_amount(), audit_amount())), over = m > fp ? m : fp;
    float a = panel_amount() * (1.0f - over), rise = s_slide.x * 0.06f;
    float ca, cx, cy = CARD_Y + rise, top, bottom, c[4], f[4];
    char buf[200], num[24];
