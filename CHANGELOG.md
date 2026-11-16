@@ -3,30 +3,45 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.19.0] - 2026-11-16
 
-Less stutter at start-up, on the dashboard and in the launch. Measured in psc-sim; not
-yet verified on the console.
+Less stutter: at start-up, on the dashboard, with a menu open and in the launch.
+Verified on the console through five rounds of test builds (logs with `debug/perf`):
+start-up 2072 ms -> about 800 ms, no more frames of 0.2 to 0.9 s when the selection
+moves to another system, the settings at 60 fps instead of 31 to 50. Not yet timed on
+the console: the game menu with the last change to the cards, and the start-up with the
+last two reads moved off the main thread.
 
 ### Changed
-- Start-up: the library is read from the stick on its own thread while the splash
-  plays, so the logo's fade and fill and "Loading" animate at the display's rate instead
-  of a few times a second, and the animation no longer adds its own 0.65 s to every
-  start. The splash then stays until the covers on screen and the background are in
-  (0.7 s at most) and dissolves into a finished dashboard: the logo's entrance and the
-  title play without the first frames' work under them.
+- Start-up: the library, the launch declarations of every system, the interface's icons
+  and the saved selection are read from the stick on a thread while the splash plays, and
+  the audio device opens on another. The logo's fade and fill and "Loading" animate at
+  the display's rate instead of a few times a second, and the animation no longer adds
+  its own 0.65 s to every start. The splash then stays until the covers on screen and the
+  background are in (0.7 s at most) and dissolves into a finished dashboard.
+- Nothing reads the stick on the main thread while the dashboard runs. A file on the
+  stick goes through its FUSE daemon and a question to it waits while the stick is busy:
+  the launch declaration read when the selection settled on another system (250 to 860 ms
+  on the console), a help bar set's icons the first time it showed, the settings asking
+  every frame whether the compositor package exists, the free space of the About page.
 - Fonts are read once into memory: a new title or letter no longer reads the stick in
   the middle of a frame.
+- An open menu costs the GPU half as much, same picture (to 2/255): its scrim is folded
+  into the frame under it by the shaders instead of drawn as a full-screen layer
+  (`scrim_fold=0` draws it), and inside a glass card the fill and the shadow under it are
+  one layer (`card_merge=0`).
 - Launch: the game's art is painted into the illustration and its texts are made once
   the selection settles, on a thread, not on the frame Play is pressed; the field that
   opens the launch hides the dashboard from the GPU as it grows.
 - L1 / R1 land on a page whose covers are already there (the next and previous pages
   are decoded ahead; covers stay in a 32 MB cache), and a game's background is ready
   sooner (the last three decoded are kept, the next game's is decoded ahead).
-- The help bar's sets are made when first shown.
+- The help bar's sets are made when first shown (start-up: 722 ms -> 19 ms on the console).
 - `debug/perf` logs every frame over 25 ms with what it was made of (`perf: slow
-  frame`), how long the dashboard took to be ready under the splash, and the
-  backgrounds' and the launch art's times.
+  frame`), where the main thread was when a frame hung over 150 ms (`perf: stuck at`,
+  addresses for addr2line on the unstripped build), a line per start-up step (`boot:`),
+  how long the dashboard took to be ready under the splash, and the backgrounds' and the
+  launch art's times.
 
 ## [0.18.0] - 2026-11-16
 
