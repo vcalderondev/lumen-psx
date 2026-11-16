@@ -184,37 +184,86 @@ static int flat_floats(const char *v, float *out, int n)
    return i;
 }
 
-static int flat_read_ini(flat_t *f, const char *key)
+/* A launch declaration as read from <home>/assets/launch/<key>/launch.ini, kept: each is
+ * read once, by the start-up's scan thread for every system (flat_preload). Read when the
+ * selection settled on another system's row, the open of that small file held the main
+ * thread 250 to 860 ms on the console whenever the stick was busy. */
+typedef struct {
+   char key[48]; int found;
+   int medium, door, has_clip_y, has_screen, art_layer, fx;
+   float clip_y, clip_rect[4], origin[2], door_o[2], tick_o[2], screen[4], art[4], shadow;
+} flat_decl_t;
+static flat_decl_t g_flat_decl[40];
+static int g_nflat_decl;
+
+static const flat_decl_t *flat_decl(const char *key)
 {
    char path[512], line[320];
    FILE *fp;
+   flat_decl_t *f;
+   int i;
+   for (i = 0; i < g_nflat_decl; i++) if (!strcmp(g_flat_decl[i].key, key)) return &g_flat_decl[i];
+   if (g_nflat_decl >= (int)(sizeof(g_flat_decl) / sizeof(g_flat_decl[0]))) g_nflat_decl = 0;   /* more systems than ever seen: start over */
+   f = &g_flat_decl[g_nflat_decl];
+   memset(f, 0, sizeof(*f));
+   snprintf(f->key, sizeof(f->key), "%s", key);
    snprintf(path, sizeof(path), "%s/assets/launch/%s/launch.ini", g_home, key);
-   if (!(fp = fopen(path, "r"))) return 0;
-   f->medium = FM_NONE; f->door = 0; f->has_clip_y = f->has_screen = 0; f->art_layer = -1; f->shadow = 300; f->fx = 0;
-   while (fgets(line, sizeof(line), fp))
+   if ((fp = fopen(path, "r")))
    {
-      char k[32], v[256];
-      if (sscanf(line, " %31[a-z_] = %255[^\r\n]", k, v) != 2) continue;
-      if (!strcmp(k, "medium"))
-         f->medium = !strcmp(v, "behind") ? FM_BEHIND : !strcmp(v, "over") ? FM_OVER : !strcmp(v, "clip") ? FM_CLIP :
-                     !strcmp(v, "front") ? FM_FRONT : !strcmp(v, "coin") ? FM_COIN : FM_NONE;
-      else if (!strcmp(k, "clip_y")) { f->clip_y = (float)atof(v); f->has_clip_y = 1; }
-      else if (!strcmp(k, "clip_rect")) flat_floats(v, f->clip_rect, 4);
-      else if (!strcmp(k, "origin")) flat_floats(v, f->origin, 2);
-      else if (!strcmp(k, "door")) f->door = !strcmp(v, "lid") ? 1 : !strcmp(v, "flap") ? 2 : 0;
-      else if (!strcmp(k, "door_origin")) flat_floats(v, f->door_o, 2);
-      else if (!strcmp(k, "tick_origin")) flat_floats(v, f->tick_o, 2);
-      else if (!strcmp(k, "screen")) f->has_screen = flat_floats(v, f->screen, 4) == 4;
-      else if (!strcmp(k, "shadow")) f->shadow = (float)atof(v);
-      else if (!strcmp(k, "fx")) f->fx = !strcmp(v, "energy");
-      else if (!strcmp(k, "art"))
+      f->found = 1;
+      f->medium = FM_NONE; f->door = 0; f->has_clip_y = f->has_screen = 0; f->art_layer = -1; f->shadow = 300; f->fx = 0;
+      while (fgets(line, sizeof(line), fp))
       {
-         f->art_layer = !strncmp(v, "medium,", 7) ? FL_MEDIUM : !strncmp(v, "body,", 5) ? FL_BODY : -1;
-         if (f->art_layer >= 0 && flat_floats(strchr(v, ',') + 1, f->art, 4) != 4) f->art_layer = -1;
+         char k[32], v[256];
+         if (sscanf(line, " %31[a-z_] = %255[^\r\n]", k, v) != 2) continue;
+         if (!strcmp(k, "medium"))
+            f->medium = !strcmp(v, "behind") ? FM_BEHIND : !strcmp(v, "over") ? FM_OVER : !strcmp(v, "clip") ? FM_CLIP :
+                        !strcmp(v, "front") ? FM_FRONT : !strcmp(v, "coin") ? FM_COIN : FM_NONE;
+         else if (!strcmp(k, "clip_y")) { f->clip_y = (float)atof(v); f->has_clip_y = 1; }
+         else if (!strcmp(k, "clip_rect")) flat_floats(v, f->clip_rect, 4);
+         else if (!strcmp(k, "origin")) flat_floats(v, f->origin, 2);
+         else if (!strcmp(k, "door")) f->door = !strcmp(v, "lid") ? 1 : !strcmp(v, "flap") ? 2 : 0;
+         else if (!strcmp(k, "door_origin")) flat_floats(v, f->door_o, 2);
+         else if (!strcmp(k, "tick_origin")) flat_floats(v, f->tick_o, 2);
+         else if (!strcmp(k, "screen")) f->has_screen = flat_floats(v, f->screen, 4) == 4;
+         else if (!strcmp(k, "shadow")) f->shadow = (float)atof(v);
+         else if (!strcmp(k, "fx")) f->fx = !strcmp(v, "energy");
+         else if (!strcmp(k, "art"))
+         {
+            f->art_layer = !strncmp(v, "medium,", 7) ? FL_MEDIUM : !strncmp(v, "body,", 5) ? FL_BODY : -1;
+            if (f->art_layer >= 0 && flat_floats(strchr(v, ',') + 1, f->art, 4) != 4) f->art_layer = -1;
+         }
       }
+      fclose(fp);
    }
-   fclose(fp);
+   g_nflat_decl++;
+   return f;
+}
+
+static int flat_read_ini(flat_t *f, const char *key)
+{
+   const flat_decl_t *d = flat_decl(key);
+   if (!d->found) return 0;
+   f->medium = d->medium; f->door = d->door; f->has_clip_y = d->has_clip_y; f->has_screen = d->has_screen;
+   f->art_layer = d->art_layer; f->fx = d->fx; f->clip_y = d->clip_y; f->shadow = d->shadow;
+   memcpy(f->clip_rect, d->clip_rect, sizeof(f->clip_rect)); memcpy(f->origin, d->origin, sizeof(f->origin));
+   memcpy(f->door_o, d->door_o, sizeof(f->door_o)); memcpy(f->tick_o, d->tick_o, sizeof(f->tick_o));
+   memcpy(f->screen, d->screen, sizeof(f->screen)); memcpy(f->art, d->art, sizeof(f->art));
    return 1;
+}
+
+/* every system's declaration and its native ports' one, from the scan thread */
+static void flat_preload(void)
+{
+   int p;
+   for (p = 0; p < g_nplat; p++)
+   {
+      char nkey[48];
+      if (!g_plat[p].flat[0] || g_plat[p].flat[0] == '-') continue;
+      flat_decl(g_plat[p].flat);
+      snprintf(nkey, sizeof(nkey), "%s-native", g_plat[p].flat);
+      flat_decl(nkey);
+   }
 }
 
 static void flat_layers_upload(flat_t *f, flat_ljob_t *j)
@@ -245,16 +294,16 @@ static void flat_art_take(flat_t *f, flat_ajob_t *j)
 
 /* The game's art into the hole of its layer: cover-fit in the art's box, through the
  * hole's shape (art.png), under whatever the layer draws over it. One upload, at Play. */
-static void flat_paint_layer(flat_t *f)
+static SDL_Surface *flat_paint_compute(const flat_t *f)
 {
    const SDL_Surface *b = f->base, *m = f->mask, *a = f->art_s;
    const float k = b ? b->w / FLAT_CW : 1.0f;
    SDL_Surface *o;
    int x0, y0, x1, y1, x, y;
    float aw, ah, ox, oy;
-   if (!b || !m || f->art_layer < 0) return;
+   if (!b || !m || f->art_layer < 0) return NULL;
    /* ABGR8888 by its masks: the console's SDL has no SDL_CreateRGBSurfaceWithFormat */
-   if (!(o = SDL_CreateRGBSurface(0, b->w, b->h, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000))) return;
+   if (!(o = SDL_CreateRGBSurface(0, b->w, b->h, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000))) return NULL;
    for (y = 0; y < b->h; y++) memcpy((unsigned char *)o->pixels + y * o->pitch, (const unsigned char *)b->pixels + y * b->pitch, (size_t)b->w * 4);
    x0 = (int)floorf(f->art[0] * k); y0 = (int)floorf((f->art[1] - FLAT_CY) * k);
    x1 = (int)ceilf((f->art[0] + f->art[2]) * k); y1 = (int)ceilf((f->art[1] + f->art[3] - FLAT_CY) * k);
@@ -292,14 +341,55 @@ static void flat_paint_layer(flat_t *f)
          for (q = 0; q < 3; q++) p[q] = (unsigned char)(p[q] + c[q] * w + 0.5f);
          p[3] = (unsigned char)(p[3] + 255.0f * w + 0.5f);
       }
+   return o;
+}
+static void flat_paint_upload(flat_t *f, SDL_Surface *o)
+{
+   if (!o) return;
    if (f->tex[f->art_layer]) glDeleteTextures(1, &f->tex[f->art_layer]);
    f->tex[f->art_layer] = surface_to_tex(o, 1, NULL);
    SDL_FreeSurface(o);
+}
+static void flat_paint_layer(flat_t *f) { flat_paint_upload(f, flat_paint_compute(f)); }
+
+/* The painting done ahead, on a thread, once the selection has settled and both its
+ * illustration and its cover are in: Play then finds the layer painted instead of
+ * computing and uploading it on the launch's first frame. While the job runs it reads
+ * the illustration's surfaces and the cover, so nothing replaces them (flat_poll and
+ * flat_want wait for it). */
+typedef struct { SDL_Surface *o; SDL_atomic_t done; char cover[512]; } flat_pjob_t;
+static flat_pjob_t *g_flat_pjob;
+static int flat_paint_thread(void *p)
+{
+   flat_pjob_t *j = p;
+   const double t0 = now_s();
+   j->o = flat_paint_compute(&g_flat);
+   if (g_perf_on) logf_("perf: launch art painted ahead in %.1f ms (its thread)", (now_s() - t0) * 1000.0);
+   SDL_AtomicSet(&j->done, 1);
+   return 0;
+}
+static void flat_paint_wait(void)
+{
+   if (!g_flat_pjob) return;
+   while (!SDL_AtomicGet(&g_flat_pjob->done)) SDL_Delay(1);
 }
 
 /* results of the workers: called once per frame */
 static void flat_poll(void)
 {
+   if (g_flat_pjob)
+   {
+      double ps = now_s();
+      if (!SDL_AtomicGet(&g_flat_pjob->done)) return;   /* it is reading the surfaces the results below replace */
+      if (!strcmp(g_flat_pjob->cover, g_flat.art_path) && !g_flat.generic && g_flat.ok && g_flat_pjob->o)
+      {
+         flat_paint_upload(&g_flat, g_flat_pjob->o);
+         snprintf(g_flat.painted, sizeof(g_flat.painted), "%s", g_flat_pjob->cover); g_flat.painted_ok = 1;
+      }
+      else if (g_flat_pjob->o) SDL_FreeSurface(g_flat_pjob->o);
+      free(g_flat_pjob); g_flat_pjob = NULL;
+      perf_stall("flat art upload", ps);
+   }
    if (g_flat_ljob && SDL_AtomicGet(&g_flat_ljob->done))
    {
       double ps = now_s();
@@ -325,12 +415,11 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
     * A system without one: "-" is no folder, so the cover is the object (flat_draw) */
    char nkey[48];
    const char *key = pl->flat;
+   if (g_flat_pjob) { if (!now) return; flat_paint_wait(); flat_poll(); }   /* see flat_pjob_t */
    if (g && g->port)
    {
-      char ini[400];
       snprintf(nkey, sizeof(nkey), "%s-native", pl->flat);
-      snprintf(ini, sizeof(ini), "%s/assets/launch/%s/launch.ini", g_home, nkey);
-      key = file_exists(ini) ? nkey : "-";
+      key = flat_decl(nkey)->found ? nkey : "-";   /* from the cache: this runs every frame */
    }
    if (strcmp(f->key, key))
    {
@@ -385,11 +474,46 @@ static float flat_fade_t(void) { return g_flat.fx ? EN_FADE : FLAT_FADE; }
 static float flat_end_t(void) { return g_flat.fx ? EN_END : FLAT_END; }
 
 /* Play: everything must be there now. */
+/* the launch's texts for g (cached labels: nothing to do when they are these already) */
+static void flat_labels(const platform_t *pl, const game_t *g)
+{
+   flat_t *f = &g_flat;
+   char up[64];
+   int i;
+   for (i = 0; pl->name[i] && i < (int)sizeof(up) - 1; i++) up[i] = (char)toupper((unsigned char)pl->name[i]);
+   up[i] = 0;
+   if (g->port)
+   {  /* "PLAYSTATION · NATIVE PORT" */
+      char k[160];
+      snprintf(k, sizeof(k), "%s \xc2\xb7 %s", up, tr("badge.port"));
+      label_set(&f->l_kicker, g_font_caps, k);
+      label_set(&f->l_port, g_font_caps, tr("badge.port"));
+   }
+   else
+   label_set(&f->l_kicker, g_font_caps, up);
+   label_set(&f->l_title, g_font_title, g->title);
+}
+
+/* The selection has settled and its illustration and cover are in: the texts, and the
+ * painting on its thread. Called every frame after flat_want / flat_poll. */
+static void flat_ahead(const platform_t *pl, const game_t *g)
+{
+   flat_t *f = &g_flat;
+   flat_pjob_t *j;
+   if (!f->ok || g_flat_ljob || g_flat_ajob || g_flat_pjob) return;
+   flat_labels(pl, g);
+   if (f->generic || strcmp(f->art_path, g->cover) || !f->art_s || !f->base || !f->mask) return;
+   if (f->painted_ok && !strcmp(f->painted, g->cover)) return;
+   if (!(j = calloc(1, sizeof(*j)))) return;
+   snprintf(j->cover, sizeof(j->cover), "%s", g->cover);
+   g_flat_pjob = j;
+   SDL_DetachThread(SDL_CreateThread(flat_paint_thread, "flat-paint", j));
+}
+
 static void flat_begin(const platform_t *pl, const game_t *g)
 {
    flat_t *f = &g_flat;
    int i, k;
-   char up[64];
    flat_want(pl, g, 1);
    if (!f->art_s)
    {  /* no cover file (a placeholder card): five tones between the card's two colours */
@@ -403,19 +527,8 @@ static void flat_begin(const platform_t *pl, const game_t *g)
       snprintf(f->painted, sizeof(f->painted), "%s", g->cover); f->painted_ok = 1;
       perf_stall("flat art paint", ps);
    }
-   for (i = 0; pl->name[i] && i < (int)sizeof(up) - 1; i++) up[i] = (char)toupper((unsigned char)pl->name[i]);
-   up[i] = 0;
    f->port = g->port;
-   if (g->port)
-   {  /* "PLAYSTATION · NATIVE PORT" */
-      char k[160];
-      snprintf(k, sizeof(k), "%s \xc2\xb7 %s", up, tr("badge.port"));
-      label_set(&f->l_kicker, g_font_caps, k);
-      label_set(&f->l_port, g_font_caps, tr("badge.port"));
-   }
-   else
-   label_set(&f->l_kicker, g_font_caps, up);
-   label_set(&f->l_title, g_font_title, g->title);
+   flat_labels(pl, g);
 }
 
 /* ---- drawing ---------------------------------------------------------------------------- */
@@ -467,7 +580,7 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
       const float e = flat_ramp(pt, 0.05f, 0.42f), r = 1500.0f * (1.0f - (1.0f - e) * (1.0f - e) * (1.0f - e));
       const float fc[4] = { field[0], field[1], field[2], 1.0f };
       if (e >= 1.0f) { glDisable(GL_BLEND); draw_2d(0, 0, 0, W, H, fc, 0); glEnable(GL_BLEND); }   /* opaque: no blending for the full screen */
-      else if (r > 1.0f) draw_shape(196.0f - r, 318.0f - r, 2 * r, 2 * r, r, 0.0f, fc);
+      else if (r > 1.0f) draw_disc(196.0f, 318.0f, r, fc);
    }
    text_a = flat_ramp(pt, 0.40f, 0.60f);
    if (f->has_screen) text_a *= 1.0f - flat_ramp(pt, 1.98f, 2.12f);   /* the growing machine takes the whole frame */

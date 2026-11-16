@@ -98,10 +98,15 @@ static const char *const k_comp_id[] = { "stock", "weston16" };
 static const char *const k_comp_key[] = { "display.comp_stock", "display.comp_w16" };
 static int comp_available(int i)
 {
+   static int has = -1;   /* asked once: the settings ask every frame, and the stick can be busy */
    char p[400];
    if (i == 0) return 1;
-   snprintf(p, sizeof(p), "%s/compositor/psc-weston-16.tar.gz", g_home);
-   return access(p, R_OK) == 0;
+   if (has < 0)
+   {
+      snprintf(p, sizeof(p), "%s/compositor/psc-weston-16.tar.gz", g_home);
+      has = access(p, R_OK) == 0;
+   }
+   return has;
 }
 /* the compositor boot.sh will start: Lumen's when installed */
 static int comp_setting(void)
@@ -453,16 +458,31 @@ static void sel_move(int dir)
       if (row_selectable(i)) { s_sel = i; return; }
 }
 
-static void measure_free(void)
+/* statvfs() goes to the stick's FUSE daemon and waits while the stick is busy (643 ms
+ * on the console, on the frame the page opened): asked on a thread; the page shows the
+ * last value known and is rebuilt when the new one arrives (panel_update). */
+static SDL_atomic_t s_free_busy, s_free_new;
+static int measure_free_thread(void *unused)
 {
    struct statvfs st;
-   s_free_tenths = s_free_mb = -1;
+   (void)unused;
    if (statvfs(g_root, &st) == 0)
    {
       double b = (double)st.f_bavail * (double)st.f_frsize;
-      if (b >= 1024.0 * 1024.0 * 1024.0) s_free_tenths = (long)(b / (1024.0 * 1024.0 * 1024.0) * 10.0 + 0.5);
-      else s_free_mb = (long)(b / (1024.0 * 1024.0) + 0.5);
+      if (b >= 1024.0 * 1024.0 * 1024.0) { s_free_mb = -1; s_free_tenths = (long)(b / (1024.0 * 1024.0 * 1024.0) * 10.0 + 0.5); }
+      else { s_free_tenths = -1; s_free_mb = (long)(b / (1024.0 * 1024.0) + 0.5); }
    }
+   SDL_AtomicSet(&s_free_new, 1);
+   SDL_AtomicSet(&s_free_busy, 0);
+   return 0;
+}
+static void measure_free(void)
+{
+   SDL_Thread *th;
+   if (SDL_AtomicGet(&s_free_busy)) return;
+   SDL_AtomicSet(&s_free_busy, 1);
+   if ((th = SDL_CreateThread(measure_free_thread, "free", NULL))) SDL_DetachThread(th);
+   else SDL_AtomicSet(&s_free_busy, 0);
 }
 
 /* place the highlight and the scroll without animation (page entry) */
@@ -1131,6 +1151,7 @@ static void panel_sound(int open, int page, int sel, int card, int modal, int or
 void panel_update(const ui_nav_t *nav, double t, float dt)
 {
    (void)t;
+   if (SDL_AtomicGet(&s_free_new)) { SDL_AtomicSet(&s_free_new, 0); if (s_open && s_page == P_ABOUT) page_build(); }
    if (s_open)
    {
       int open = s_open, page = s_page, sel = s_sel, card = s_in_card, modal = s_modal;

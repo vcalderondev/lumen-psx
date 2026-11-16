@@ -11,6 +11,7 @@
 #define UI_EDGE      0.16f   /* glass.edge                                  */
 #define UI_CARD_R    20.0f
 
+void ui_scrim_skip(int on);   /* 1: the next ui_scrim() draws nothing (its scrim is folded into the frame) */
 void ui_scrim(float a);                                          /* full screen, under a menu's card */
 void ui_card(float x, float y, float w, float h, float a);       /* glass card + elev.3 */
 void ui_rest(float x, float y, float w, float h, float radius, float a);    /* glass.rest shape with its edge */

@@ -55,7 +55,7 @@
 #include "theme.h"
 #include "crt.h"
 
-#define TEX_WINDOW 6       /* covers kept on the GPU around the selection */
+#define COVER_CACHE_BYTES (32.0 * 1024 * 1024)   /* covers kept on the GPU */
 
 /* ------------------------------------------------------------------------ */
 /* logging                                                                   */
@@ -226,6 +226,81 @@ static void perf_stall(const char *what, double since)
    double ms = (now_s() - since) * 1000.0;
    if (g_perf_on && ms > 2.0) logf_("perf: stall %s %.1f ms", what, ms);
 }
+/* Where the main thread is when a frame hangs (debug/perf): a watchdog thread sees that no
+ * frame has ended for 150 ms and signals the main thread, whose handler notes the program
+ * counter, the link register and every word of the stack that points into the program's
+ * code. The frame that finally ends logs them ("perf: stuck at ..."); addr2line on the
+ * unstripped binary of the same build names the functions. */
+#include <signal.h>
+#include <ucontext.h>
+extern char __executable_start[], etext[];
+static volatile unsigned g_hb;                  /* frames ended */
+static volatile int      g_stuck_n;
+static uintptr_t         g_stuck_at[20];
+static pthread_t         g_main_pt;
+static uintptr_t         g_stack_hi;            /* end of the main thread's stack (/proc/self/maps) */
+static void stuck_handler(int sig, siginfo_t *si, void *ctx)
+{
+   const ucontext_t *uc = ctx;
+   const uintptr_t lo = (uintptr_t)__executable_start, hi = (uintptr_t)etext;
+   const uintptr_t *sp;
+   int n = 0, i;
+   (void)sig; (void)si;
+   if (g_stuck_n) return;
+#if defined(__arm__)
+   g_stuck_at[n++] = uc->uc_mcontext.arm_pc; g_stuck_at[n++] = uc->uc_mcontext.arm_lr; sp = (const uintptr_t *)uc->uc_mcontext.arm_sp;
+#elif defined(__aarch64__)
+   g_stuck_at[n++] = uc->uc_mcontext.pc; g_stuck_at[n++] = uc->uc_mcontext.regs[30]; sp = (const uintptr_t *)uc->uc_mcontext.sp;
+#else
+   (void)uc; sp = (const uintptr_t *)&uc;
+#endif
+   for (i = 0; i < 6000 && n < 20 && (uintptr_t)(sp + i + 1) <= g_stack_hi; i++)
+      if (sp[i] >= lo && sp[i] < hi && (n < 3 || sp[i] != g_stuck_at[n - 1])) g_stuck_at[n++] = sp[i];
+   g_stuck_n = n;
+}
+static void *stuck_watch(void *unused)
+{
+   unsigned seen = g_hb, sent = (unsigned)-1; int same = 0;
+   (void)unused;
+   for (;;)
+   {
+      struct timespec ts = { 0, 50000000L };
+      nanosleep(&ts, NULL);
+      if (g_hb != seen) { seen = g_hb; same = 0; continue; }
+      if (++same == 3 && sent != seen) { sent = seen; pthread_kill(g_main_pt, SIGUSR2); }
+   }
+   return NULL;
+}
+static void stuck_start(void)
+{
+   struct sigaction sa;
+   pthread_t th;
+   memset(&sa, 0, sizeof(sa));
+   sa.sa_sigaction = stuck_handler;
+   sa.sa_flags = SA_SIGINFO | SA_RESTART;
+   sigemptyset(&sa.sa_mask);
+   {
+      FILE *f = fopen("/proc/self/maps", "r");
+      char ln[300]; unsigned long a, b;
+      while (f && fgets(ln, sizeof(ln), f))
+         if (strstr(ln, "[stack]") && sscanf(ln, "%lx-%lx", &a, &b) == 2) g_stack_hi = (uintptr_t)b;
+      if (f) fclose(f);
+   }
+   if (!g_stack_hi || sigaction(SIGUSR2, &sa, NULL) != 0) return;
+   g_main_pt = pthread_self();
+   if (pthread_create(&th, NULL, stuck_watch, NULL) == 0) pthread_detach(th);
+   logf_("perf: code at 0x%lx - 0x%lx", (unsigned long)(uintptr_t)__executable_start, (unsigned long)(uintptr_t)etext);
+}
+static void stuck_report(void)
+{
+   char line[400]; int i, k = 0;
+   if (!g_stuck_n) return;
+   for (i = 0; i < g_stuck_n && k < (int)sizeof(line) - 12; i++) k += snprintf(line + k, sizeof(line) - k, " 0x%lx", (unsigned long)g_stuck_at[i]);
+   logf_("perf: stuck at%s", line);
+   g_stuck_n = 0;
+}
+
+static double g_pf_text_ms; static int g_pf_text_n;   /* text rendered and uploaded during this frame */
 static struct { int frames, slow, nin; double upd, draw, swap, upd_max, draw_max, swap_max, in_sum, in_max; Uint32 in_ts[8]; int in_n; } g_pf;
 static void perf_input(Uint32 ts) { if (g_perf_on && g_pf.in_n < 8) g_pf.in_ts[g_pf.in_n++] = ts; }
 static void perf_frame(double t, double t_upd, double t_pre, double t_end)
@@ -234,11 +309,22 @@ static void perf_frame(double t, double t_upd, double t_pre, double t_end)
    const double u = t_upd - t, d = t_pre - t_upd, w = t_end - t_pre;
    int i;
    if (!g_perf_on) return;
+   g_hb++;
+   stuck_report();
    g_pf.frames++; g_pf.upd += u; g_pf.draw += d; g_pf.swap += w;
    if (u > g_pf.upd_max) g_pf.upd_max = u;
    if (d > g_pf.draw_max) g_pf.draw_max = d;
    if (w > g_pf.swap_max) g_pf.swap_max = w;
-   if (t_end - t > 0.025) g_pf.slow++;
+   if (t_end - t > 0.025)
+   {  /* a frame the eye sees as a stutter: one line each (at most 30 a second) */
+      static double win0; static int nwin;
+      g_pf.slow++;
+      if (t - win0 > 1.0) { win0 = t; nwin = 0; }
+      if (nwin++ < 30)
+         logf_("perf: slow frame %.0f ms (update %.1f, draw %.1f, swap %.1f; %d texts %.1f ms)", (t_end - t) * 1000.0, u * 1000.0, d * 1000.0, w * 1000.0,
+               g_pf_text_n, g_pf_text_ms);
+   }
+   g_pf_text_ms = 0.0; g_pf_text_n = 0;
    for (i = 0; i < g_pf.in_n; i++)
    {
       double l = (double)(Uint32)(SDL_GetTicks() - g_pf.in_ts[i]);
@@ -920,11 +1006,11 @@ static const char *FS_2D =
    "#version 300 es\n"
    "precision mediump float;\n"
    "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color; uniform int mode; uniform highp vec4 rect; out vec4 frag;\n"
-   "uniform highp vec4 aux0, aux1, aux2;\n"
+   "uniform highp vec4 aux0, aux1, aux2; uniform vec4 dim;\n"
    /* signed distance to a rounded rectangle of rect.xy pixels, corner radius rect.z */
    "highp float rr_dist(){ highp vec2 hs = rect.xy * 0.5; highp float r = min(rect.z, min(hs.x, hs.y));\n"
    "  highp vec2 q = abs((v_uv - 0.5) * rect.xy) - (hs - vec2(r)); return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }\n"
-   "void main(){\n"
+   "void shade(){\n"
    /* 6: dashboard tile: texture (uv window aux0) in a rounded mask; aux1.x sheen position
     *    (< -1 none), aux1.y top-light amount */
    "  if (mode==6) { float m = clamp(0.5 - rr_dist(), 0.0, 1.0);\n"
@@ -964,6 +1050,10 @@ static const char *FS_2D =
    "                  if (aux0.y > 0.0) { highp vec2 q2 = abs(pp + vec2(0.0, aux0.z)) - (hs - vec2(r));\n"
    "                    highp float d2 = length(max(q2, 0.0)) + min(max(q2.x, q2.y), 0.0) - r; k *= clamp(d2 + 0.5, 0.0, 1.0); }\n"
    "                  frag = vec4(0.0, 0.0, 0.0, color.a * k); return; }\n"
+   /* 11: the inside of a glass card and its shadow under it as one layer (ui_glass_card):
+    *     mode 5's fill, times aux0.x, at opacity aux0.y */
+   "  if (mode==11) { vec3 fill = clamp(color.rgb + vec3(mix(0.06, -0.04, v_uv.y)), 0.0, 1.0);\n"
+   "                  frag = vec4(fill * aux0.x, aux0.y); return; }\n"
    "  if (mode==5) { highp vec2 hs = rect.xy * 0.5; highp float r = min(rect.z, min(hs.x, hs.y));\n"
    "                 highp vec2 q = abs((v_uv - 0.5) * rect.xy) - (hs - vec2(r));\n"
    "                 highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
@@ -982,15 +1072,18 @@ static const char *FS_2D =
    "                 vec2 q = (v_uv - vec2(0.5, 0.4167)) / vec2(0.328, 0.4167); float as = color.a * pow(clamp(1.0 - length(q), 0.0, 1.0), 2.2);\n"
    "                 float a = as + av * (1.0 - as); frag = vec4(color.rgb * as / max(a, 0.001), a); return; }\n"
    "  frag = t * color;\n"
-   "}\n";
+   "}\n"
+   /* dim: a scrim folded into what is under it, see scrim_fold() (0, 0, 0, 1 = none) */
+   /* (clamped first, as the frame buffer would have: a tile's sheen goes over 1) */
+   "void main(){ shade(); frag.rgb = clamp(frag.rgb, 0.0, 1.0) * dim.a + dim.rgb; }\n";
 
 /* plain textured quad (mode 0: backgrounds, text, glyphs): its own tiny program, so the
  * most-drawn pixels do not run through FS_2D's chain of mode branches */
 static const char *FS_TEX =
    "#version 300 es\n"
    "precision mediump float;\n"
-   "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color; out vec4 frag;\n"
-   "void main(){ frag = texture(tex, v_uv) * color; }\n";
+   "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color, dim; out vec4 frag;\n"
+   "void main(){ frag = texture(tex, v_uv) * color; frag.rgb = clamp(frag.rgb, 0.0, 1.0) * dim.a + dim.rgb; }\n";
 static GLuint g_prog_tex;
 static GLint  ut_mvp, ut_color, ut_uvw;
 
@@ -1005,10 +1098,38 @@ static const char *VS_MIX =
 static const char *FS_MIX =
    "#version 300 es\n"
    "precision mediump float;\n"
-   "in highp vec2 v_a; in highp vec2 v_b; uniform sampler2D ta, tb; uniform float k; out vec4 frag;\n"
-   "void main(){ frag = vec4(mix(texture(ta, v_a).rgb, texture(tb, v_b).rgb, k), 1.0); }\n";
+   "in highp vec2 v_a; in highp vec2 v_b; uniform sampler2D ta, tb; uniform float k; uniform vec4 dim; out vec4 frag;\n"
+   "void main(){ frag = vec4(mix(texture(ta, v_a).rgb, texture(tb, v_b).rgb, k) * dim.a + dim.rgb, 1.0); }\n";
 static GLuint g_prog_mix;
 static GLint  um_mvp, um_ma, um_mb, um_k;
+
+/* A scrim folded into what is under it. A menu's scrim was a full-screen quad of colour c
+ * at opacity a blended over the finished dashboard: 2.07 Mpx more on every frame a menu
+ * was open (6.5 Mpx in all with the settings, 6.9 with the game menu: 30 fps on the
+ * console). Blending is linear: with every colour written under the scrim sent through
+ * x * (1 - a) + c * a (the clear colour, the opaque background, and each blended draw's
+ * own colour), the frame is what the quad would have left, to the rounding, and the quad
+ * is not drawn. `dim` = (c * a, 1 - a) in the three 2D programs; (0, 0, 0, 1) is none. */
+static GLint u2_dim, ut_dim, um_dim;
+static int   g_scrim_fold = 1;   /* setting scrim_fold=0: the scrims are drawn as quads again */
+static float g_dim[4] = { 0, 0, 0, 1 };
+static void dim_apply(const float d[4])
+{
+   memcpy(g_dim, d, sizeof(g_dim));
+   glUseProgram(g_prog_mix); glUniform4fv(um_dim, 1, d);
+   glUseProgram(g_prog_tex); glUniform4fv(ut_dim, 1, d);
+   glUseProgram(g_prog_2d);  glUniform4fv(u2_dim, 1, d);
+}
+static void dim_fold(const float c[3], float a)
+{
+   const float d[4] = { c[0] * a, c[1] * a, c[2] * a, 1.0f - a };
+   dim_apply(d);
+}
+static void dim_none(void)
+{
+   static const float d[4] = { 0, 0, 0, 1 };
+   if (g_dim[3] != 1.0f || g_dim[0] != 0.0f || g_dim[1] != 0.0f || g_dim[2] != 0.0f) dim_apply(d);
+}
 static int    g_fx_bgflat;   /* bench: draw the background as a flat colour (fill without the fetch) */
 
 static GLuint compile(GLenum type, const char *src)
@@ -1131,21 +1252,27 @@ static void gl_setup(void)
    u2_aux1 = glGetUniformLocation(g_prog_2d, "aux1");
    u2_aux2 = glGetUniformLocation(g_prog_2d, "aux2");
    u2_uvw = glGetUniformLocation(g_prog_2d, "uvw");
+   u2_dim = glGetUniformLocation(g_prog_2d, "dim");
    glUseProgram(g_prog_2d);
    glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   glUniform4f(u2_dim, 0.0f, 0.0f, 0.0f, 1.0f);
    g_prog_tex = link_prog(VS_2D, FS_TEX);
    ut_mvp = glGetUniformLocation(g_prog_tex, "mvp");
    ut_color = glGetUniformLocation(g_prog_tex, "color");
    glUseProgram(g_prog_tex);
    glUniform1i(glGetUniformLocation(g_prog_tex, "tex"), 0);
    ut_uvw = glGetUniformLocation(g_prog_tex, "uvw");
+   ut_dim = glGetUniformLocation(g_prog_tex, "dim");
    glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   glUniform4f(ut_dim, 0.0f, 0.0f, 0.0f, 1.0f);
    g_prog_mix = link_prog(VS_MIX, FS_MIX);
    um_mvp = glGetUniformLocation(g_prog_mix, "mvp");
    um_ma = glGetUniformLocation(g_prog_mix, "ma");
    um_mb = glGetUniformLocation(g_prog_mix, "mb");
    um_k = glGetUniformLocation(g_prog_mix, "k");
+   um_dim = glGetUniformLocation(g_prog_mix, "dim");
    glUseProgram(g_prog_mix);
+   glUniform4f(um_dim, 0.0f, 0.0f, 0.0f, 1.0f);
    glUniform1i(glGetUniformLocation(g_prog_mix, "ta"), 0);
    glUniform1i(glGetUniformLocation(g_prog_mix, "tb"), 1);
 
@@ -1270,11 +1397,14 @@ GLuint text_tex(TTF_Font *f, const char *s, int *w, int *h)
 {
    SDL_Color white = { 255, 255, 255, 255 };
    SDL_Surface *surf; GLuint t;
+   double q0;
    if (!f || !s || !*s) { *w = *h = 0; return 0; }
+   q0 = now_s();
    surf = TTF_RenderUTF8_Blended(f, s, white);
    if (!surf) { *w = *h = 0; return 0; }
    t = text_upload(surf, w, h);
    SDL_FreeSurface(surf);
+   g_pf_text_ms += (now_s() - q0) * 1000.0; g_pf_text_n++;
    return t;
 }
 
@@ -1375,6 +1505,7 @@ static void game_free_tex(game_t *g)
 static mat4 g_ortho;
 
 static void cost_add(float w, float h, int mode);
+static void cost_add_at(float x, float y, float w, float h, int mode);
 static int g_cost_on;
 
 /* <home>/debug/launch-shots (a test switch, for the simulator): the launch clock steps
@@ -1415,6 +1546,18 @@ static int    g_dash_profile_dirty = 1; /* dashboard: avatar + play statistics t
  * shader weight, plus draw calls; logged once per second. A proxy for GPU load that a
  * software renderer can measure too (tools/host). */
 static double g_cost_px_opaque, g_cost_px_blend, g_cost_px_heavy, g_cost_draws;
+/* a quad at x, y: only what of it is on screen is shaded (a shape that grows past the
+ * frame was counted whole: 20 Mpx for the launch's circle) */
+static void cost_add_at(float x, float y, float w, float h, int mode)
+{
+   float x0 = w < 0 ? x + w : x, x1 = w < 0 ? x : x + w, y0 = h < 0 ? y + h : y, y1 = h < 0 ? y : y + h;
+   if (x0 < 0) x0 = 0;
+   if (y0 < 0) y0 = 0;
+   if (x1 > W) x1 = W;
+   if (y1 > H) y1 = H;
+   if (x1 <= x0 || y1 <= y0) { g_cost_draws += 1; return; }
+   cost_add(x1 - x0, y1 - y0, mode);
+}
 static void cost_add(float w, float h, int mode)
 {
    double px = fabs((double)w * h) * g_ui_scale * g_ui_scale;
@@ -1428,7 +1571,7 @@ static void cost_add(float w, float h, int mode)
 
 void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
 {
-   if (g_cost_on) cost_add(w, h, mode);
+   if (g_cost_on) cost_add_at(x, y, w, h, mode);
    if (mode == 0 && tex && fabsf(w * g_ui_scale - floorf(w * g_ui_scale + 0.5f)) < 0.01f &&
        fabsf(h * g_ui_scale - floorf(h * g_ui_scale + 0.5f)) < 0.01f)
    {  /* textures drawn 1:1 (text, glyphs) start on a device pixel: no half-pixel
@@ -1477,6 +1620,37 @@ void draw_round_rect(float x, float y, float w, float h, float radius, const flo
 }
 
 /* flat rounded rectangle (mode 9): filled, or stroked inside with width `stroke` */
+/* A filled, opaque disc of radius r at cx, cy as large as the launch's field gets: the
+ * square inside it is drawn without blending (the GPU then shades nothing of the
+ * dashboard under it), the four segments around the square with the shape's shader as
+ * before. Same pixels as draw_shape() of the whole disc. */
+static void draw_disc(float cx, float cy, float r, const float rgba[4])
+{
+   const float k = g_ui_scale, p = 1.0f / k, hf = floorf(r * 0.70710678f) - 3.0f, d = 2.0f * r, e = r - hf;
+   int i;
+   if (hf < 24.0f || rgba[3] < 0.999f)
+   {
+      glUniform4f(u2_rect, d * k, d * k, r * k, 0.0f);
+      glUniform4f(u2_aux0, 0.0f, 0.0f, 0.0f, 0.0f);
+      draw_sdf(0, cx - r, cy - r, d, d, rgba, 9);
+      return;
+   }
+   glDisable(GL_BLEND);
+   draw_2d(0, cx - hf, cy - hf, 2.0f * hf, 2.0f * hf, rgba, 0);
+   glEnable(GL_BLEND);
+   glUniform4f(u2_rect, d * k, d * k, r * k, 0.0f);
+   glUniform4f(u2_aux0, 0.0f, 0.0f, 0.0f, 0.0f);
+   for (i = 0; i < 4; i++)
+   {  /* top, bottom (full width, with the edge's 1 px of fade), left, right (between them) */
+      /* each reaches 1 px into the square (same colour over it), so no seam can open */
+      const float px = i < 2 ? -p : (i == 2 ? -p : r + hf - 1.0f), py = i == 0 ? -p : (i == 1 ? r + hf - 1.0f : e + 1.0f);
+      const float pw = i < 2 ? d + 2 * p : e + p + 1.0f, ph = i < 2 ? e + p + 1.0f : 2.0f * hf - 2.0f;   /* the four never overlap each other */
+      glUniform4f(u2_uvw, px / d, py / d, pw / d, ph / d);
+      draw_2d(0, cx - r + px, cy - r + py, pw, ph, rgba, 9);
+   }
+   glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+}
+
 static void draw_shape(float x, float y, float w, float h, float radius, float stroke, const float rgba[4])
 {
    const float k = g_ui_scale;
@@ -1633,6 +1807,74 @@ void ui_shadow(float x, float y, float w, float h, float radius, float blur, flo
    draw_shadow_ex(x, y, w, h, radius, blur, dy, a, 0);
 }
 
+/* A glass card on its shadow (ui_card). The shadow, at full strength under the card, and
+ * the card's fill over it were two blended layers over the whole card: half a megapixel
+ * each for the settings' card at 1080p, on top of the art and its scrim. Inside the card,
+ * away from the rounded corners, the border and the shadow's falloff, the two are one
+ * layer: a shadow of opacity s under a fill of opacity k is that fill at opacity
+ * 1 - (1 - s)(1 - k), its colour scaled by k over that. So the inside (a rectangle on
+ * whole device pixels) is drawn once, and the shadow and the card only as the four strips
+ * around it. Needs the shadow's baked texture: until it exists (its first two frames, or
+ * a size that is animating) both are drawn whole. Setting card_merge=0 always does. */
+static int g_card_merge = 1;
+void ui_glass_card(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha,
+                   float blur, float dy, float sh_a)
+{
+   const float k = g_ui_scale, p = 1.0f / k;
+   const float inset = fmaxf(radius + 4.0f, dy + 0.35f * blur + 5.0f);
+   const float ix0 = ceilf((x + inset) * k) / k, iy0 = ceilf((y + inset) * k) / k;
+   const float ix1 = floorf((x + w - inset) * k) / k, iy1 = floorf((y + h - inset) * k) / k;
+   const float qx = x - blur, qy = y - blur + dy, qw = w + 2 * blur, qh = h + 2 * blur;
+   const float sc[4] = { 0, 0, 0, sh_a };
+   shadow_key_t q;
+   GLuint tex = 0;
+   int i;
+   if (g_card_merge && g_fx_shadows && sh_a > 0.003f && rgba[3] > 0.003f && ix1 - ix0 > 32.0f && iy1 - iy0 > 32.0f)
+   {
+      q.w = qw * k; q.h = qh * k; q.r = radius * k; q.blur = blur * k; q.dy = dy * k; q.cut = 0; q.fx = q.fy = 0.0f;
+      tex = shadow_lookup(&q);
+   }
+   if (!tex)
+   {
+      draw_shadow_ex(x, y, w, h, radius, blur, dy, sh_a, 0);
+      draw_round_rect(x, y, w, h, radius, rgba, border_alpha);
+      return;
+   }
+   /* the shadow's frame: its quad without the inside */
+   glUseProgram(g_prog_tex);
+   glUniform4fv(ut_color, 1, sc);
+   glBindTexture(GL_TEXTURE_2D, tex);
+   for (i = 0; i < 4; i++)
+   {
+      const float sx = i < 2 ? qx : (i == 2 ? qx : ix1), sy = i == 0 ? qy : (i == 1 ? iy1 : iy0);
+      const float sw = i < 2 ? qw : (i == 2 ? ix0 - qx : qx + qw - ix1), sh = i == 0 ? iy0 - qy : (i == 1 ? qy + qh - iy1 : iy1 - iy0);
+      mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(sx + sw * 0.5f, sy + sh * 0.5f, 0), m4_scale(sw, -sh, 1)));
+      if (g_cost_on) cost_add_at(sx, sy, sw, sh, 0);
+      glUniform4f(ut_uvw, (sx - qx) / qw, (sy - qy) / qh, sw / qw, sh / qh);
+      glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, m.m);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+   }
+   glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   glUseProgram(g_prog_2d);
+   /* the card's frame (rounded corners, border; 1 px more outside for the edge's fade) */
+   glUniform4f(u2_rect, w * k, h * k, radius * k, border_alpha);
+   glUniform4f(u2_aux0, 2.0f * k, 0.0f, 0.0f, 0.0f);
+   for (i = 0; i < 4; i++)
+   {
+      const float sx = i < 2 ? x - p : (i == 2 ? x - p : ix1), sy = i == 0 ? y - p : (i == 1 ? iy1 : iy0);
+      const float sw = i < 2 ? w + 2 * p : (i == 2 ? ix0 - (x - p) : x + w + p - ix1), sh = i == 0 ? iy0 - (y - p) : (i == 1 ? y + h + p - iy1 : iy1 - iy0);
+      glUniform4f(u2_uvw, (sx - x) / w, (sy - y) / h, sw / w, sh / h);
+      draw_2d(0, sx, sy, sw, sh, rgba, 5);
+   }
+   {  /* the inside: fill and shadow as one layer */
+      const float s = sh_a, kf = rgba[3], a = 1.0f - (1.0f - s) * (1.0f - kf);
+      glUniform4f(u2_uvw, (ix0 - x) / w, (iy0 - y) / h, (ix1 - ix0) / w, (iy1 - iy0) / h);
+      glUniform4f(u2_aux0, kf / a, a, 0.0f, 0.0f);
+      draw_2d(0, ix0, iy0, ix1 - ix0, iy1 - iy0, rgba, 11);
+   }
+   glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+}
+
 /* label with a soft 1-2 px shadow, for text over bright art */
 static void draw_text(const label_t *l, float x, float y, const float c[4])
 {
@@ -1742,12 +1984,37 @@ void gl_use_2d(void)
    glUniform1i(u2_tex, 0);
 }
 
+/* A font file is read once, whole, and every size of it is opened from that copy.
+ * Opened from the file, FreeType reads each glyph's outline from the stick the first time
+ * the glyph is drawn: a round trip to the FUSE daemon in the middle of a frame whenever a
+ * new title or a new letter appeared, and one more open and parse per size at start-up. */
+static const void *font_bytes(const char *path, int *len)
+{
+   static struct { char path[300]; void *data; int len; } cache[8];
+   static int n;
+   FILE *f; long sz; void *d; int i;
+   for (i = 0; i < n; i++) if (!strcmp(cache[i].path, path)) { *len = cache[i].len; return cache[i].data; }
+   if (n >= 8 || !(f = fopen(path, "rb"))) return NULL;
+   fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET);
+   d = sz > 0 && sz < (16 << 20) ? malloc((size_t)sz) : NULL;
+   if (d && fread(d, 1, (size_t)sz, f) != (size_t)sz) { free(d); d = NULL; }
+   fclose(f);
+   if (!d) return NULL;
+   snprintf(cache[n].path, sizeof(cache[n].path), "%s", path);
+   cache[n].data = d; cache[n].len = (int)sz;
+   *len = (int)sz;
+   return cache[n++].data;
+}
+
 static TTF_Font *open_font(const char **paths, int size)
 {
    int i;
    for (i = 0; paths[i]; i++)
    {
-      TTF_Font *f = TTF_OpenFont(paths[i], (int)(size * g_ui_scale + 0.5f));
+      int len = 0;
+      const void *d = font_bytes(paths[i], &len);
+      SDL_RWops *rw = d ? SDL_RWFromConstMem(d, len) : NULL;
+      TTF_Font *f = rw ? TTF_OpenFontRW(rw, 1, (int)(size * g_ui_scale + 0.5f)) : NULL;
       if (f) return f;
    }
    logf_("no font found for size %d", size);
@@ -1840,6 +2107,39 @@ static void bake_scrim(SDL_Surface *c, float dim)
    free(fx);
 }
 
+/* The worker keeps the last three decoded backgrounds (scrim baked, 8 MB each at 1080p):
+ * decoding a 1080p JPEG is the wait between settling on a game and its background, and
+ * going back to the game just left, or on to the next one (bg_prefetch, asked for once
+ * the selection has settled), finds it done. Worker thread only. */
+typedef struct { char path[512]; float dim; SDL_Surface *s; unsigned used; } bg_cache_t;
+static bg_cache_t bg_cache[3];
+static unsigned   bg_cache_tick;
+static char       bg_pre[512];      /* path to decode ahead (guarded by bg_mx) */
+static int        bg_pre_new;
+
+/* the decoded background for path, from the cache or decoded into it; NULL if unreadable */
+static SDL_Surface *bg_cache_get(const char *path)
+{
+   const float dim = g_bg_dim;
+   SDL_Surface *s, *c = NULL;
+   int k, slot = 0;
+   for (k = 0; k < 3; k++)
+      if (bg_cache[k].s && bg_cache[k].dim == dim && !strcmp(bg_cache[k].path, path)) { bg_cache[k].used = ++bg_cache_tick; return bg_cache[k].s; }
+   s = IMG_Load(path);
+   if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
+   if (!c) return NULL;
+   bake_scrim(c, dim);
+   for (k = 0; k < 3; k++)
+   {
+      if (!bg_cache[k].s) { slot = k; break; }
+      if (bg_cache[k].used < bg_cache[slot].used) slot = k;
+   }
+   if (bg_cache[slot].s) SDL_FreeSurface(bg_cache[slot].s);
+   bg_cache[slot].s = c; bg_cache[slot].dim = dim; bg_cache[slot].used = ++bg_cache_tick;
+   snprintf(bg_cache[slot].path, sizeof(bg_cache[slot].path), "%s", path);
+   return c;
+}
+
 static int bg_worker(void *unused)
 {
    (void)unused;
@@ -1847,15 +2147,21 @@ static int bg_worker(void *unused)
    while (!bg_quit)
    {
       char path[512]; SDL_Surface *s, *c = NULL;
-      while (!bg_req_new && !bg_quit) SDL_CondWait(bg_cv, bg_mx);
+      int pre;
+      while (!bg_req_new && !bg_pre_new && !bg_quit) SDL_CondWait(bg_cv, bg_mx);
       if (bg_quit) break;
-      snprintf(path, sizeof(path), "%s", bg_req);
-      bg_req_new = 0;
+      pre = !bg_req_new;   /* the request of the selection goes first */
+      snprintf(path, sizeof(path), "%s", pre ? bg_pre : bg_req);
+      if (pre) bg_pre_new = 0; else bg_req_new = 0;
       SDL_UnlockMutex(bg_mx);
-      s = path[0] ? IMG_Load(path) : NULL;
-      if (s) { c = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ABGR8888, 0); SDL_FreeSurface(s); }
-      if (c) bake_scrim(c, g_bg_dim);
+      {
+         const double w0 = now_s();
+         s = path[0] ? bg_cache_get(path) : NULL;
+         if (s && !pre) c = SDL_ConvertSurface(s, s->format, 0);   /* the render thread's own copy */
+         if (g_perf_on && path[0]) logf_("perf: background %s by the worker in %.0f ms", pre ? "decoded ahead" : "handed over", (now_s() - w0) * 1000.0);
+      }
       SDL_LockMutex(bg_mx);
+      if (pre) continue;
       if (bg_done) SDL_FreeSurface(bg_done);
       bg_done = c;
       bg_done_failed = !c && path[0];
@@ -1866,8 +2172,20 @@ static int bg_worker(void *unused)
    return 0;
 }
 
+/* decode ahead a background the selection is likely to ask for next */
+static void bg_prefetch(const char *path)
+{
+   SDL_LockMutex(bg_mx);
+   snprintf(bg_pre, sizeof(bg_pre), "%s", path);
+   bg_pre_new = 1;
+   SDL_CondSignal(bg_cv);
+   SDL_UnlockMutex(bg_mx);
+}
+
+static double g_bg_req_t;   /* perf probe: when the selection's background was asked for */
 static void bg_request(const char *path)
 {
+   g_bg_req_t = now_s();
    SDL_LockMutex(bg_mx);
    snprintf(bg_req, sizeof(bg_req), "%s", path);
    bg_req_new = 1;
@@ -2154,59 +2472,102 @@ typedef struct { const icon_t *icon[3]; int have_icons; GLuint fb, txt; int fbw,
 static hint_gl_t g_hint_gl[HINTS_COUNT][SET_HINTS];
 static float     g_hint_cx = W * 0.5f;   /* horizontal centre of the help bar */
 
+/* the icon's picture from the stick (theme's glyphs/ or icons/ first, then the flat
+ * glyphs, the pixel-art icons, the old layout); no GL: any thread */
+static SDL_Surface *icon_file(const char *home, const char *name)
+{
+   char path[400], rel[64];
+   snprintf(rel, sizeof(rel), "glyphs/%s.png", name);
+   if (!theme_asset(path, sizeof(path), rel)) { snprintf(rel, sizeof(rel), "icons/%s.png", name); if (!theme_asset(path, sizeof(path), rel)) path[0] = 0; }
+   if (!path[0]) snprintf(path, sizeof(path), "%s/assets/glyphs/%s.png", home, name);
+   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/assets/icons/%s.png", home, name);
+   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/icons/%s.png", home, name);   /* old layout */
+   return IMG_Load(path);
+}
+
+/* Every icon the interface can show, read and decoded by the start-up's scan thread: an
+ * icon first drawn in the middle of a session (a help bar set, a glyph) then costs an
+ * upload, not a question and a read to the stick, which hang while the stick is busy
+ * (157 ms and more per set on the console). */
+static struct { const char *name; SDL_Surface *sf; int done; } g_icon_pre[] = {
+   { "cross" }, { "circle" }, { "square" }, { "triangle" }, { "start" }, { "select" }, { "dpad" },
+   { "l1" }, { "r1" }, { "l2" }, { "r2" }, { "pad" }, { "network" }, { "disc" }, { "cartridge" }, { "coin" },
+   { "clock" }, { "gallery" }, { "info" }, { "settings" },
+};
+static void icons_preload(const char *home)
+{
+   int i;
+   for (i = 0; i < (int)(sizeof(g_icon_pre) / sizeof(g_icon_pre[0])); i++)
+   {
+      g_icon_pre[i].sf = icon_file(home, g_icon_pre[i].name);
+      g_icon_pre[i].done = 1;
+   }
+}
+
 static const icon_t *icon_get(const char *home, const char *name)
 {
-   int i; char path[400]; SDL_Surface *sf; icon_t *ic;
+   int i; SDL_Surface *sf = NULL; icon_t *ic;
    for (i = 0; i < g_nicons; i++) if (!strcmp(g_icons[i].name, name)) return &g_icons[i];
    if (g_nicons >= (int)(sizeof(g_icons) / sizeof(g_icons[0]))) return NULL;
    ic = &g_icons[g_nicons++];
    snprintf(ic->name, sizeof(ic->name), "%s", name);
-   /* flat glyphs first (dashboard style), then the pixel-art icons, then the old layout */
-   {  /* the theme's glyphs/ or icons/ first */
-      char rel[64];
-      snprintf(rel, sizeof(rel), "glyphs/%s.png", name);
-      if (!theme_asset(path, sizeof(path), rel)) { snprintf(rel, sizeof(rel), "icons/%s.png", name); if (!theme_asset(path, sizeof(path), rel)) path[0] = 0; }
-   }
-   if (!path[0]) snprintf(path, sizeof(path), "%s/assets/glyphs/%s.png", home, name);
-   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/assets/icons/%s.png", home, name);
-   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/icons/%s.png", home, name);   /* old layout */
-   if ((sf = IMG_Load(path))) { ic->w = sf->w; ic->h = sf->h; ic->tex = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
+   for (i = 0; i < (int)(sizeof(g_icon_pre) / sizeof(g_icon_pre[0])); i++)
+      if (!strcmp(g_icon_pre[i].name, name) && g_icon_pre[i].done) break;
+   if (i < (int)(sizeof(g_icon_pre) / sizeof(g_icon_pre[0]))) { sf = g_icon_pre[i].sf; g_icon_pre[i].sf = NULL; }
+   else sf = icon_file(home, name);   /* not in the list, or asked before the scan thread got to it */
+   if (sf) { ic->w = sf->w; ic->h = sf->h; ic->tex = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
    return ic;
 }
 
 /* (re)build the hint texts in the active language; icons stay */
+/* A set's icons and texts are made the first time it is drawn: at start-up only the
+ * carousel's (there are 12 sets, some 45 text textures and 12 icon files on the stick;
+ * most sessions show two or three of them). */
+static unsigned char g_hint_ready[HINTS_COUNT];
+static const char   *g_hint_home = "";
+
+static void hints_set_load(int s)
+{
+   int i, k;
+   g_hint_ready[s] = 1;
+   for (i = 0; i < SET_HINTS && g_hints[s][i].text_key; i++)
+   {
+      hint_gl_t *h = &g_hint_gl[s][i];
+      h->have_icons = 1;
+      for (k = 0; k < 3 && g_hints[s][i].icons[k]; k++)
+      {
+         h->icon[k] = icon_get(g_hint_home, g_hints[s][i].icons[k]);
+         if (!h->icon[k] || !h->icon[k]->tex || h->icon[k]->h <= 0) h->have_icons = 0;
+      }
+      if (!h->have_icons)
+         h->fb = text_tex(g_font_small, tr(g_hints[s][i].fallback_key), &h->fbw, &h->fbh);
+      h->txt = text_tex(g_font_small, tr(g_hints[s][i].text_key), &h->tw, &h->th);
+   }
+}
+
+/* the texts follow the language: dropped, made again when their set is next drawn */
 static void hints_reload(void)
 {
    int s, i;
    for (s = 0; s < HINTS_COUNT; s++)
+   {
       for (i = 0; i < SET_HINTS && g_hints[s][i].text_key; i++)
       {
          hint_gl_t *h = &g_hint_gl[s][i];
          if (h->fb) glDeleteTextures(1, &h->fb);
          if (h->txt) glDeleteTextures(1, &h->txt);
          h->fb = h->txt = 0; h->fbw = h->fbh = h->tw = h->th = 0;
-         if (!h->have_icons)
-            h->fb = text_tex(g_font_small, tr(g_hints[s][i].fallback_key), &h->fbw, &h->fbh);
-         h->txt = text_tex(g_font_small, tr(g_hints[s][i].text_key), &h->tw, &h->th);
       }
+      g_hint_ready[s] = 0;
+   }
 }
 
-/* icons once ($home/assets/icons/<name>.png), then the texts */
+/* icons from $home/assets/icons/<name>.png (loaded once each, shared by the sets) */
 static void hints_load(const char *home)
 {
-   int s, i, k;
-   for (s = 0; s < HINTS_COUNT; s++)
-      for (i = 0; i < SET_HINTS && g_hints[s][i].text_key; i++)
-      {
-         hint_gl_t *h = &g_hint_gl[s][i];
-         h->have_icons = 1;
-         for (k = 0; k < 3 && g_hints[s][i].icons[k]; k++)
-         {
-            h->icon[k] = icon_get(home, g_hints[s][i].icons[k]);
-            if (!h->icon[k] || !h->icon[k]->tex || h->icon[k]->h <= 0) h->have_icons = 0;
-         }
-      }
+   g_hint_home = home;
    hints_reload();
+   hints_set_load(HINTS_CAROUSEL);
 }
 
 /* section 5.3: text baked into textures follows the language; every other label is
@@ -2266,6 +2627,7 @@ static void hints_draw(int set, float y, float alpha)
    float total = 0, x, gap_hint = 42.0f, avail;
    int i, k, n = 0;
    if (set < 0 || set >= HINTS_COUNT || alpha <= 0.003f) return;
+   if (!g_hint_ready[set]) hints_set_load(set);
    while (n < SET_HINTS && g_hints[set][n].text_key) n++;
    for (i = 0; i < n; i++)
    {
@@ -2430,6 +2792,7 @@ static void bg_poll_upload(void)
          bg_up.tex = 0;
          bg_up_cancel();
          bg_push(l);
+         if (g_perf_on) logf_("perf: background ready %.0f ms after it was asked for", (now_s() - g_bg_req_t) * 1000.0);
       }
    }
 }
@@ -2439,6 +2802,7 @@ static void bg_poll_upload(void)
 static void bg_gen_render(bgtex_t *b, double t)
 {
    const float one[4] = { 1, 1, 1, 1 };
+   float keep_dim[4];
    float a[3], acc[3], base[3];
    int k;
    if (b->gfbo && t >= b->gen_t && t - b->gen_t < GEN_DT) return;   /* its picture is recent enough */
@@ -2465,6 +2829,11 @@ static void bg_gen_render(bgtex_t *b, double t)
       base[k] = a[k] * 0.22f + 0.015f;
    }
    for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
+   {  /* the picture itself is not under a folded scrim: the quad that shows it is */
+      static const float none[4] = { 0, 0, 0, 1 };
+      memcpy(keep_dim, g_dim, sizeof(keep_dim));
+      glUniform4fv(u2_dim, 1, none);
+   }
    glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
    glViewport(0, 0, GEN_W, GEN_H);
    glDisable(GL_BLEND);
@@ -2479,6 +2848,7 @@ static void bg_gen_render(bgtex_t *b, double t)
    draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
    glBindFramebuffer(GL_FRAMEBUFFER, crt_target());   /* the window, or the CRT filter's target */
    glViewport(0, 0, g_dw, g_dh);
+   glUniform4fv(u2_dim, 1, keep_dim);
 }
 
 /* draw a layer: images "cover"-fitted with a slow drift (scrim already baked in);
@@ -2879,7 +3249,7 @@ static float glyph_w(const char *name, float h)
  *    startup goes on; then the splash fades into the dashboard. The boot payload's
  *    splash.png is this same first frame (the dark logo, same place: tools/make-brand.py),
  *    and boot.sh keeps it up until Lumen draws, so the two read as one splash: after a
- *    console boot the fade-in is skipped (see splash_step).
+ *    console boot the fade-in is skipped (see main).
  * Missing PNG: nothing is drawn (plain black splash, the top bar as it was). */
 #define LOGO_W_VOX   28.5f   /* content width of logo-front.svg in voxels: 4 x 6 + 3 x 1.5 */
 #define LOGO_H_VOX   8.0f    /* letter height in voxels (the extrusion hangs below) */
@@ -3058,28 +3428,88 @@ static void splash_frame(void)
    }
 }
 
+static SDL_threadID g_main_thread;   /* the thread with the GL context */
 static void splash_pulse(void)
 {
    if (g_splash_fill < 0.0f || !g_splash_win || now_s() - g_splash_last < 0.25) return;
+   if (SDL_ThreadID() != g_main_thread) return;   /* the start-up scan runs on its own thread */
    splash_frame();
 }
 
-static void splash_step(SDL_Window *win, float target)
+/* One frame of the splash, its fade-in and the logo's fill moved on by the time that has
+ * passed, towards `target`; it never waits. Start-up calls it between its steps and while
+ * the library scan runs on its thread, so the animation plays during the loading
+ * instead of each stretch of it being waited for after the step it stands for (that was
+ * 0.25 s of fade-in plus 0.4 s of fill added to every start, and Lumen starts again
+ * after every game). */
+static void splash_tick(float target)
+{
+   static double last;
+   const double t = now_s();
+   const float dt = last > 0.0 ? clampf((float)(t - last), 0.0f, 0.1f) : 0.0f;
+   if (g_splash_fill < 0.0f || !g_splash_win) return;
+   if (last > 0.0 && t - g_splash_last < 0.010) return;   /* a frame was presented just now: no second wait for the display */
+   last = t;
+   if (g_splash_a < 1.0f) g_splash_a = fminf(1.0f, g_splash_a + dt / 0.25f);
+   else if (g_splash_fill < target) g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
+   splash_frame();
+}
+
+/* the end of the start-up: what is left of the fade and the fill, in 0.15 s at most */
+static void splash_finish(void)
 {
    double last = now_s();
-   if (g_splash_fill < 0.0f) return;
-   g_splash_win = win;
-   for (;;)
+   const float rate = fmaxf(2.5f, (1.0f - g_splash_fill) / 0.15f), arate = fmaxf(4.0f, (1.0f - g_splash_a) / 0.15f);
+   if (g_splash_fill < 0.0f || !g_splash_win || !g_logo_big.tex[0]) return;
+   while (g_splash_a < 1.0f || g_splash_fill < 1.0f)
    {
-      double t = now_s();
-      float dt = clampf((float)(t - last), 0.0f, 0.1f);   /* a slow frame still advances */
+      const double t = now_s();
+      const float dt = clampf((float)(t - last), 0.0f, 0.1f);
       last = t;
-      if (g_splash_a < 1.0f) g_splash_a = fminf(1.0f, g_splash_a + dt / 0.25f);
-      else g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
+      g_splash_a = fminf(1.0f, g_splash_a + arate * dt);
+      g_splash_fill = fminf(1.0f, g_splash_fill + rate * dt);
       splash_frame();
-      if ((g_splash_a >= 1.0f && g_splash_fill >= target) || !g_logo_big.tex[0]) break;
    }
 }
+
+/* the audio device and the interface sounds (0.3 s on the console), on their own thread */
+static int          g_audio_ok = -1;
+static SDL_atomic_t g_audio_done;
+static int audio_worker(void *unused)
+{
+   const double t0 = now_s();
+   (void)unused;
+   g_audio_ok = music_init();
+   logf_("boot: audio (its thread) %.0f ms", (now_s() - t0) * 1000.0);
+   SDL_AtomicSet(&g_audio_done, 1);
+   return 0;
+}
+
+/* the library scan of the start-up (files only, no GL), on its own thread; with it, the
+ * other small reads the start-up makes on the stick: the selection to resume and whether
+ * there is menu music (read on the main thread they waited 527 ms on a busy stick) */
+static SDL_atomic_t g_scan_done;
+static double       g_scan_ms;
+static int          g_resume_plat, g_resume_sel;
+static int scan_worker(void *unused)
+{
+   const double t0 = now_s();
+   (void)unused;
+   scan_library();
+   build_platform_index();
+   g_scan_ms = (now_s() - t0) * 1000.0;
+   {
+      FILE *f = fopen(g_state, "r");
+      if (f) { if (fscanf(f, "%d %d", &g_resume_plat, &g_resume_sel) != 2) g_resume_plat = g_resume_sel = 0; fclose(f); }
+      asset_path(g_menu_music, sizeof(g_menu_music), "music/menu.ogg", "music/menu.ogg");
+      if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
+   }
+   icons_preload(g_home);
+   flat_preload();   /* every system's launch declaration: read here, not when its row is first settled on */
+   SDL_AtomicSet(&g_scan_done, 1);
+   return 0;
+}
+
 
 /* ua: alpha of the whole dashboard UI; pos: selection spring (tile index space);
  * info_a / info_y: title block fade and slide after a selection change */
@@ -3683,6 +4113,7 @@ int main(int argc, char **argv)
    double last_activity = 0;
    attract_out_t att;
    SDL_Window *win; SDL_GLContext ctx;
+   SDL_Thread *scan_th = NULL, *audio_th = NULL;   /* the start-up library scan, the audio device */
    int win_w = W, win_h = H;
    double b_draw = 0, b_swap = 0;   /* bench: time issuing frames / blocked in the swap */
    SDL_GameController *pad = NULL;
@@ -3695,7 +4126,7 @@ int main(int argc, char **argv)
    float launch_dt = 0.0f, lt_sum = 0.0f, lt_max = 0.0f;   /* launch frame times (real, unclamped) */
    int lt_n = 0, lt_slow = 0;
    int i, sel_plat = 0, sel = 0, running = 1, exit_code = 0, frames = 0, crt_on = 0;
-   int held_dir = 0; double held_next = 0, sel_t = 0;
+   int held_dir = 0, nav_dir = 1; double held_next = 0, sel_t = 0;
    int start_down = 0, select_down = 0;
    spring bg[3], info_y, info_a, plat_x, dpos;
    label_t l_start = { 0 };
@@ -3724,6 +4155,7 @@ int main(int argc, char **argv)
    atexit(log_sync_atexit);
    logf_("lumen %s start", LUMEN_VERSION);
    boot_mark("");
+   g_main_thread = SDL_ThreadID();
 
    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0)
    { logf_("SDL_Init: %s", SDL_GetError()); return 1; }
@@ -3820,7 +4252,10 @@ int main(int argc, char **argv)
       g_font_sub = open_font(fonts_reg, 21);
       g_splash_fill = 0.0f;
       if (remove("/tmp/lumen-boot-splash") == 0) g_splash_a = 1.0f;
-      splash_step(win, 0.0f);
+      g_splash_win = win;
+      splash_tick(0.0f);
+      /* the library is read from the stick while the rest of the start-up goes on here */
+      scan_th = SDL_CreateThread(scan_worker, "scan", NULL);
    }
    make_tile_shadow();
    bg_mx = SDL_CreateMutex();
@@ -3833,34 +4268,42 @@ int main(int argc, char **argv)
    g_font_title = open_font(fonts_semi, 34);
    if (!g_font_sub) g_font_sub = open_font(fonts_reg, 21);
    g_font_small = open_font(fonts_reg, 17);
+   splash_tick(0.1f);
    g_font_cover = open_font(fonts_bold, 22);
    g_font_hero  = open_font(fonts_semi, 50);
    g_font_tab   = open_font(fonts_med, 19);
+   splash_tick(0.2f);
    g_font_name  = open_font(fonts_med, 21);
    g_font_medium = g_font_name ? g_font_name : g_font_sub;
    g_font_caps  = open_font(fonts_med, 15);
    boot_mark("fx+fonts");
-   splash_step(win, 0.2f);
+   splash_tick(0.2f);
    if (dialog)   /* in-game dialog: no library, no music */
    {
       g_ortho = m4_ortho(0, W, H, 0);
       return run_dialog(win, dialog);
    }
 
-   scan_library();
-   build_platform_index();
-   logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
-   boot_mark("scan");
-   splash_step(win, 0.45f);
+   /* what needs no library, while the scan runs: the audio device, the help bar */
+   g_ortho = m4_ortho(0, W, H, 0);
+   audio_th = SDL_CreateThread(audio_worker, "audio", NULL);
+   if (!audio_th && music_init() == 0) ui_sound_changed();
+   splash_tick(0.3f);
+   while (scan_th && !SDL_AtomicGet(&g_scan_done)) splash_tick(0.6f);   /* the splash plays on, a frame at a time */
+   if (scan_th) SDL_WaitThread(scan_th, NULL);
+   else { scan_library(); build_platform_index(); }
+   hints_load(g_home);   /* its icons were read by the scan thread */
+   boot_mark("hints");
+   logf_("games: %d, platforms: %d, scan %.0f ms on its thread, done %.0f ms after the start", g_ngames, g_nplat, g_scan_ms, (now_s() - t0) * 1000);
+   boot_mark("scan wait");
    platforms_load_art();
    coll_rows_build();
    boot_mark("tab art");
-   splash_step(win, 0.6f);
+   splash_tick(0.8f);
 
    /* resume last selection */
    {
-      FILE *f = fopen(g_state, "r");
-      if (f) { if (fscanf(f, "%d %d", &sel_plat, &sel) != 2) sel_plat = sel = 0; fclose(f); }
+      sel_plat = g_resume_plat; sel = g_resume_sel;   /* read by the scan thread */
       if (sel_plat < 0 || sel_plat >= g_nplat) sel_plat = 0;
       if (g_nplat && (sel < 0 || sel >= g_plat[sel_plat].count)) sel = 0;
    }
@@ -3894,20 +4337,24 @@ int main(int argc, char **argv)
    bg[0].x = 0.05f; bg[1].x = 0.05f; bg[2].x = 0.08f;
    memset(&info_y, 0, sizeof(info_y)); memset(&info_a, 0, sizeof(info_a)); memset(&plat_x, 0, sizeof(plat_x));
    memset(&dpos, 0, sizeof(dpos)); dpos.x = (float)sel;
-   asset_path(g_menu_music, sizeof(g_menu_music), "music/menu.ogg", "music/menu.ogg");
-   if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
    boot_mark("resume");
-   if (music_init() == 0) ui_sound_changed();
-   boot_mark("audio");
-   hints_load(g_home);
    panel_init();
+   boot_mark("panel");
    transfer_init();
+   boot_mark("transfer");
    welcome_init();
    attract_init(start_attract, g_home);
-   boot_mark("ui");
+   boot_mark("welcome");
+   if (audio_th)
+   {  /* the splash plays on while the audio device finishes opening */
+      while (!SDL_AtomicGet(&g_audio_done)) splash_tick(0.9f);
+      SDL_WaitThread(audio_th, NULL);
+      if (g_audio_ok == 0) ui_sound_changed();
+   }
+   boot_mark("audio wait");
    memset(&att, 0, sizeof(att));
 
-   splash_step(win, 1.0f);
+   splash_finish();
    {
       char sp[300];
       snprintf(sp, sizeof(sp), "%s/debug/launch-shots", g_home);
@@ -3922,6 +4369,9 @@ int main(int argc, char **argv)
    boot_mark("last splash");
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
+   if (g_perf_on) stuck_start();
+   g_scrim_fold = settings_get_int("scrim_fold", 1, 0, 1);
+   g_card_merge = settings_get_int("card_merge", 1, 0, 1);
    rec_start();
 
    while (running)
@@ -4115,7 +4565,7 @@ int main(int argc, char **argv)
 
       if (n && move)
       {
-         sel = (sel + move + n) % n; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t;
+         sel = (sel + move + n) % n; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; nav_dir = move;
          if (!attract_active() && n > 1) music_sfx(move > 0 ? SFX_MOVE_NEXT : SFX_MOVE_PREV);
       }
       if (n > 1 && page)
@@ -4146,6 +4596,7 @@ int main(int argc, char **argv)
       /* the launch: the system's illustration and the game's painted cover, ready before Play */
       if (n && play_t < 0 && t - sel_t > 0.4) flat_want(pl, &g_games[pl->first + sel], 0);
       flat_poll();
+      if (n && play_t < 0 && t - sel_t > 0.4) flat_ahead(pl, &g_games[pl->first + sel]);
 
       /* background: once the selection has settled, the game's image (decoded on the
        * worker) or a background generated from its cover colours */
@@ -4165,6 +4616,12 @@ int main(int argc, char **argv)
          }
       }
       { double ps = now_s(); bg_poll_upload(); perf_stall("background upload", ps); }
+      if (n && play_t < 0 && t - sel_t > 0.6)
+      {  /* settled: the background of the next game in the direction of travel, decoded ahead */
+         static char pre_last[512];
+         const game_t *ng = &g_games[pl->first + (sel + (nav_dir < 0 ? -1 : 1) + n) % n];
+         if (ng->bg[0] && strcmp(ng->bg, pre_last)) { snprintf(pre_last, sizeof(pre_last), "%s", ng->bg); bg_prefetch(ng->bg); }
+      }
       bg_advance(dt);
 
       /* music: the game's track once the selection has settled 0.8 s, else the menu
@@ -4203,37 +4660,40 @@ int main(int argc, char **argv)
          }
          if (n)
          {
-            int placed = 0;
-            for (k = 0; k <= TEX_WINDOW && !placed; k++)
+            /* what is on screen first (the selection, the row to its right, the tile
+             * leaving on the left), then the page R1 would show and the one L1 would:
+             * a page turn finds its covers decoded instead of filling in one by one */
+            static const signed char order[] = { 0, 1, -1, 2, 3, 4, 5, 6, 7, -2,
+                                                 8, 9, 10, 11, 12, 13, -3, -4, -5, -6, -7, -8 };
+            int placed = 0, oldest = -1;
+            double bytes = 0.0;
+            for (k = 0; k < (int)sizeof(order); k++)
             {
-               int cand[2], c;
-               cand[0] = (sel + k) % n; cand[1] = (sel - k + n) % n;
-               for (c = 0; c < 2 && !placed; c++)
-               {
-                  int gi = pl->first + cand[c];
-                  game_t *g = &g_games[gi];
-                  if (g->tex_state) continue;
-                  if (g->has_cover) { if (!cv_busy) { g->tex_state = 2; cover_request(gi, g->cover); } placed = 1; }
-                  else { double ps = now_s(); game_placeholder(g); placed = 1; perf_stall("placeholder", ps); }
-               }
+               int gi = pl->first + ((sel + order[k]) % n + n) % n;
+               game_t *g = &g_games[gi];
+               g->tex_used = t;
+               if (placed || g->tex_state) continue;
+               if (g->has_cover) { if (!cv_busy) { g->tex_state = 2; cover_request(gi, g->cover); } placed = 1; }
+               else { double ps = now_s(); game_placeholder(g); placed = 1; perf_stall("placeholder", ps); }
             }
+            /* covers away from the selection (and other systems' rows) stay on the GPU,
+             * so coming back does not decode them again, up to COVER_CACHE_BYTES: past
+             * that the one that has been away longest goes, one a frame */
             for (k = 0; k < g_ngames; k++)
             {
                game_t *g = &g_games[k];
-               int d = 9999;
-               if (k >= pl->first && k < pl->first + n)   /* games of the row on screen */
-               {
-                  int o = abs((k - pl->first) - sel);
-                  d = o < n - o ? o : n - o;
-               }
-               if ((g->tex_state == 1 || g->tex_state == -1) && d > TEX_WINDOW + 3) game_free_tex(g);
+               if (g->tex_state != 1 && g->tex_state != -1) continue;
+               bytes += (g->tex_state == 1 ? (double)g->tex_w * g->tex_h : (double)SP(256) * SP(256)) * 5.34;   /* RGBA with its mipmaps */
+               if (g->tex_used < t && (oldest < 0 || g->tex_used < g_games[oldest].tex_used)) oldest = k;
             }
+            if (bytes > COVER_CACHE_BYTES && oldest >= 0) game_free_tex(&g_games[oldest]);
          }
       }
 
       /* animation targets */
       {
-         int covered, blackout, panel_cleared = 0;
+         int covered, blackout, panel_cleared = 0, fold = 0;
+         float fold_a = 0.0f, fold_c[4] = { 0, 0, 0, 0 };
          float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          float pdt = 0.0f;   /* launch clock step this frame */
          /* the launch runs on real time (launch_dt): at 15 fps it lasts what it lasts at
@@ -4279,8 +4739,22 @@ int main(int argc, char **argv)
          /* settings fully open: an opaque full-screen section. The clear takes its colour
           * (free on a tile-based GPU) instead of a full-screen quad drawn over the clear */
          panel_cleared = 0;   /* the settings sit on the art now (lumen-design): nothing is cleared to a slab */
+         {  /* the scrim of the menu that is open, folded into everything under it (dim_fold):
+             * the settings' (drawn after the dashboard) or, with no settings, the game menu's
+             * (drawn after the help bar) */
+            const float pa0 = panel_amount(), ga0 = gamemenu_amount();
+            fold = 0; fold_a = 0.0f;
+            theme_color(TC_BACKDROP, fold_c);
+            if (!blackout && play_t < 0 && g_scrim_fold)
+            {
+               if (pa0 > 0.003f) { fold = 1; fold_a = UI_SCRIM * pa0; }
+               else if (ga0 > 0.003f) { fold = 2; fold_a = UI_SCRIM * ga0; }
+            }
+            if (fold) dim_fold(fold_c, fold_a); else dim_none();
+         }
          if (blackout) glClearColor(0, 0, 0, 1);
-         else glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
+         else glClearColor(bg[0].x * (1 - fold_a) + fold_c[0] * fold_a, bg[1].x * (1 - fold_a) + fold_c[1] * fold_a,
+                           bg[2].x * (1 - fold_a) + fold_c[2] * fold_a, 1);
          glClearDepthf(1.0f);
          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
          glEnable(GL_BLEND);
@@ -4320,7 +4794,8 @@ int main(int argc, char **argv)
                const float dimq[4] = { 0, 0, 0, att.dim };
                draw_2d(0, 0, 0, W, H, dimq, 0);
             }
-            if (pa > 0.003f && !panel_cleared)
+            if (fold == 1) dim_none();   /* scrim.menu, folded: what follows is over it */
+            else if (pa > 0.003f && !panel_cleared)
             {
                ui_scrim(pa);   /* scrim.menu: the art and the status row stay, quieter */
             }
@@ -4343,7 +4818,9 @@ int main(int argc, char **argv)
                if (h_prev >= 0 && h_mix < 1.0f) hints_draw(h_prev, 672, ha * (1.0f - h_mix));
                hints_draw(h_cur, 672, ha * h_mix);
             }
+            if (fold == 2) { dim_none(); ui_scrim_skip(1); }   /* its scrim is in the frame already */
             gamemenu_draw(t);
+            ui_scrim_skip(0);
             if (gamemenu_active())
             {  /* its scrim covered the help bar: the hints describe the focused layer, never dimmed */
                glUseProgram(g_prog_2d);
@@ -4398,10 +4875,33 @@ int main(int argc, char **argv)
 
       if (g_splash_fill >= 0.0f)
       {  /* the startup splash (full logo on black) dissolves into the dashboard */
-         static double s0 = -1.0;
+         /* The splash stays whole over the first frames of the dashboard, until the covers
+          * on screen and the background are in (0.7 s at most): those frames carry the
+          * dashboard's first texts, uploads and shader states, and drawn under the splash
+          * they do not stutter the dissolve or the logo's entrance. Then the dissolve
+          * starts and the entrances play from their beginning. */
+         static double s0 = -1.0, h0 = -1.0;
          float sa;
-         if (s0 < 0.0) s0 = t;
-         sa = 1.0f - (float)(t - s0) / 0.35f;
+         if (h0 < 0.0) h0 = t;
+         if (s0 < 0.0)
+         {
+            int q, ready = !n || t - h0 > 0.7;
+            if (!ready && t - h0 > 0.05)
+            {
+               ready = !bg_empty(&bg_cur) || !bg_empty(&bg_next);
+               for (q = 0; q <= 6 && q < n && ready; q++)
+               {
+                  const int st = g_games[pl->first + (sel + q) % n].tex_state;
+                  if (st != 1 && st != -1) ready = 0;
+               }
+            }
+            if (ready)
+            {
+               s0 = t; g_logo_t0 = -1.0; info_y.x = 18.0f; info_a.x = 0.0f;
+               if (g_perf_on) logf_("perf: dashboard ready under the splash after %.0f ms", (t - h0) * 1000.0);
+            }
+         }
+         sa = s0 < 0.0 ? 1.0f : 1.0f - (float)(t - s0) / 0.35f;
          if (sa > 0.0f)
          {
             const float black[4] = { 0, 0, 0, sa };
