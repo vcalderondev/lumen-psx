@@ -3,7 +3,17 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## Unreleased
+## [0.18.0] - 2026-11-16
+
+Native ports of PlayStation games, USB transfer between two sticks, the library check, and
+record mode. Checked in psc-sim only: nothing of this release has been verified on the
+console yet (released so on purpose: there is no adapter at hand for a second USB drive).
+In the simulator: the native ports (listing, chip, launch), the transfer (browse, copy both
+ways, stop, the drive vanishing mid-copy, not enough space, the FAT32 4 GB limit, delete,
+the offer, Settings) and the library check (a library broken on purpose, LibCrypt images,
+a case-sensitive disk). Not verified on the console: detecting and mounting a real second
+drive, remounting it writable, power drop-outs on the front ports, a real native port
+started from Lumen, and the cost of the native-port launch on the console's GPU.
 
 ### Added
 - Native ports of a system's games. A game recompiled to run on the console itself (no
@@ -14,12 +24,43 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   own (lumen-design guidelines/06, "Launch: a native port"): the PlayStation takes the disc
   as always, then charges up: energy runs along its edges, an aura builds, arcs flicker,
   it shakes, rises on a shockwave and the energy floods the frame (3.4 s). A system
-  without an energized machine shows the cover as a card that switches itself on. It starts as a program (`kind=app`); graphics
-  levels, the CRT filter and attract-mode demos do not apply to it. Checked in psc-sim.
+  without an energized machine shows the cover as a card that switches itself on. It
+  starts as a program (`kind=app`); graphics levels, the CRT filter and attract-mode demos
+  do not apply to it.
 - Record mode, for videos made in a simulator: `LUMEN_RECORD=<file or fifo>` makes time
   advance exactly `1/LUMEN_RECORD_FPS` (default 60) per presented frame and appends every
   frame as raw RGBA; scripted inputs and screenshots follow that clock;
   `LUMEN_RECORD_SECONDS` ends the run. Normal runs are not affected.
+- USB transfer: copy files between the Lumen stick and a second USB drive with the pad
+  (`docs/usb-transfer.md`; lumen-design `usb-transfer*.html`). Plugging a second drive in
+  shows a pill on the Home for 8 s (Square opens the transfer; nothing opens by itself),
+  and Settings, Library has "Transfer files". One card with two panes, one per drive:
+  Left / Right change pane, Cross opens a folder or marks a file, Square marks, Start
+  copies what is marked to the other drive, Triangle opens the options. The
+  destination is the folder open in the other pane or, on the Lumen stick, the games
+  folder of any system declared in `systems/`. Both directions.
+- The copy runs on its own thread with a progress card (bytes, file count, time left) and
+  can be stopped. Free space is checked first; files already on the destination with the
+  same size are skipped, so a copy cut short can be repeated. Each file is written as
+  `<name>.lumen-part`, flushed and renamed; the second drive is mounted read-only and is
+  writable only while it is the destination. A drive that disappears mid-copy ends the
+  copy with a message and the unfinished file is removed. After a copy to the Lumen stick
+  the library is rescanned.
+- Library check: Settings, Library, "Check library" (`docs/library-check.md`; lumen-design
+  `library-audit.html`). It reads every system declared in `systems/` and lists, game by
+  game, what keeps a game from being listed or from starting: a folder without `Game.ini`,
+  a `Game.ini` without `Discs=` or naming a disc that is not there, a `.cue` or `.m3u`
+  that points to a missing file (or writes its name with other capitals on a
+  case-sensitive stick), empty files, a `.bin` without its `.cue`, an empty game folder, a
+  system whose core is missing, a homebrew app without `app.ini` or its program, an
+  unfinished copy, an `.sbi` that is not named like its disc, and a LibCrypt-protected
+  disc without its `.sbi`: the serial is read from the image (`SYSTEM.CNF`) and looked up
+  in `systems/psx.protected` (197 serials, from PSX Data Center's SBI list). Each
+  problem shows the file and the folder. Read-only; the scan runs on its own thread.
+- USB transfer, Triangle: options. "Eject USB", and "Delete N items" for what is marked on
+  either drive, after a confirmation (Cancel focused). Lumen's own folder cannot be deleted.
+- `LUMEN_USB2=<folder>` makes a folder play the second drive (psc-sim) and
+  `LUMEN_USB2_KBPS=<n>` slows the copy down, to test the flow without hardware.
 
 ## [0.17.0] - 2026-11-15
 
