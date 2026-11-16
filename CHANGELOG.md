@@ -3,6 +3,22 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.16.0] - 2026-11-15
+
+The first start asks for the language. Checked in psc-sim only; not yet verified on the
+console.
+
+### Added
+- On a new install (no `settings.ini` yet) the welcome opens with a language page: every
+  installed language in its own name, Up / Down to pick, Cross to apply it. The
+  presentation that follows is already in the chosen language. The page is shown even when
+  the presentation is hidden, and only once: the answer is stored as `language_asked = 1`.
+  Existing installs are not asked (a `settings.ini` without the key counts as answered).
+
+### Changed
+- The default language is English (`language = en`, was `es`). It is the one focused on
+  the language page.
+
 ## [0.15.0] - 2026-11-15
 
 Flat launch animations. Checked in psc-sim only; not yet verified on the console.

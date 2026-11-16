@@ -20,7 +20,7 @@ static char   s_path[300];
 /* defaults written to a new file (graphics.<id> keys are added on first change) */
 static const char *const s_defaults[][2] = {
    { "version", "1" },
-   { "language", "es" },
+   { "language", "en" },
    { "profile", "main" },
    { "screensaver_minutes", "5" },
    { "demo_enabled", "1" },

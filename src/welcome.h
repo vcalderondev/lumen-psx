@@ -9,5 +9,6 @@ float welcome_amount(void);                   /* 0..1 */
 void  welcome_update(const ui_nav_t *nav, float dt);
 void  welcome_draw(double t);                 /* in the 2D overlay, over everything but the fade */
 int   welcome_last_page(void);                /* help bar: "Next" or "Start" */
+int   welcome_language_page(void);            /* help bar: the language list (first run) */
 
 #endif
