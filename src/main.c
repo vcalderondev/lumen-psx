@@ -1388,6 +1388,7 @@ static void game_free_tex(game_t *g)
 static mat4 g_ortho;
 
 static void cost_add(float w, float h, int mode);
+static void cost_add_at(float x, float y, float w, float h, int mode);
 static int g_cost_on;
 
 /* <home>/debug/launch-shots (a test switch, for the simulator): the launch clock steps
@@ -1428,6 +1429,18 @@ static int    g_dash_profile_dirty = 1; /* dashboard: avatar + play statistics t
  * shader weight, plus draw calls; logged once per second. A proxy for GPU load that a
  * software renderer can measure too (tools/host). */
 static double g_cost_px_opaque, g_cost_px_blend, g_cost_px_heavy, g_cost_draws;
+/* a quad at x, y: only what of it is on screen is shaded (a shape that grows past the
+ * frame was counted whole: 20 Mpx for the launch's circle) */
+static void cost_add_at(float x, float y, float w, float h, int mode)
+{
+   float x0 = w < 0 ? x + w : x, x1 = w < 0 ? x : x + w, y0 = h < 0 ? y + h : y, y1 = h < 0 ? y : y + h;
+   if (x0 < 0) x0 = 0;
+   if (y0 < 0) y0 = 0;
+   if (x1 > W) x1 = W;
+   if (y1 > H) y1 = H;
+   if (x1 <= x0 || y1 <= y0) { g_cost_draws += 1; return; }
+   cost_add(x1 - x0, y1 - y0, mode);
+}
 static void cost_add(float w, float h, int mode)
 {
    double px = fabs((double)w * h) * g_ui_scale * g_ui_scale;
@@ -1441,7 +1454,7 @@ static void cost_add(float w, float h, int mode)
 
 void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
 {
-   if (g_cost_on) cost_add(w, h, mode);
+   if (g_cost_on) cost_add_at(x, y, w, h, mode);
    if (mode == 0 && tex && fabsf(w * g_ui_scale - floorf(w * g_ui_scale + 0.5f)) < 0.01f &&
        fabsf(h * g_ui_scale - floorf(h * g_ui_scale + 0.5f)) < 0.01f)
    {  /* textures drawn 1:1 (text, glyphs) start on a device pixel: no half-pixel
