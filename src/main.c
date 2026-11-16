@@ -191,7 +191,18 @@ static void log_sync_atexit(void)
    flockfile(g_log); fflush(g_log); g_log_pending = 1; log_sync(1); funlockfile(g_log);
 }
 
-double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
+/* Record mode (LUMEN_RECORD=<file or fifo>, for videos made in a simulator): from the
+ * main loop on, time is virtual and advances exactly 1/LUMEN_RECORD_FPS (default 60) per
+ * presented frame, and every frame is appended to the file as raw RGBA, bottom-up
+ * (glReadPixels order). A slow renderer then still yields a smooth, exact-rate video.
+ * LUMEN_RECORD_SECONDS ends the run after that much virtual time. */
+static FILE    *g_rec;
+static int      g_rec_on;
+static double   g_rec_base, g_rec_fps = 60.0, g_rec_secs;
+static unsigned g_rec_frames;
+
+static double real_now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
+double now_s(void) { return g_rec_on ? g_rec_base + g_rec_frames / g_rec_fps : real_now_s(); }
 
 /* perf probes. Startup: one "boot:" line per phase (always; the splash's own frames are
  * part of the phase they follow). With LUMEN_COST=1 or <home>/debug/perf, once per
@@ -3391,6 +3402,33 @@ static int test_input(double ts)
    return run;
 }
 
+static void rec_start(void)
+{
+   const char *e = getenv("LUMEN_RECORD");
+   if (!e || !*e) return;
+   if (!(g_rec = fopen(e, "wb"))) { logf_("record: cannot open %s", e); return; }
+   if ((e = getenv("LUMEN_RECORD_FPS")) && atof(e) > 0) g_rec_fps = atof(e);
+   if ((e = getenv("LUMEN_RECORD_SECONDS"))) g_rec_secs = atof(e);
+   g_rec_base = real_now_s(); g_rec_on = 1;
+   SDL_GL_SetSwapInterval(0);   /* virtual time: never wait for a vblank */
+   logf_("record: %dx%d RGBA at %.0f fps, %.1f s", g_dw, g_dh, g_rec_fps, g_rec_secs);
+}
+
+/* the finished back buffer, before the swap; returns 0 once the recording is complete */
+static int rec_frame(void)
+{
+   static unsigned char *px;
+   size_t n = (size_t)g_dw * g_dh * 4;
+   if (!g_rec_on) return 1;
+   if (!px && !(px = malloc(n))) return 1;
+   glReadPixels(0, 0, g_dw, g_dh, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   if (fwrite(px, 1, n, g_rec) != n) { logf_("record: write failed at frame %u", g_rec_frames); return 0; }
+   g_rec_frames++;
+   if (g_rec_secs > 0 && g_rec_frames >= g_rec_secs * g_rec_fps)
+   { fflush(g_rec); logf_("record: done, %u frames", g_rec_frames); return 0; }
+   return 1;
+}
+
 /* dump the back buffer (before the swap) as a binary PPM */
 static void test_shots(double ts)
 {
@@ -3588,6 +3626,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          }
          crt_end();
       }
+      if (!rec_frame()) answer = 0;
       SDL_GL_SwapWindow(win); g_frame_id++;
    }
    logf_("dialog answer %d", answer);
@@ -3845,6 +3884,7 @@ int main(int argc, char **argv)
    boot_mark("last splash");
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
+   rec_start();
 
    while (running)
    {
@@ -3887,7 +3927,7 @@ int main(int argc, char **argv)
          if (e.type == SDL_QUIT) running = 0;
          else in_event(&e);
       }
-      if (g_ntin && !test_input(t - t0)) running = 0;
+      if (g_ntin && !test_input(g_rec_on ? g_rec_frames / g_rec_fps : t - t0)) running = 0;   /* recording: from its first frame */
       if (g_want_reboot) { exit_code = 12; running = 0; }
       if (g_want_restart) { exit_code = 0; running = 0; }
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
@@ -4313,7 +4353,7 @@ int main(int argc, char **argv)
       {  /* one opaque full-screen pass, counted as a heavy shader */
          g_cost_px_opaque += (double)g_dw * g_dh; g_cost_px_heavy += (double)g_dw * g_dh; g_cost_draws += 1;
       }
-      if (g_ntshot) test_shots(t - t0);
+      if (g_ntshot) test_shots(g_rec_on ? g_rec_frames / g_rec_fps : t - t0);
       if (g_launch_shots && play_t >= 0)
       {
          static int lf;
@@ -4323,6 +4363,7 @@ int main(int argc, char **argv)
       {
          double pre = now_s();
          t_pre = pre;
+         if (!rec_frame()) running = 0;
          SDL_GL_SwapWindow(win);
          b_draw += pre - t; b_swap += now_s() - pre;
          perf_frame(t, t_upd, pre, now_s());
