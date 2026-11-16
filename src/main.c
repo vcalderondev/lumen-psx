@@ -4483,10 +4483,33 @@ int main(int argc, char **argv)
 
       if (g_splash_fill >= 0.0f)
       {  /* the startup splash (full logo on black) dissolves into the dashboard */
-         static double s0 = -1.0;
+         /* The splash stays whole over the first frames of the dashboard, until the covers
+          * on screen and the background are in (0.7 s at most): those frames carry the
+          * dashboard's first texts, uploads and shader states, and drawn under the splash
+          * they do not stutter the dissolve or the logo's entrance. Then the dissolve
+          * starts and the entrances play from their beginning. */
+         static double s0 = -1.0, h0 = -1.0;
          float sa;
-         if (s0 < 0.0) s0 = t;
-         sa = 1.0f - (float)(t - s0) / 0.35f;
+         if (h0 < 0.0) h0 = t;
+         if (s0 < 0.0)
+         {
+            int q, ready = !n || t - h0 > 0.7;
+            if (!ready && t - h0 > 0.05)
+            {
+               ready = !bg_empty(&bg_cur) || !bg_empty(&bg_next);
+               for (q = 0; q <= 6 && q < n && ready; q++)
+               {
+                  const int st = g_games[pl->first + (sel + q) % n].tex_state;
+                  if (st != 1 && st != -1) ready = 0;
+               }
+            }
+            if (ready)
+            {
+               s0 = t; g_logo_t0 = -1.0; info_y.x = 18.0f; info_a.x = 0.0f;
+               if (g_perf_on) logf_("perf: dashboard ready under the splash after %.0f ms", (t - h0) * 1000.0);
+            }
+         }
+         sa = s0 < 0.0 ? 1.0f : 1.0f - (float)(t - s0) / 0.35f;
          if (sa > 0.0f)
          {
             const float black[4] = { 0, 0, 0, sa };
