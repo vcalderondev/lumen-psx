@@ -3,6 +3,31 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+Less stutter at start-up, on the dashboard and in the launch. Measured in psc-sim; not
+yet verified on the console.
+
+### Changed
+- Start-up: the library is read from the stick on its own thread while the splash
+  plays, so the logo's fade and fill and "Loading" animate at the display's rate instead
+  of a few times a second, and the animation no longer adds its own 0.65 s to every
+  start. The splash then stays until the covers on screen and the background are in
+  (0.7 s at most) and dissolves into a finished dashboard: the logo's entrance and the
+  title play without the first frames' work under them.
+- Fonts are read once into memory: a new title or letter no longer reads the stick in
+  the middle of a frame.
+- Launch: the game's art is painted into the illustration and its texts are made once
+  the selection settles, on a thread, not on the frame Play is pressed; the field that
+  opens the launch hides the dashboard from the GPU as it grows.
+- L1 / R1 land on a page whose covers are already there (the next and previous pages
+  are decoded ahead; covers stay in a 32 MB cache), and a game's background is ready
+  sooner (the last three decoded are kept, the next game's is decoded ahead).
+- The help bar's sets are made when first shown.
+- `debug/perf` logs every frame over 25 ms with what it was made of (`perf: slow
+  frame`), how long the dashboard took to be ready under the splash, and the
+  backgrounds' and the launch art's times.
+
 ## [0.18.0] - 2026-11-16
 
 Native ports of PlayStation games, USB transfer between two sticks, the library check, and
