@@ -212,42 +212,25 @@ static void fx_whoosh(float *b, int n, float dur, int up, float amp)
    }
 }
 
-/* a soft mallet note at `at`: the fundamental with a slight pitch fall into tune (15 ms),
- * a bright 4th partial that dies fast (the strike), a warm octave below, 1.5 ms attack */
-static void fx_mallet(float *b, int n, float at, float f, float amp)
+/* a soft wooden tap: a warm tone falling 4 % into tune in the first ms, a 2.3x partial
+ * (the wood) that dies fast, and a 3 kHz breath of noise for the strike */
+static void fx_wood(float *b, int n, float f)
 {
-   int i, i0 = (int)(at * dev_rate);
-   double ph = 0, ph4 = 0, phl = 0;
-   for (i = 0; i0 + i < n; i++)
+   int i;
+   float l1 = 0, l2 = 0, a = 1.0f - expf(-6.2831853f * 3000.0f / dev_rate);
+   for (i = 0; i < n; i++)
    {
-      float t = (float)i / dev_rate, bend = 1.0f + 0.012f * expf(-t / 0.005f);
-      float att = t < 0.0015f ? t / 0.0015f : 1.0f;
-      ph += 6.2831853 * f * bend / dev_rate;
-      ph4 += 6.2831853 * f * 4.0f / dev_rate;
-      phl += 6.2831853 * f * 0.5f / dev_rate;
-      b[i0 + i] += (sinf((float)ph) * expf(-t * 13.0f) + 0.16f * sinf((float)ph4) * expf(-t * 70.0f)
-                    + 0.12f * sinf((float)phl) * expf(-t * 22.0f)) * att * amp;
-   }
-}
-
-/* air through a band-pass (two one-poles) whose centre glides f0 -> f1, sin^2 envelope */
-static void fx_air(float *b, int n, float at, float dur, float f0, float f1, float amp)
-{
-   int i, i0 = (int)(at * dev_rate), m = (int)(dur * dev_rate);
-   float lo1 = 0, lo2 = 0, hi1 = 0, hi2 = 0;   /* two-pole each side: 12 dB/octave */
-   for (i = 0; i < m && i0 + i < n; i++)
-   {
-      float u = (float)i / m, fc = f0 * powf(f1 / f0, u), x = rnd(), e = sinf(3.1415927f * u);
-      float ah = 1.0f - expf(-6.2831853f * fc * 1.5f / dev_rate), al = 1.0f - expf(-6.2831853f * fc * 0.65f / dev_rate);
-      hi1 += ah * (x - hi1); hi2 += ah * (hi1 - hi2);
-      lo1 += al * (x - lo1); lo2 += al * (lo1 - lo2);
-      b[i0 + i] += (hi2 - lo2) * e * e * amp;
+      float t = (float)i / dev_rate, x = rnd();
+      l1 += a * (x - l1); l2 += a * (l1 - l2);
+      b[i] = (sinf(6.2831853f * f * t * (1.0f + 0.04f * expf(-t / 0.004f))) * expf(-t * 38.0f)
+              + 0.5f * sinf(6.2831853f * f * 2.3f * t) * expf(-t * 80.0f)
+              + 0.35f * l2 * expf(-t * 400.0f)) * (t < 0.0008f ? t / 0.0008f : 1.0f);
    }
 }
 
 static void sfx_make(int id)
 {
-   static const float len_s[SFX_COUNT] = { 0.07f, 0.07f, 0.07f, 0.32f, 0.32f, 0.5f, 0.5f, 0.3f, 0.2f, 0.24f, 0.45f };
+   static const float len_s[SFX_COUNT] = { 0.07f, 0.07f, 0.07f, 0.32f, 0.32f, 0.18f, 0.18f, 0.3f, 0.2f, 0.24f, 0.45f };
    const int n = (int)(len_s[id] * dev_rate);
    float *b = calloc(n, sizeof(float)), peak = 0, want;
    int i;
@@ -259,10 +242,9 @@ static void sfx_make(int id)
    case SFX_FOCUS:     fx_glide(b, n, 0, 1250, 1150, 0.040f, 1, 0); break;
    case SFX_PAGE_NEXT: fx_whoosh(b, n, 0.22f, 1, 1); break;
    case SFX_PAGE_PREV: fx_whoosh(b, n, 0.22f, 0, 1); break;
-   /* the system: two mallet notes a fifth apart (E5, B5), up for the next, down for the
-    * previous, over a breath of air gliding the same way */
-   case SFX_SYSTEM_NEXT: fx_air(b, n, 0, 0.18f, 1200, 3000, 1.6f); fx_mallet(b, n, 0.02f, 659.3f, 1); fx_mallet(b, n, 0.075f, 987.8f, 0.85f); break;
-   case SFX_SYSTEM_PREV: fx_air(b, n, 0, 0.18f, 3000, 1200, 1.6f); fx_mallet(b, n, 0.02f, 987.8f, 0.85f); fx_mallet(b, n, 0.075f, 659.3f, 1); break;
+   /* the system: a wooden tap, higher for the next system than for the previous */
+   case SFX_SYSTEM_NEXT: fx_wood(b, n, 520); break;
+   case SFX_SYSTEM_PREV: fx_wood(b, n, 440); break;
    case SFX_OPEN:      fx_glide(b, n, 0, 880, 880, 0.12f, 1, 1); fx_glide(b, n, 0.06f, 1320, 1320, 0.14f, 1, 1); break;
    case SFX_BACK:      fx_glide(b, n, 0, 990, 600, 0.12f, 1, 1); break;
    case SFX_CONFIRM:   fx_glide(b, n, 0, 660, 990, 0.16f, 1, 1); break;
@@ -275,7 +257,7 @@ static void sfx_make(int id)
       if (fabsf(b[i]) > peak) peak = fabsf(b[i]);
    }
    /* peaks: a tick about -18 dBFS, the air a little under, the notes a little over */
-   want = id <= SFX_FOCUS ? 0.125f : (id <= SFX_PAGE_PREV ? 0.11f : 0.15f);
+   want = id <= SFX_FOCUS ? 0.125f : (id <= SFX_PAGE_PREV ? 0.11f : (id <= SFX_SYSTEM_PREV ? 0.17f : 0.15f));
    for (i = 0; i < n; i++) b[i] *= want * 32767.0f / (peak > 0 ? peak : 1);
    clk[NCLICK + id] = b; clk_len[NCLICK + id] = n;
 }
