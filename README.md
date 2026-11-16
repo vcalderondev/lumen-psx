@@ -2,7 +2,7 @@
 
 A lightweight game frontend for the PlayStation Classic.
 
-**Website, screenshots and library manager: [lpsx.vcalderon.dev](https://lpsx.vcalderon.dev/)** ·
+**Website, screenshots and library manager: [lpsx.dev](https://lpsx.dev/)** ·
 made by [Víctor Calderón](https://vcalderon.dev/)
 
 - flat dashboard (OpenGL ES 3.0): full-screen game art, system tabs, a row of cover tiles
