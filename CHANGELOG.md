@@ -10,7 +10,7 @@ reviewed from LUMEN_SFX_DUMP); not yet verified on the console.
 
 ### Added
 - Interface sounds on the dashboard, Settings, the game menu and the keyboard
-  (lumen-design guidelines/06 "Sound"): a tick per move, air for a page, a wooden tap for a
+  (lumen-design guidelines/06 "Sound"): a tick per move, two wooden taps for a page, one for a
   system, notes for open / back / confirm / play. Synthesised at
   start like the launch clicks; up to four at once.
 - Settings, Sound, "Interface sounds" (on by default, setting `ui_sounds`); the Volume

@@ -196,33 +196,17 @@ static void fx_glide(float *b, int n, float at, float f0, float f1, float dur, f
    }
 }
 
-/* air: noise through a low-pass whose cutoff sweeps 600 Hz -> 4 kHz (or back), minus its
- * lowest part, under a sin^2 envelope */
-static void fx_whoosh(float *b, int n, float dur, int up, float amp)
-{
-   int i, m = (int)(dur * dev_rate);
-   float lp1 = 0, lp = 0, lo = 0;
-   for (i = 0; i < m && i < n; i++)
-   {
-      float u = (float)i / m, x = rnd(), fc = up ? 600.0f * powf(6.67f, u) : 4000.0f * powf(0.15f, u);
-      float a = 1.0f - expf(-6.2831853f * fc / dev_rate), e = sinf(3.1415927f * u);
-      lp1 += a * (x - lp1); lp += a * (lp1 - lp);   /* 12 dB/octave: air, not hiss */
-      lo += (1.0f - expf(-6.2831853f * 200.0f / dev_rate)) * (x - lo);
-      b[i] += (lp - lo) * e * e * amp;
-   }
-}
-
 /* a soft wooden tap: a warm tone falling 4 % into tune in the first ms, a 2.3x partial
  * (the wood) that dies fast, and a 3 kHz breath of noise for the strike */
-static void fx_wood(float *b, int n, float f)
+static void fx_wood(float *b, int n, float at, float f, float amp)
 {
-   int i;
+   int i, i0 = (int)(at * dev_rate);
    float l1 = 0, l2 = 0, a = 1.0f - expf(-6.2831853f * 3000.0f / dev_rate);
-   for (i = 0; i < n; i++)
+   for (i = 0; i0 + i < n; i++)
    {
       float t = (float)i / dev_rate, x = rnd();
       l1 += a * (x - l1); l2 += a * (l1 - l2);
-      b[i] = (sinf(6.2831853f * f * t * (1.0f + 0.04f * expf(-t / 0.004f))) * expf(-t * 38.0f)
+      b[i0 + i] += amp * (sinf(6.2831853f * f * t * (1.0f + 0.04f * expf(-t / 0.004f))) * expf(-t * 38.0f)
               + 0.5f * sinf(6.2831853f * f * 2.3f * t) * expf(-t * 80.0f)
               + 0.35f * l2 * expf(-t * 400.0f)) * (t < 0.0008f ? t / 0.0008f : 1.0f);
    }
@@ -230,7 +214,7 @@ static void fx_wood(float *b, int n, float f)
 
 static void sfx_make(int id)
 {
-   static const float len_s[SFX_COUNT] = { 0.07f, 0.07f, 0.07f, 0.32f, 0.32f, 0.18f, 0.18f, 0.3f, 0.2f, 0.24f, 0.45f };
+   static const float len_s[SFX_COUNT] = { 0.07f, 0.07f, 0.07f, 0.22f, 0.22f, 0.18f, 0.18f, 0.3f, 0.2f, 0.24f, 0.45f };
    const int n = (int)(len_s[id] * dev_rate);
    float *b = calloc(n, sizeof(float)), peak = 0, want;
    int i;
@@ -240,11 +224,12 @@ static void sfx_make(int id)
    case SFX_MOVE_NEXT: fx_glide(b, n, 0, 1650, 1500, 0.045f, 1, 0); break;
    case SFX_MOVE_PREV: fx_glide(b, n, 0, 1500, 1350, 0.045f, 1, 0); break;
    case SFX_FOCUS:     fx_glide(b, n, 0, 1250, 1150, 0.040f, 1, 0); break;
-   case SFX_PAGE_NEXT: fx_whoosh(b, n, 0.22f, 1, 1); break;
-   case SFX_PAGE_PREV: fx_whoosh(b, n, 0.22f, 0, 1); break;
+   /* a page: two quick wooden taps, a tone apart, rising for the next page */
+   case SFX_PAGE_NEXT: fx_wood(b, n, 0, 587, 0.8f); fx_wood(b, n, 0.045f, 659, 1); break;
+   case SFX_PAGE_PREV: fx_wood(b, n, 0, 659, 0.8f); fx_wood(b, n, 0.045f, 587, 1); break;
    /* the system: a wooden tap, higher for the next system than for the previous */
-   case SFX_SYSTEM_NEXT: fx_wood(b, n, 520); break;
-   case SFX_SYSTEM_PREV: fx_wood(b, n, 440); break;
+   case SFX_SYSTEM_NEXT: fx_wood(b, n, 0, 520, 1); break;
+   case SFX_SYSTEM_PREV: fx_wood(b, n, 0, 440, 1); break;
    case SFX_OPEN:      fx_glide(b, n, 0, 880, 880, 0.12f, 1, 1); fx_glide(b, n, 0.06f, 1320, 1320, 0.14f, 1, 1); break;
    case SFX_BACK:      fx_glide(b, n, 0, 990, 600, 0.12f, 1, 1); break;
    case SFX_CONFIRM:   fx_glide(b, n, 0, 660, 990, 0.16f, 1, 1); break;
@@ -257,7 +242,7 @@ static void sfx_make(int id)
       if (fabsf(b[i]) > peak) peak = fabsf(b[i]);
    }
    /* peaks: a tick about -18 dBFS, the air a little under, the notes a little over */
-   want = id <= SFX_FOCUS ? 0.125f : (id <= SFX_PAGE_PREV ? 0.11f : (id <= SFX_SYSTEM_PREV ? 0.17f : 0.15f));
+   want = id <= SFX_FOCUS ? 0.125f : 0.15f;
    for (i = 0; i < n; i++) b[i] *= want * 32767.0f / (peak > 0 ? peak : 1);
    clk[NCLICK + id] = b; clk_len[NCLICK + id] = n;
 }
