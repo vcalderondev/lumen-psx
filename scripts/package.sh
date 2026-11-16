@@ -40,7 +40,7 @@ fi
 ST="$(mktemp -d)"; L="$ST/lumen"
 mkdir -p "$L/retroarch/autoconfig" "$L/cores" "$L/compositor" "$L/systems" "$L/lang" "$L/profiles" \
          "$L/assets" "$L/logs"
-cp out/lumen out/lumen-buttons scripts/run.sh scripts/boot.sh scripts/power.sh psc/lumen.conf "$L/"
+cp out/lumen out/lumen-buttons scripts/run.sh scripts/boot.sh scripts/power.sh scripts/net.sh psc/lumen.conf "$L/"
 chmod 755 "$L/lumen" "$L/lumen-buttons"
 for f in dist/*; do [ -f "$f" ] && cp "$f" "$L/"; done
 cp dist/systems/* "$L/systems/"
@@ -55,6 +55,8 @@ mkdir -p "$L/assets/launch"; cp -R assets/launch/. "$L/assets/launch/"   # flat 
 cp "$PF/psc-weston-16.tar.gz" "$L/compositor/"
 # SDL3 + sdl2-compat, overlaid with the compositor (boot.sh); optional until psc-platform ships it
 [ -f "$PF/psc-sdl3.tar.gz" ] && cp "$PF/psc-sdl3.tar.gz" "$L/compositor/"
+# Wi-Fi / Bluetooth (scripts/net.sh): unpacked to RAM on demand; optional until psc-platform ships them
+for p in psc-net.tar.gz psc-bt.tar.gz psc-netmod-stock.tar.gz; do [ -f "$PF/$p" ] && cp "$PF/$p" "$L/compositor/"; done
 T="$(mktemp -d)"; tar xzf "$PF/psc-retroarch.tar.gz" -C "$T"
 cp "$T/bin/retroarch" "$L/retroarch/retroarch"; chmod 755 "$L/retroarch/retroarch"
 cp -R "$T/share/retroarch/autoconfig/udev" "$L/retroarch/autoconfig/"
