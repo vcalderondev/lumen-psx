@@ -533,7 +533,7 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
       const float e = flat_ramp(pt, 0.05f, 0.42f), r = 1500.0f * (1.0f - (1.0f - e) * (1.0f - e) * (1.0f - e));
       const float fc[4] = { field[0], field[1], field[2], 1.0f };
       if (e >= 1.0f) { glDisable(GL_BLEND); draw_2d(0, 0, 0, W, H, fc, 0); glEnable(GL_BLEND); }   /* opaque: no blending for the full screen */
-      else if (r > 1.0f) draw_shape(196.0f - r, 318.0f - r, 2 * r, 2 * r, r, 0.0f, fc);
+      else if (r > 1.0f) draw_disc(196.0f, 318.0f, r, fc);
    }
    text_a = flat_ramp(pt, 0.40f, 0.60f);
    if (f->has_screen) text_a *= 1.0f - flat_ramp(pt, 1.98f, 2.12f);   /* the growing machine takes the whole frame */
