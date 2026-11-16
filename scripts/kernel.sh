@@ -8,6 +8,11 @@
 #   kernel.sh restore-stock  back up BOOTIMG1 to the stick, then BOOTIMG2 (Sony's, kept
 #                            intact by every console for recovery) -> BOOTIMG1
 #   kernel.sh restore-backup <file>   write a backup made by restore-stock back to BOOTIMG1
+#   kernel.sh firmware-backup  read-only copy of the system partitions to the stick
+#                              (<home>/backup/firmware: BOOTIMG1/2, SEC_RO, MISC, TEE1/2,
+#                              ROOTFS1/2, USRDATA, mmcblk0boot0/1 + MANIFEST; ~590 MB,
+#                              about 3 minutes). Done once: restore-* run it first when
+#                              there is none. GAADATA (Sony's 15 GB of games) is left out.
 #
 # Progress on stdout, one line per step: "step backup|write|verify" ("backup <file>" once the
 # copy is verified), then "ok <file>" or
@@ -34,6 +39,9 @@ BOOT2="${KERNEL_BOOT2:-/dev/disk/by-partlabel/BOOTIMG2}"
 STOCK_MD5="${KERNEL_STOCK_MD5:-28ce5f6de4981764411393310311b517}"
 SIZE=8388608
 BK="${LUMEN_HOME}/backup/kernel"
+FW="${LUMEN_HOME}/backup/firmware"
+PARTS="${KERNEL_PARTDIR:-/dev/disk/by-partlabel}"      # tests: a folder of files
+MMC="${KERNEL_MMCDIR:-/dev}"                            # mmcblk0boot0/1
 LOGF="${LUMEN_HOME}/logs/kernel.log"
 STOCK_UNAME="#1 SMP PREEMPT Sun Sep 9 15:21:14 UTC 2018"
 ERIS47_UNAME="#1 SMP PREEMPT Sun Feb 23 19:09:17 UTC 2020"
@@ -81,6 +89,32 @@ check_image() {
   [ "$(dd if="$1" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')" = d00dfeed ]
 }
 
+# read-only: every partition read twice, the two md5 compared, then listed in MANIFEST.
+# A complete MANIFEST already there: nothing to do (it is never overwritten).
+firmware_backup() {
+  [ -f "${FW}/MANIFEST" ] && { echo "firmware ${FW}"; return 0; }
+  avail=$(df -k "${LUMEN_HOME}" 2>/dev/null | awk 'NR == 2 {print $4}')
+  [ -n "${avail}" ] && [ "${avail}" -lt 700000 ] && fail space "${avail} KiB free, the firmware copy needs about 600 MB"
+  mkdir -p "${FW}" || fail backup "cannot create ${FW}"
+  sync
+  : > "${FW}/MANIFEST.part"
+  for p in BOOTIMG1 BOOTIMG2 SEC_RO MISC TEE1 TEE2 ROOTFS1 ROOTFS2 USRDATA mmcblk0boot0 mmcblk0boot1; do
+    case "$p" in mmcblk0boot*) dev="${MMC}/$p" ;; *) dev="${PARTS}/$p" ;; esac
+    [ -e "${dev}" ] || { log "firmware: no ${dev}, skipped"; continue; }
+    echo "fw ${p}"
+    dd if="${dev}" of="${FW}/${p}.img.part" bs=65536 2>>"${LOGF}" || { rm -f "${FW}/${p}.img.part"; fail backup "reading ${p}"; }
+    sync
+    m1=$(md5_of "${FW}/${p}.img.part"); m2=$(md5sum < "${dev}" | cut -d' ' -f1)
+    [ "${KERNEL_FAULT}" = firmware ] && [ "$p" = ROOTFS1 ] && m2=0
+    [ -n "${m1}" ] && [ "${m1}" = "${m2}" ] || { rm -f "${FW}/${p}.img.part"; fail backup "${p}: the copy does not match a second read"; }
+    mv "${FW}/${p}.img.part" "${FW}/${p}.img"
+    echo "${m1}  $(stat -c %s "${FW}/${p}.img")  ${p}.img" >> "${FW}/MANIFEST.part"
+  done
+  { echo "# $(date -u '+%F %T') UTC, kernel $(uname -v)"; cat "${FW}/MANIFEST.part"; } > "${FW}/MANIFEST" && rm -f "${FW}/MANIFEST.part" && sync
+  log "firmware backup in ${FW}: $(grep -c img "${FW}/MANIFEST") partitions"
+  echo "firmware ${FW}"
+}
+
 install_image() {  # image md5 what
   img=$1; want=$2
   # POWER waits while this exists (power.sh suspend); gone however this script ends
@@ -88,6 +122,8 @@ install_image() {  # image md5 what
   [ "$(md5_part "${BOOT1}")" = "${want}" ] && fail same "BOOTIMG1 already is ${3}"
   avail=$(df -k "${LUMEN_HOME}" 2>/dev/null | awk 'NR == 2 {print $4}')
   [ -n "${avail}" ] && [ "${avail}" -lt 20480 ] && fail space "${avail} KiB free on the stick"
+  echo "step firmware"
+  firmware_backup || exit 1
   echo "step backup"
   bk=$(backup_boot1) || fail backup "the copy of BOOTIMG1 did not verify"
   log "backup ${bk} ($(md5_of "${bk}"))"
@@ -117,6 +153,9 @@ case "$1" in
       { rm -f "${tmp}"; fail boot2 "BOOTIMG2 did not read back as Sony's"; }
     install_image "${tmp}" "${STOCK_MD5}" "Sony's stock kernel"; rc=$?
     rm -f "${tmp}"; exit ${rc} ;;
+  firmware-backup)
+    [ "$(id -u)" = 0 ] || fail root "not root"
+    firmware_backup ;;
   restore-backup)
     [ "$(id -u)" = 0 ] || fail root "not root"
     f=$2; [ -f "${f}" ] || fail image "no such backup ${f}"

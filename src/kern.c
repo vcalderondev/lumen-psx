@@ -29,8 +29,10 @@ static SDL_atomic_t s_known;                 /* status read */
 static int   s_kernel = K_UNKNOWN, s_boot2_ok;
 static char  s_backup[400];                  /* newest backup file, "" none */
 static int   s_open, s_state, s_btn, s_rollback;
+static int   s_backup_only;                   /* Square in the offer: the firmware copy alone, nothing written */
 static SDL_atomic_t s_step, s_result;        /* 1..3 while running; result: 0 none, 1 ok, 2 failed */
 static char  s_err[24], s_done_file[400];
+static char  s_fw[32];                        /* the partition the firmware copy is reading */
 static double s_t0;
 static spring s_fade;
 static label_t s_kick, s_title, s_cap, s_step_l[3], s_warn, s_note, s_path, s_btn_l[2], s_num[3];
@@ -98,7 +100,8 @@ static int work_thread(void *u)
    FILE *f;
    int ok = 0;
    (void)u;
-   if (s_rollback) snprintf(cmd, sizeof(cmd), "sh '%s' restore-backup '%s' 2>/dev/null", s_script, s_backup);
+   if (s_backup_only) snprintf(cmd, sizeof(cmd), "sh '%s' firmware-backup 2>/dev/null", s_script);
+   else if (s_rollback) snprintf(cmd, sizeof(cmd), "sh '%s' restore-backup '%s' 2>/dev/null", s_script, s_backup);
    else snprintf(cmd, sizeof(cmd), "sh '%s' restore-stock 2>/dev/null", s_script);
    logf_("kernel: %s", s_rollback ? "restoring the previous kernel" : "restoring Sony's stock kernel");
    snprintf(s_err, sizeof(s_err), "other");
@@ -108,11 +111,14 @@ static int work_thread(void *u)
       {
          line[strcspn(line, "\n")] = 0;
          logf_("kernel: %s", line);
-         if (!strcmp(line, "step backup")) SDL_AtomicSet(&s_step, 1);
+         if (!strcmp(line, "step firmware")) SDL_AtomicSet(&s_step, 1);
+         else if (!strncmp(line, "fw ", 3)) snprintf(s_fw, sizeof(s_fw), "%s", line + 3);
+         else if (!strcmp(line, "step backup")) { s_fw[0] = 0; SDL_AtomicSet(&s_step, 1); }
          else if (!strcmp(line, "step write")) SDL_AtomicSet(&s_step, 2);
          else if (!strcmp(line, "step verify")) SDL_AtomicSet(&s_step, 3);
          else if (!strncmp(line, "backup ", 7)) snprintf(s_done_file, sizeof(s_done_file), "%s", line + 7);
          else if (!strncmp(line, "ok ", 3)) { ok = 1; snprintf(s_done_file, sizeof(s_done_file), "%s", line + 3); }
+         else if (!strncmp(line, "firmware ", 9) && s_backup_only) { ok = 1; snprintf(s_done_file, sizeof(s_done_file), "%s/MANIFEST", line + 9); }
          else if (!strncmp(line, "error ", 6)) snprintf(s_err, sizeof(s_err), "%s", line + 6);
       }
       pclose(f);
@@ -124,17 +130,17 @@ static int work_thread(void *u)
 void kern_open(void)
 {
    if (s_open || !SDL_AtomicGet(&s_known)) { if (!SDL_AtomicGet(&s_known)) panel_toast("kern.unknown"); return; }
-   s_rollback = s_kernel == K_STOCK;
+   s_rollback = s_kernel == K_STOCK; s_backup_only = 0;
    if (s_rollback && !s_backup[0]) { panel_toast("kern.is_stock"); return; }
    s_open = 1; s_state = S_OFFER; s_btn = 0; s_t0 = now_s();
-   SDL_AtomicSet(&s_step, 0); SDL_AtomicSet(&s_result, 0); s_done_file[0] = 0;
+   SDL_AtomicSet(&s_step, 0); SDL_AtomicSet(&s_result, 0); s_done_file[0] = 0; s_fw[0] = 0;
    if (s_fade.x < 0.02f) { s_fade.x = 0; s_fade.v = 0; }
    music_sfx(SFX_OPEN);
 }
 int   kern_active(void) { return s_open || s_fade.x > 0.01f; }
 int   kern_open_now(void) { return s_open; }
 float kern_amount(void) { return clampf(s_fade.x, 0.0f, 1.0f); }
-int   kern_hint_set(void) { return s_state == S_RUNNING ? HINTS_KERNEL_BUSY : HINTS_KERNEL; }
+int   kern_hint_set(void) { return s_state == S_RUNNING ? HINTS_KERNEL_BUSY : s_state == S_OFFER ? HINTS_KERNEL : HINTS_KERNEL_DONE; }
 
 void kern_update(const ui_nav_t *nav, double t, float dt)
 {
@@ -154,6 +160,17 @@ void kern_update(const ui_nav_t *nav, double t, float dt)
    if (!nav || t - s_t0 < 0.15) return;
    if (nav->left && s_btn) { s_btn = 0; music_sfx(SFX_MOVE_PREV); }
    if (nav->right && !s_btn && (s_state != S_FAILED)) { s_btn = 1; music_sfx(SFX_MOVE_NEXT); }
+   /* Square counts as back too (ui_nav_t): ask for it first */
+   if (s_state == S_OFFER && nav->erase)
+   {  /* Square: only the read-only firmware copy, to have it (and off the stick) first */
+      SDL_Thread *th;
+      s_backup_only = 1; s_state = S_RUNNING;
+      SDL_AtomicSet(&s_step, 1);
+      music_sfx(SFX_CONFIRM);
+      if ((th = SDL_CreateThread(work_thread, "kernel", NULL))) SDL_DetachThread(th);
+      else { snprintf(s_err, sizeof(s_err), "other"); SDL_AtomicSet(&s_result, 2); }
+      return;
+   }
    if (nav->back || nav->options) { s_open = 0; music_sfx(SFX_BACK); return; }
    if (!nav->confirm) return;
    if (s_state == S_OFFER)
@@ -175,7 +192,7 @@ void kern_update(const ui_nav_t *nav, double t, float dt)
    else if (s_state == S_DONE)
    {
       s_open = 0;
-      if (s_btn) ui_request_reboot();
+      if (s_btn && !s_backup_only) ui_request_reboot();
    }
    else s_open = 0;   /* failed: one button, close */
 }
@@ -204,7 +221,8 @@ void kern_draw(double t)
    ui_scrim(a * (1.0f - panel_amount()));
    ui_card(cx, cy, CW, CH, a);
    ui_kicker(&s_kick, tr("about.kernel"), cx + PX, cy + 26, a);
-   if (s_state == S_DONE) { title = tr(s_rollback ? "kern.done_rb_title" : "kern.done_title"); cap = tr("kern.done_note"); }
+   if (s_state == S_DONE && s_backup_only) { title = tr("kern.fw_done_title"); cap = tr("kern.fw_done_note"); }
+   else if (s_state == S_DONE) { title = tr(s_rollback ? "kern.done_rb_title" : "kern.done_title"); cap = tr("kern.done_note"); }
    else if (s_state == S_FAILED)
    {
       title = tr(!strcmp(s_err, "revert") ? "kern.err_revert_title" : !strcmp(s_err, "write") ? "kern.err_write_title" : "kern.err_title");
@@ -218,17 +236,21 @@ void kern_draw(double t)
    wrap(&s_cap, g_font_small, cap, (int)tw);
    dl(&s_cap, cx + PX, cy + 88, (s_state == S_FAILED && !strcmp(s_err, "revert")) ? red : dim);
    draw_2d(0, cx + PX, cy + 138, tw, 1, sep, 0);
-   for (i = 0; i < 3; i++)
+   {
+   float sy = cy + 156;
+   const int nsteps = s_backup_only && s_state != S_OFFER ? 1 : 3;   /* backup only: step 1 alone */
+   for (i = 0; i < nsteps; i++)
    {  /* the steps: numbered in the offer, the dots on the running one, checked when done */
       static const char *const k_restore[3] = { "kern.step1", "kern.step2", "kern.step3" };
       static const char *const k_rb[3] = { "kern.step1", "kern.rb_step2", "kern.step3" };
-      const float y = cy + 156 + i * 36, sx = cx + PX + 34;
+      const float y = sy, sx = cx + PX + 34;
       char n[4];
       float c[4];
       wrap(&s_step_l[i], g_font_sub, tr(s_rollback ? k_rb[i] : k_restore[i]), (int)(tw - 40));
       memcpy(c, txt, sizeof(c));
       if (s_state == S_RUNNING && i + 1 > step) c[3] *= 0.5f;
       dl(&s_step_l[i], sx, y, c);
+      sy += (s_step_l[i].h > 0 ? s_step_l[i].h : 28) + 8;
       if (s_state == S_DONE || (s_state == S_RUNNING && i + 1 < step))
          draw_round_rect(cx + PX + 8, y + s_step_l[i].h * 0.5f - 6, 12, 12, 6, acc, 0.0f);
       else if (s_state == S_RUNNING && i + 1 == step)
@@ -245,11 +267,18 @@ void kern_draw(double t)
          dl(&s_num[i], cx + PX + 2, y, dim);
       }
    }
+   }
    {
-      float y = cy + 278;
+      float y = cy + 290;
       if (s_state == S_OFFER || s_state == S_RUNNING)
       {
-         wrap(&s_warn, g_font_small, tr(s_state == S_RUNNING ? "kern.running" : "kern.warn"), (int)tw);
+         if (s_state == S_RUNNING && s_fw[0] && step == 1)
+         {  /* the first time: the whole firmware is copied, partition by partition */
+            char run[300];
+            snprintf(run, sizeof(run), "%s  %s", tr("kern.running_copy"), trf(buf, sizeof(buf), "kern.fw_copying", "p", s_fw, NULL));
+            wrap(&s_warn, g_font_small, run, (int)tw);
+         }
+         else wrap(&s_warn, g_font_small, tr(s_state == S_RUNNING ? "kern.running" : "kern.warn"), (int)tw);
          dl(&s_warn, cx + PX, y, red);
          y += s_warn.h + 22;
          if (s_state == S_OFFER) { wrap(&s_note, g_font_small, tr(s_rollback ? "kern.rb_note" : "kern.undo"), (int)tw); dl(&s_note, cx + PX, y, dim); }
@@ -257,13 +286,22 @@ void kern_draw(double t)
       else if (s_done_file[0] && (s_state == S_DONE || !strcmp(s_err, "revert") || !strcmp(s_err, "write")))
       {
          const char *f = strrchr(s_done_file, '/');
-         label_set(&s_path, g_font_small, trf(buf, sizeof(buf), "kern.backup_at", "f", f ? f + 1 : "", NULL));
+         label_set(&s_path, g_font_small, trf(buf, sizeof(buf), s_backup_only ? "kern.fw_at" : "kern.backup_at", "f", f ? f + 1 : "", NULL));
          dl(&s_path, cx + PX, y, txt);
          wrap(&s_note, g_font_small, tr("kern.copy_note"), (int)tw);
          dl(&s_note, cx + PX, y + s_path.h + 10, dim);
       }
    }
    if (s_state == S_RUNNING) return;
+   if (s_state == S_DONE && s_backup_only)
+   {  /* nothing was written: one button */
+      const float by = cy + 452, white[3] = { 1, 1, 1 }, ink[4] = { 0.043f, 0.047f, 0.063f, a };
+      label_set(&s_btn_l[0], g_font_medium, tr("kern.close"));
+      ui_fill(cx + PX, by, tw, 52, 26, white, a);
+      ui_ring(cx + PX, by, tw, 52, 26, 4.0f, a);
+      dl(&s_btn_l[0], cx + PX + (tw - s_btn_l[0].w) * 0.5f, by + (52 - s_btn_l[0].h) * 0.5f, ink);
+      return;
+   }
    /* buttons: Cancel / the action (danger), or Later / Restart (primary), or Close */
    b0 = tr(s_state == S_DONE ? "kern.later" : s_state == S_FAILED ? "kern.close" : "confirm.cancel");
    b1 = s_state == S_DONE ? tr("kern.reboot") : tr(s_rollback ? "kern.rollback_btn" : "kern.restore_btn");

@@ -13,11 +13,16 @@ python3 -c "import zipfile,sys; open(sys.argv[2],'wb').write(zipfile.ZipFile(sys
 python3 -c "import sys; d=open(sys.argv[1],'rb').read(); open(sys.argv[2],'wb').write(d + bytes(8388608 - len(d)))" "$ERIS" "$W/eris.img"
 cp "$HERE/scripts/kernel.sh" "$W/"
 docker run --rm --platform linux/arm/v7 -v "$W":/w psc-rootfs:dump /bin/sh -c '
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin LUMEN_HOME=/tmp/stick/lumen KERNEL_BOOT1=/tmp/b1 KERNEL_BOOT2=/tmp/b2
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin LUMEN_HOME=/tmp/stick/lumen KERNEL_BOOT1=/tmp/b1 KERNEL_BOOT2=/tmp/b2 KERNEL_PARTDIR=/tmp/parts KERNEL_MMCDIR=/tmp/mmc
 K="sh /w/kernel.sh"; pass=0; bad=0
 ok() { if eval "$2"; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1"; bad=$((bad+1)); fi; }
 m() { md5sum < "$1" | cut -d" " -f1; }
-reset() { rm -rf /tmp/stick; mkdir -p /tmp/stick/lumen; cp /w/eris.img /tmp/b1; cp /w/stock.img /tmp/b2; }
+reset() {
+  rm -rf /tmp/stick /tmp/parts /tmp/mmc; mkdir -p /tmp/stick/lumen /tmp/parts /tmp/mmc; cp /w/eris.img /tmp/b1; cp /w/stock.img /tmp/b2
+  ln -s /tmp/b1 /tmp/parts/BOOTIMG1; ln -s /tmp/b2 /tmp/parts/BOOTIMG2
+  for p in SEC_RO MISC TEE1 TEE2 ROOTFS1 ROOTFS2 USRDATA; do head -c 262144 /dev/urandom > /tmp/parts/$p; done
+  for b in mmcblk0boot0 mmcblk0boot1; do head -c 131072 /dev/urandom > /tmp/mmc/$b; done
+}
 S=$(m /w/stock.img); E=$(m /w/eris.img)
 echo "stock $S   eris(padded) $E"
 reset
@@ -25,7 +30,9 @@ out=$($K status); ok "status: BOOTIMG2 recognised as stock" "echo \"\$out\" | gr
 out=$($K restore-stock); ok "restore-stock succeeds" "echo \"\$out\" | grep -q \"^ok \""
 ok "  BOOTIMG1 now = stock" "[ \$(m /tmp/b1) = $S ]"
 ok "  backup of the previous kernel kept and verified" "[ \$(m /tmp/stick/lumen/backup/kernel/BOOTIMG1-$E.img) = $E ]"
-ok "  steps reported in order" "[ \"\$(echo \"\$out\" | grep ^step | tr \"\\n\" \" \")\" = \"step backup step write step verify \" ]"
+ok "  steps reported in order" "[ \"\$(echo \"\$out\" | grep ^step | tr \"\\n\" \" \")\" = \"step firmware step backup step write step verify \" ]"
+ok "  firmware backup: 11 partitions in MANIFEST, each file matches" "[ \$(grep -c img /tmp/stick/lumen/backup/firmware/MANIFEST) = 11 ] && (cd /tmp/stick/lumen/backup/firmware && grep img MANIFEST | while read h z f; do [ \$(md5sum < \$f | cut -d\" \" -f1) = \$h ] || exit 1; done)"
+ok "  the firmware copy of BOOTIMG1 is the kernel from before the write" "[ \$(m /tmp/stick/lumen/backup/firmware/BOOTIMG1.img) = $E ]"
 out=$($K restore-stock || true); ok "restore-stock again: refused (same)" "echo \"\$out\" | grep -q \"error same\""
 out=$($K restore-backup /tmp/stick/lumen/backup/kernel/BOOTIMG1-$E.img); ok "restore-backup: back to the previous kernel" "[ \$(m /tmp/b1) = $E ] && echo \"\$out\" | grep -q \"^ok \""
 ok "  that also backed up the stock kernel first" "[ -f /tmp/stick/lumen/backup/kernel/BOOTIMG1-$S.img ]"
@@ -35,6 +42,8 @@ reset; out=$(KERNEL_FAULT=revert $K restore-stock || true)
 ok "fault in the write and in the write-back: reported (revert)" "echo \"\$out\" | grep -q \"error revert\""
 reset; out=$(KERNEL_FAULT=backup $K restore-stock || true)
 ok "backup does not verify: nothing written" "echo \"\$out\" | grep -q \"error backup\" && [ \$(m /tmp/b1) = $E ] && ! ls /tmp/stick/lumen/backup/kernel/*.img >/dev/null 2>&1"
+reset; out=$(KERNEL_FAULT=firmware $K restore-stock || true)
+ok "firmware copy does not verify: nothing written, no MANIFEST" "echo \"\$out\" | grep -q \"error backup\" && [ \$(m /tmp/b1) = $E ] && [ ! -f /tmp/stick/lumen/backup/firmware/MANIFEST ]"
 reset; printf X | dd of=/tmp/b2 bs=1 seek=5000 conv=notrunc 2>/dev/null; out=$($K restore-stock || true)
 ok "BOOTIMG2 not stock: refused, nothing written" "echo \"\$out\" | grep -q \"error boot2\" && [ \$(m /tmp/b1) = $E ]"
 reset; head -c 8388608 /dev/zero > /tmp/notkernel.img; out=$($K restore-backup /tmp/notkernel.img || true)

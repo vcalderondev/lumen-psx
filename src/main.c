@@ -2453,10 +2453,15 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "square" },   "btn.square",       "hint.search" },
       { { "triangle" }, "btn.triangle",     "hint.forget" },
       { { "circle" },   "btn.circle",       "hint.back" } },
-   [HINTS_KERNEL] = {         /* Settings, About, Kernel (kern.h) */
+   [HINTS_KERNEL] = {         /* Settings, About, Kernel (kern.h): the offer */
       { { "dpad" },     "btn.dpad",         "hint.move" },
       { { "cross" },    "btn.cross",        "hint.select" },
+      { { "square" },   "btn.square",       "hint.backup_only" },
       { { "circle" },   "btn.circle",       "hint.cancel" } },
+   [HINTS_KERNEL_DONE] = {    /* done / failed */
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "circle" },   "btn.circle",       "hint.close" } },
    [HINTS_KERNEL_BUSY] = { { { NULL }, NULL, NULL } },   /* writing: nothing may interrupt it */
    [HINTS_BT] = {             /* Connections, Bluetooth controllers (conn.h) */
       { { "dpad" },     "btn.dpad",         "hint.move" },
