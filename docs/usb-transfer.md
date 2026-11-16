@@ -74,6 +74,7 @@ it and says when it can be removed.
 | `LUMEN_USB2=<folder>` | the folder plays the second drive: "plugged in" while it exists |
 | `LUMEN_USB2_FS=<type>` | filesystem it pretends to be (default `vfat`) |
 | `LUMEN_USB2_KBPS=<n>` | limits the copy to n KB/s, to see the progress and stop it |
+| `LUMEN_USB2_FREE_MB=<n>` | the free space a copy believes the destination has, to see "Not enough space" |
 
 psc-sim: `LUMEN_SIM_ENV="LUMEN_USB2=/out/usb2 LUMEN_USB2_KBPS=3000" bin/psc-sim run lumen ...`
 with the drive's contents in `sim/out/usb2`; rename the folder away during the run to

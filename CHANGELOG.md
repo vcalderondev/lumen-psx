@@ -36,7 +36,8 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   `LUMEN_USB2_KBPS=<n>` slows the copy down, to test the flow without hardware.
 
 Checked in psc-sim only (transfer: browse, copy both ways, stop, the drive vanishing mid-copy,
-the offer, Settings; library check: a library broken on purpose). Not yet verified on the console: detecting and mounting a real second
+not enough space, the FAT32 4 GB limit, the offer, Settings; library check: a library broken
+on purpose, LibCrypt images, a case-sensitive disk). Not yet verified on the console: detecting and mounting a real second
 drive, remounting it writable, power drop-outs on the front ports.
 
 ## [0.17.0] - 2026-11-15
