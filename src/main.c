@@ -2879,7 +2879,7 @@ static float glyph_w(const char *name, float h)
  *    startup goes on; then the splash fades into the dashboard. The boot payload's
  *    splash.png is this same first frame (the dark logo, same place: tools/make-brand.py),
  *    and boot.sh keeps it up until Lumen draws, so the two read as one splash: after a
- *    console boot the fade-in is skipped (see splash_step).
+ *    console boot the fade-in is skipped (see main).
  * Missing PNG: nothing is drawn (plain black splash, the top bar as it was). */
 #define LOGO_W_VOX   28.5f   /* content width of logo-front.svg in voxels: 4 x 6 + 3 x 1.5 */
 #define LOGO_H_VOX   8.0f    /* letter height in voxels (the extrusion hangs below) */
@@ -3058,28 +3058,64 @@ static void splash_frame(void)
    }
 }
 
+static SDL_threadID g_main_thread;   /* the thread with the GL context */
 static void splash_pulse(void)
 {
    if (g_splash_fill < 0.0f || !g_splash_win || now_s() - g_splash_last < 0.25) return;
+   if (SDL_ThreadID() != g_main_thread) return;   /* the start-up scan runs on its own thread */
    splash_frame();
 }
 
-static void splash_step(SDL_Window *win, float target)
+/* One frame of the splash, its fade-in and the logo's fill moved on by the time that has
+ * passed, towards `target`; it never waits. Start-up calls it between its steps and while
+ * the library scan runs on its thread, so the animation plays during the loading
+ * instead of each stretch of it being waited for after the step it stands for (that was
+ * 0.25 s of fade-in plus 0.4 s of fill added to every start, and Lumen starts again
+ * after every game). */
+static void splash_tick(float target)
+{
+   static double last;
+   const double t = now_s();
+   const float dt = last > 0.0 ? clampf((float)(t - last), 0.0f, 0.1f) : 0.0f;
+   if (g_splash_fill < 0.0f || !g_splash_win) return;
+   if (last > 0.0 && t - g_splash_last < 0.010) return;   /* a frame was presented just now: no second wait for the display */
+   last = t;
+   if (g_splash_a < 1.0f) g_splash_a = fminf(1.0f, g_splash_a + dt / 0.25f);
+   else if (g_splash_fill < target) g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
+   splash_frame();
+}
+
+/* the end of the start-up: what is left of the fade and the fill, in 0.15 s at most */
+static void splash_finish(void)
 {
    double last = now_s();
-   if (g_splash_fill < 0.0f) return;
-   g_splash_win = win;
-   for (;;)
+   const float rate = fmaxf(2.5f, (1.0f - g_splash_fill) / 0.15f), arate = fmaxf(4.0f, (1.0f - g_splash_a) / 0.15f);
+   if (g_splash_fill < 0.0f || !g_splash_win || !g_logo_big.tex[0]) return;
+   while (g_splash_a < 1.0f || g_splash_fill < 1.0f)
    {
-      double t = now_s();
-      float dt = clampf((float)(t - last), 0.0f, 0.1f);   /* a slow frame still advances */
+      const double t = now_s();
+      const float dt = clampf((float)(t - last), 0.0f, 0.1f);
       last = t;
-      if (g_splash_a < 1.0f) g_splash_a = fminf(1.0f, g_splash_a + dt / 0.25f);
-      else g_splash_fill = fminf(target, g_splash_fill + 2.5f * dt);
+      g_splash_a = fminf(1.0f, g_splash_a + arate * dt);
+      g_splash_fill = fminf(1.0f, g_splash_fill + rate * dt);
       splash_frame();
-      if ((g_splash_a >= 1.0f && g_splash_fill >= target) || !g_logo_big.tex[0]) break;
    }
 }
+
+/* the library scan of the start-up (files only, no GL), on its own thread */
+static SDL_atomic_t g_scan_done;
+static double       g_scan_ms;
+static int scan_worker(void *unused)
+{
+   const double t0 = now_s();
+   (void)unused;
+   scan_library();
+   build_platform_index();
+   g_scan_ms = (now_s() - t0) * 1000.0;
+   SDL_AtomicSet(&g_scan_done, 1);
+   return 0;
+}
+
 
 /* ua: alpha of the whole dashboard UI; pos: selection spring (tile index space);
  * info_a / info_y: title block fade and slide after a selection change */
@@ -3683,6 +3719,7 @@ int main(int argc, char **argv)
    double last_activity = 0;
    attract_out_t att;
    SDL_Window *win; SDL_GLContext ctx;
+   SDL_Thread *scan_th = NULL;   /* the start-up library scan */
    int win_w = W, win_h = H;
    double b_draw = 0, b_swap = 0;   /* bench: time issuing frames / blocked in the swap */
    SDL_GameController *pad = NULL;
@@ -3724,6 +3761,7 @@ int main(int argc, char **argv)
    atexit(log_sync_atexit);
    logf_("lumen %s start", LUMEN_VERSION);
    boot_mark("");
+   g_main_thread = SDL_ThreadID();
 
    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0)
    { logf_("SDL_Init: %s", SDL_GetError()); return 1; }
@@ -3820,7 +3858,10 @@ int main(int argc, char **argv)
       g_font_sub = open_font(fonts_reg, 21);
       g_splash_fill = 0.0f;
       if (remove("/tmp/lumen-boot-splash") == 0) g_splash_a = 1.0f;
-      splash_step(win, 0.0f);
+      g_splash_win = win;
+      splash_tick(0.0f);
+      /* the library is read from the stick while the rest of the start-up goes on here */
+      scan_th = SDL_CreateThread(scan_worker, "scan", NULL);
    }
    make_tile_shadow();
    bg_mx = SDL_CreateMutex();
@@ -3833,29 +3874,37 @@ int main(int argc, char **argv)
    g_font_title = open_font(fonts_semi, 34);
    if (!g_font_sub) g_font_sub = open_font(fonts_reg, 21);
    g_font_small = open_font(fonts_reg, 17);
+   splash_tick(0.1f);
    g_font_cover = open_font(fonts_bold, 22);
    g_font_hero  = open_font(fonts_semi, 50);
    g_font_tab   = open_font(fonts_med, 19);
+   splash_tick(0.2f);
    g_font_name  = open_font(fonts_med, 21);
    g_font_medium = g_font_name ? g_font_name : g_font_sub;
    g_font_caps  = open_font(fonts_med, 15);
    boot_mark("fx+fonts");
-   splash_step(win, 0.2f);
+   splash_tick(0.2f);
    if (dialog)   /* in-game dialog: no library, no music */
    {
       g_ortho = m4_ortho(0, W, H, 0);
       return run_dialog(win, dialog);
    }
 
-   scan_library();
-   build_platform_index();
-   logf_("games: %d, platforms: %d, scan %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
-   boot_mark("scan");
-   splash_step(win, 0.45f);
+   /* what needs no library, while the scan runs: the audio device, the help bar */
+   g_ortho = m4_ortho(0, W, H, 0);
+   if (music_init() == 0) ui_sound_changed();
+   splash_tick(0.3f);
+   hints_load(g_home);
+   boot_mark("audio+hints");
+   while (scan_th && !SDL_AtomicGet(&g_scan_done)) splash_tick(0.6f);   /* the splash plays on, a frame at a time */
+   if (scan_th) SDL_WaitThread(scan_th, NULL);
+   else { scan_library(); build_platform_index(); }
+   logf_("games: %d, platforms: %d, scan %.0f ms on its thread, done %.0f ms after the start", g_ngames, g_nplat, g_scan_ms, (now_s() - t0) * 1000);
+   boot_mark("scan wait");
    platforms_load_art();
    coll_rows_build();
    boot_mark("tab art");
-   splash_step(win, 0.6f);
+   splash_tick(0.8f);
 
    /* resume last selection */
    {
@@ -3897,9 +3946,6 @@ int main(int argc, char **argv)
    asset_path(g_menu_music, sizeof(g_menu_music), "music/menu.ogg", "music/menu.ogg");
    if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
    boot_mark("resume");
-   if (music_init() == 0) ui_sound_changed();
-   boot_mark("audio");
-   hints_load(g_home);
    panel_init();
    transfer_init();
    welcome_init();
@@ -3907,7 +3953,7 @@ int main(int argc, char **argv)
    boot_mark("ui");
    memset(&att, 0, sizeof(att));
 
-   splash_step(win, 1.0f);
+   splash_finish();
    {
       char sp[300];
       snprintf(sp, sizeof(sp), "%s/debug/launch-shots", g_home);
