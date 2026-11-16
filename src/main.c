@@ -49,6 +49,8 @@
 #include "collections.h"
 #include "gamemenu.h"
 #include "filepicker.h"
+#include "transfer.h"
+#include "audit.h"
 #include "ui.h"
 #include "theme.h"
 #include "crt.h"
@@ -191,7 +193,18 @@ static void log_sync_atexit(void)
    flockfile(g_log); fflush(g_log); g_log_pending = 1; log_sync(1); funlockfile(g_log);
 }
 
-double now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
+/* Record mode (LUMEN_RECORD=<file or fifo>, for videos made in a simulator): from the
+ * main loop on, time is virtual and advances exactly 1/LUMEN_RECORD_FPS (default 60) per
+ * presented frame, and every frame is appended to the file as raw RGBA, bottom-up
+ * (glReadPixels order). A slow renderer then still yields a smooth, exact-rate video.
+ * LUMEN_RECORD_SECONDS ends the run after that much virtual time. */
+static FILE    *g_rec;
+static int      g_rec_on;
+static double   g_rec_base, g_rec_fps = 60.0, g_rec_secs;
+static unsigned g_rec_frames;
+
+static double real_now_s(void) { return SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
+double now_s(void) { return g_rec_on ? g_rec_base + g_rec_frames / g_rec_fps : real_now_s(); }
 
 /* perf probes. Startup: one "boot:" line per phase (always; the splash's own frames are
  * part of the phase they follow). With LUMEN_COST=1 or <home>/debug/perf, once per
@@ -366,6 +379,9 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "library", "paths", pl->paths, sizeof(pl->paths), "");
    if (!pl->paths[0] && !strcmp(pl->layout, "stock")) snprintf(pl->paths, sizeof(pl->paths), "/gaadata");
    if (!pl->paths[0]) snprintf(pl->paths, sizeof(pl->paths), "%s/games/%s", g_root, pl->id);  /* convention */
+   decl_get(ini, "library", "ports", pl->ports, sizeof(pl->ports), "");
+   if (!pl->ports[0] && strcmp(pl->layout, "stock") && strcmp(pl->layout, "apps"))
+      snprintf(pl->ports, sizeof(pl->ports), "%s/games/%s-native", g_root, pl->id);   /* convention */
    decl_get(ini, "library", "extensions", pl->exts, sizeof(pl->exts), !strcmp(pl->layout, "stock") ? "cue,bin" : "");
    decl_get(ini, "library", "metadata", v, sizeof(v), "");
    if (!v[0]) snprintf(v, sizeof(v), "%s.games", pl->id);
@@ -651,15 +667,18 @@ static void scan_files(int pi, const char *dir)
 /* Apps layout (homebrew): <path>/<name>/app.ini, Game.ini style lines:
  *   Title=  Exec=<program, relative to the folder>  Publisher=  Year=  Players=
  * art in the folder: icon.png|cover.png|.jpg, background.jpg|png, music.ogg.
- * content = the program; run.sh starts it natively (kind=app), RESET or OPEN quit it. */
-static void scan_apps(int pi, const char *dir)
+ * content = the program; run.sh starts it natively (kind=app), RESET or OPEN quit it.
+ * port: the folder holds native ports of a system's games ([library] ports): the same
+ * layout, listed among that system's games and marked as ports; the folder may not exist. */
+static void scan_apps(int pi, const char *dir, int port)
 {
    char path[700], buf[4096], exe[256], base[700];
    static const char *const cover_sfx[] = { "icon.png", "cover.png", "icon.jpg", "cover.jpg", NULL };
    static const char *const bg_sfx[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
    static const char *const music_sfx[] = { "music.ogg", "music.wav", NULL };
    DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
-   if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
+   int found = 0;
+   if (!(d = opendir(dir))) { if (!port) logf_("[%s] no dir %s", pl->id, dir); return; }
    while ((de = readdir(d)) && g_ngames < MAX_GAMES)
    {
       FILE *f; size_t n; game_t *g;
@@ -688,9 +707,11 @@ static void scan_apps(int pi, const char *dir)
       find_first(g->bg, sizeof(g->bg), base, bg_sfx);
       find_first(g->music, sizeof(g->music), base, music_sfx);
       g->platform = pi;
-      g_ngames++;
+      g->port = port;
+      g_ngames++; found++;
    }
    closedir(d);
+   if (port && found) logf_("[%s] %d native port(s) in %s", pl->id, found, dir);
 }
 
 /* Stock layout: the console's built-in games, read-only (never written).
@@ -817,9 +838,12 @@ static void scan_all(void)
          splash_pulse();
          if (!strcmp(g_plat[pi].layout, "psc")) scan_psc(pi, tok);
          else if (!strcmp(g_plat[pi].layout, "stock")) scan_stock(pi, tok);
-         else if (!strcmp(g_plat[pi].layout, "apps")) scan_apps(pi, tok);
+         else if (!strcmp(g_plat[pi].layout, "apps")) scan_apps(pi, tok, 0);
          else scan_files(pi, tok);
       }
+      snprintf(paths, sizeof(paths), "%s", g_plat[pi].ports);
+      for (save = NULL, tok = strtok_r(paths, ";", &save); tok; tok = strtok_r(NULL, ";", &save))
+      { trim(tok); scan_apps(pi, tok, 1); }
    }
 }
 
@@ -2089,6 +2113,19 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
       { { "circle" },   "btn.circle",       "hint.back" },
       { { "triangle" }, "btn.triangle",     "hint.cancel" } },
+   [HINTS_TRANSFER] = {       /* USB transfer, browsing (transfer.h) */
+      { { "cross" },    "btn.cross",        "hint.open" },
+      { { "square" },   "btn.square",       "hint.mark" },
+      { { "start" },    "btn.start",        "hint.copy" },
+      { { "triangle" }, "btn.triangle",     "hint.options" },
+      { { "circle" },   "btn.circle",       "hint.back" } },
+   [HINTS_TRANSFER_COPY] = {  /* USB transfer, a copy running */
+      { { "circle" },   "btn.circle",       "hint.cancel" } },
+   [HINTS_AUDIT] = {          /* library check (audit.h) */
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
+      { { "cross" },    "btn.cross",        "hint.recheck" },
+      { { "circle" },   "btn.circle",       "hint.back" } },
    [HINTS_DASH_TABS] = {      /* dashboard, focus on the system tabs */
       { { "dpad" },     "btn.dpad",         "hint.platform" },
       { { "cross" },    "btn.cross",        "hint.select" },
@@ -3251,6 +3288,17 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
             const float c[4] = { 0.16f, 0.16f, 0.20f, 0.7f * ta };
             draw_shape(x, TILE_Y, sz, sz, 14, 0, c);   /* (its shadow above is not cut: barely visible) */
          }
+         if (g->port)
+         {  /* a native port of the game: a chip in the cover's top left corner, on every tile */
+            static label_t l_port;
+            const float k = sz / TILE_SEL, chip[4] = { 0.04f, 0.04f, 0.06f, 0.78f * ta }, edge[4] = { 1, 1, 1, 0.22f * ta }, tc[4] = { 1, 1, 1, 0.95f * ta };
+            float lw, lh, cw, ch;
+            label_set(&l_port, g_font_caps, tr("badge.port"));
+            lw = l_port.w * 0.86f * k; lh = l_port.h * 0.86f * k; cw = lw + 24.0f * k; ch = 26.0f * k;
+            draw_shape(x + 10 * k, TILE_Y + 10 * k, cw, ch, ch * 0.5f, 0, chip);
+            draw_shape(x + 10 * k, TILE_Y + 10 * k, cw, ch, ch * 0.5f, 1.0f, edge);
+            draw_2d(l_port.tex, x + 10 * k + (cw - lw) * 0.5f, TILE_Y + 10 * k + (ch - lh) * 0.5f, lw, lh, tc, 0);
+         }
          if (idx == sel)
          {  /* focus ring (fades in with the title) and the media badge */
             const float ring[4] = { 1, 1, 1, 0.95f * ta * info_a * gamef }, badge[4] = { 0.04f, 0.04f, 0.06f, 0.70f * ta };
@@ -3389,6 +3437,33 @@ static int test_input(double ts)
          else { in_set(g_tin[i].btn, 1); if (nheld < 16) held[nheld++] = g_tin[i].btn; }
       }
    return run;
+}
+
+static void rec_start(void)
+{
+   const char *e = getenv("LUMEN_RECORD");
+   if (!e || !*e) return;
+   if (!(g_rec = fopen(e, "wb"))) { logf_("record: cannot open %s", e); return; }
+   if ((e = getenv("LUMEN_RECORD_FPS")) && atof(e) > 0) g_rec_fps = atof(e);
+   if ((e = getenv("LUMEN_RECORD_SECONDS"))) g_rec_secs = atof(e);
+   g_rec_base = real_now_s(); g_rec_on = 1;
+   SDL_GL_SetSwapInterval(0);   /* virtual time: never wait for a vblank */
+   logf_("record: %dx%d RGBA at %.0f fps, %.1f s", g_dw, g_dh, g_rec_fps, g_rec_secs);
+}
+
+/* the finished back buffer, before the swap; returns 0 once the recording is complete */
+static int rec_frame(void)
+{
+   static unsigned char *px;
+   size_t n = (size_t)g_dw * g_dh * 4;
+   if (!g_rec_on) return 1;
+   if (!px && !(px = malloc(n))) return 1;
+   glReadPixels(0, 0, g_dw, g_dh, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   if (fwrite(px, 1, n, g_rec) != n) { logf_("record: write failed at frame %u", g_rec_frames); return 0; }
+   g_rec_frames++;
+   if (g_rec_secs > 0 && g_rec_frames >= g_rec_secs * g_rec_fps)
+   { fflush(g_rec); logf_("record: done, %u frames", g_rec_frames); return 0; }
+   return 1;
 }
 
 /* dump the back buffer (before the swap) as a binary PPM */
@@ -3588,6 +3663,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          }
          crt_end();
       }
+      if (!rec_frame()) answer = 0;
       SDL_GL_SwapWindow(win); g_frame_id++;
    }
    logf_("dialog answer %d", answer);
@@ -3825,6 +3901,7 @@ int main(int argc, char **argv)
    boot_mark("audio");
    hints_load(g_home);
    panel_init();
+   transfer_init();
    welcome_init();
    attract_init(start_attract, g_home);
    boot_mark("ui");
@@ -3845,6 +3922,7 @@ int main(int argc, char **argv)
    boot_mark("last splash");
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
+   rec_start();
 
    while (running)
    {
@@ -3887,13 +3965,13 @@ int main(int argc, char **argv)
          if (e.type == SDL_QUIT) running = 0;
          else in_event(&e);
       }
-      if (g_ntin && !test_input(t - t0)) running = 0;
+      if (g_ntin && !test_input(g_rec_on ? g_rec_frames / g_rec_fps : t - t0)) running = 0;   /* recording: from its first frame */
       if (g_want_reboot) { exit_code = 12; running = 0; }
       if (g_want_restart) { exit_code = 0; running = 0; }
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
-         attract_update(t, dt, !panel_active() && !filepicker_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
+         attract_update(t, dt, !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
          att_swallow = was || attract_active() || att.amount > 0.02f;
          if (att_swallow) g_want_settings = 0;
       }
@@ -3926,7 +4004,7 @@ int main(int argc, char **argv)
       {  /* focus: games <-> system tabs <-> profile with Up / Down. Away from the games,
           * Left / Right change the system (tabs), Cross goes back to the games (tabs) or
           * opens the profile settings (profile), Circle returns to the games */
-         const int free_ = !panel_active() && !filepicker_active() && !gamemenu_active() && !welcome_active() &&
+         const int free_ = !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !gamemenu_active() && !welcome_active() &&
                            !att_swallow && play_t < 0;
          open_profile = 0;
          if (attract_active() || play_t >= 0 || !g_nplat) g_focus = FOCUS_GAMES;
@@ -3962,6 +4040,25 @@ int main(int argc, char **argv)
          if (!fp_open || att_swallow) memset(&pn, 0, sizeof(pn));
          filepicker_update(&pn, t, dt);
          if (fp_open) { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; }
+      }
+      {  /* USB transfer: a card over the panel or the Home; owns the input while open. On
+          * the free Home it only listens for Square while its offer is up */
+         ui_nav_t tn = fnav;
+         const int tr_open = transfer_open_now();
+         const int home = !tr_open && !fp_open && !panel_active() && !gamemenu_active() && !welcome_active() &&
+                          !attract_active() && !att_swallow && play_t < 0 && g_focus == FOCUS_GAMES;
+         if (att_swallow || fp_open || (!tr_open && !home)) memset(&tn, 0, sizeof(tn));
+         transfer_update(&tn, t, dt, home);
+         if (tr_open || transfer_open_now())
+         { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
+      }
+      {  /* library check: a card over the panel; owns the input while open */
+         ui_nav_t an = fnav;
+         const int au_open = audit_open_now();
+         if (!au_open || att_swallow || fp_open) memset(&an, 0, sizeof(an));
+         audit_update(&an, t, dt);
+         if (au_open || audit_open_now())
+         { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
       }
       {  /* settings panel: owns the input while open or closing (6.3) */
          ui_nav_t nav = fnav;
@@ -4145,9 +4242,9 @@ int main(int argc, char **argv)
          if (play_t >= 0)
          {
             /* the flat launch (flat.inc) is drawn from pt alone; here: the click, the fade, the end */
-            const float pt = play_pt, end = FLAT_END, fl_t = FLAT_FADE;
-            if (pdt > 0.0f && play_pt - pdt < FLAT_SEAT && play_pt >= FLAT_SEAT && g_flat.medium != FM_NONE)
-               music_click(g_flat.medium == FM_FRONT ? 1 : (g_flat.medium == FM_BEHIND ? 2 : 0));
+            const float pt = play_pt, end = flat_end_t(), fl_t = flat_fade_t();
+            if (pdt > 0.0f && play_pt - pdt < FLAT_SEAT && play_pt >= FLAT_SEAT && (g_flat.medium != FM_NONE || g_flat.port))
+               music_click(g_flat.medium == FM_FRONT ? 1 : (g_flat.medium == FM_BEHIND || (g_flat.port && g_flat.generic) ? 2 : 0));   /* a port's card switches on with the small snap */
             fade = clampf((pt - fl_t) / 0.30f, 0, 1);
             if (pt > end)
             {
@@ -4233,6 +4330,8 @@ int main(int argc, char **argv)
                static float h_mix = 1.0f;
                int want = welcome_active() ? (welcome_language_page() ? HINTS_WELCOME_LANG : welcome_last_page() ? HINTS_WELCOME_LAST : HINTS_WELCOME) :
                           filepicker_open_now() ? HINTS_FILEPICKER :
+                          transfer_open_now() ? transfer_hint_set() :
+                          audit_open_now() ? HINTS_AUDIT :
                           panel_active() ? panel_hint_set() :
                           gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
                           (attract_active() ? HINTS_ATTRACT : g_focus == FOCUS_TABS ? HINTS_DASH_TABS :
@@ -4256,6 +4355,18 @@ int main(int argc, char **argv)
             {  /* its backdrop covered the help bar: draw the picker's set again on top */
                glUseProgram(g_prog_2d);
                hints_draw(HINTS_FILEPICKER, 672, filepicker_amount() * (1 - fade));
+            }
+            transfer_draw(t);
+            if (transfer_active())
+            {  /* same as the picker: its scrim covered the help bar */
+               glUseProgram(g_prog_2d);
+               hints_draw(transfer_hint_set(), 672, transfer_amount() * (1 - fade));
+            }
+            audit_draw(t);
+            if (audit_active())
+            {
+               glUseProgram(g_prog_2d);
+               hints_draw(HINTS_AUDIT, 672, audit_amount() * (1 - fade));
             }
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);
@@ -4313,7 +4424,7 @@ int main(int argc, char **argv)
       {  /* one opaque full-screen pass, counted as a heavy shader */
          g_cost_px_opaque += (double)g_dw * g_dh; g_cost_px_heavy += (double)g_dw * g_dh; g_cost_draws += 1;
       }
-      if (g_ntshot) test_shots(t - t0);
+      if (g_ntshot) test_shots(g_rec_on ? g_rec_frames / g_rec_fps : t - t0);
       if (g_launch_shots && play_t >= 0)
       {
          static int lf;
@@ -4323,6 +4434,7 @@ int main(int argc, char **argv)
       {
          double pre = now_s();
          t_pre = pre;
+         if (!rec_frame()) running = 0;
          SDL_GL_SwapWindow(win);
          b_draw += pre - t; b_swap += now_s() - pre;
          perf_frame(t, t_upd, pre, now_s());
@@ -4395,6 +4507,7 @@ int main(int argc, char **argv)
    /* persist settings and selection; hand the launch request to the launcher script.
     * In the attract scene the selection saved is the user's, from before it started (10.5). */
    music_shutdown();   /* release the audio device before RetroArch starts */
+   transfer_shutdown();   /* stop a copy, unmount the second USB drive */
    panel_shutdown();   /* a colour picked or settings changed with the panel still open */
    if (settings_dirty()) settings_save();
    {
@@ -4411,7 +4524,7 @@ int main(int argc, char **argv)
       launch_req_t req;
       memset(&req, 0, sizeof(req));
       snprintf(core, sizeof(core), "%s/%s", g_core_dir, lp->core);
-      req.app = !strcmp(lp->layout, "apps");
+      req.app = !strcmp(lp->layout, "apps") || g->port;
       if (req.app) snprintf(core, sizeof(core), "app");   /* no libretro core: run.sh runs the program */
       req.core = core; req.content = g->content; req.system = lp->id; req.title = g->title;
       req.profile = profiles_active()->id;
@@ -4419,7 +4532,7 @@ int main(int argc, char **argv)
       req.resume = !demo && g_play_resume;
       if (!req.app && crt_level() != CRT_OFF) req.crt = crt_id(crt_level());   /* same filter in the game */
       req.demo_seconds = demo && lp->demo_seconds > 0 ? lp->demo_seconds : settings_get_int("demo_seconds", 60, 20, 300);
-      if (lp->has_gfx)
+      if (lp->has_gfx && !req.app)   /* a native port has no core to configure */
       {
          char gkey[48];
          const char *gv, *nat;

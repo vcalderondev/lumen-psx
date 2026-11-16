@@ -16,6 +16,7 @@ typedef struct {
    char title[128], publisher[96], year[16], players[8];
    char content[512], cover[512], bg[512], music[512];
    int platform;
+   int port;                   /* a native port of the game (the system's [library] ports folder): runs as a program, no core */
    /* runtime */
    GLuint tex;
    int tex_state;              /* 0 none, 2 decoding, 1 loaded, -1 placeholder */
@@ -30,6 +31,7 @@ typedef struct {
    char id[32], name[48], logo[300], core[128];
    char layout[8], paths[512], exts[128], sound[300];
    char meta[300];             /* layout = stock: metadata file next to the declaration */
+   char ports[512];            /* native ports listed with this system's games ([library] ports, default <root>/games/<id>-native) */
    int order, show_name, kind;
    char flat[32];              /* the launch's illustration: <home>/assets/launch/<flat>/ ([animation] flat, default the id) */
    /* [graphics]: per-core options and RetroArch overrides, "k=v, k=v" lists */

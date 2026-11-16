@@ -3,7 +3,7 @@
 #   tools/install.sh [--cores DIR]          binaries + run.sh/boot.sh + data + system declarations
 #                                           + assets (+ libretro cores from DIR)
 #   tools/install.sh --bg <system>/<game dir> <img>  per-game background -> /games/<system>/<dir>/background.<ext>
-# USB mount point: $LUMEN_USB (default /Volumes/SONY)
+# USB mount point: $LUMEN_USB (default /Volumes/SONY); LUMEN_NO_EJECT=1 leaves it mounted
 set -e
 cd "$(dirname "$0")/.."
 VOL="${LUMEN_USB:-/Volumes/SONY}"
@@ -46,4 +46,5 @@ else
   [ -e "$VOL/._lumen" ] && rm "$VOL/._lumen"
 fi
 sync
+[ -n "$LUMEN_NO_EJECT" ] && exit 0   # something else is still using the stick
 for i in 1 2 3 4 5; do diskutil eject "$VOL" && break; sleep 2; done
