@@ -377,6 +377,9 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "library", "paths", pl->paths, sizeof(pl->paths), "");
    if (!pl->paths[0] && !strcmp(pl->layout, "stock")) snprintf(pl->paths, sizeof(pl->paths), "/gaadata");
    if (!pl->paths[0]) snprintf(pl->paths, sizeof(pl->paths), "%s/games/%s", g_root, pl->id);  /* convention */
+   decl_get(ini, "library", "ports", pl->ports, sizeof(pl->ports), "");
+   if (!pl->ports[0] && strcmp(pl->layout, "stock") && strcmp(pl->layout, "apps"))
+      snprintf(pl->ports, sizeof(pl->ports), "%s/games/%s-native", g_root, pl->id);   /* convention */
    decl_get(ini, "library", "extensions", pl->exts, sizeof(pl->exts), !strcmp(pl->layout, "stock") ? "cue,bin" : "");
    decl_get(ini, "library", "metadata", v, sizeof(v), "");
    if (!v[0]) snprintf(v, sizeof(v), "%s.games", pl->id);
@@ -662,15 +665,18 @@ static void scan_files(int pi, const char *dir)
 /* Apps layout (homebrew): <path>/<name>/app.ini, Game.ini style lines:
  *   Title=  Exec=<program, relative to the folder>  Publisher=  Year=  Players=
  * art in the folder: icon.png|cover.png|.jpg, background.jpg|png, music.ogg.
- * content = the program; run.sh starts it natively (kind=app), RESET or OPEN quit it. */
-static void scan_apps(int pi, const char *dir)
+ * content = the program; run.sh starts it natively (kind=app), RESET or OPEN quit it.
+ * port: the folder holds native ports of a system's games ([library] ports): the same
+ * layout, listed among that system's games and marked as ports; the folder may not exist. */
+static void scan_apps(int pi, const char *dir, int port)
 {
    char path[700], buf[4096], exe[256], base[700];
    static const char *const cover_sfx[] = { "icon.png", "cover.png", "icon.jpg", "cover.jpg", NULL };
    static const char *const bg_sfx[] = { "background.jpg", "background.png", "bg.jpg", "bg.png", NULL };
    static const char *const music_sfx[] = { "music.ogg", "music.wav", NULL };
    DIR *d; struct dirent *de; platform_t *pl = &g_plat[pi];
-   if (!(d = opendir(dir))) { logf_("[%s] no dir %s", pl->id, dir); return; }
+   int found = 0;
+   if (!(d = opendir(dir))) { if (!port) logf_("[%s] no dir %s", pl->id, dir); return; }
    while ((de = readdir(d)) && g_ngames < MAX_GAMES)
    {
       FILE *f; size_t n; game_t *g;
@@ -699,9 +705,11 @@ static void scan_apps(int pi, const char *dir)
       find_first(g->bg, sizeof(g->bg), base, bg_sfx);
       find_first(g->music, sizeof(g->music), base, music_sfx);
       g->platform = pi;
-      g_ngames++;
+      g->port = port;
+      g_ngames++; found++;
    }
    closedir(d);
+   if (port && found) logf_("[%s] %d native port(s) in %s", pl->id, found, dir);
 }
 
 /* Stock layout: the console's built-in games, read-only (never written).
@@ -828,9 +836,12 @@ static void scan_all(void)
          splash_pulse();
          if (!strcmp(g_plat[pi].layout, "psc")) scan_psc(pi, tok);
          else if (!strcmp(g_plat[pi].layout, "stock")) scan_stock(pi, tok);
-         else if (!strcmp(g_plat[pi].layout, "apps")) scan_apps(pi, tok);
+         else if (!strcmp(g_plat[pi].layout, "apps")) scan_apps(pi, tok, 0);
          else scan_files(pi, tok);
       }
+      snprintf(paths, sizeof(paths), "%s", g_plat[pi].ports);
+      for (save = NULL, tok = strtok_r(paths, ";", &save); tok; tok = strtok_r(NULL, ";", &save))
+      { trim(tok); scan_apps(pi, tok, 1); }
    }
 }
 
@@ -3262,6 +3273,17 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
             const float c[4] = { 0.16f, 0.16f, 0.20f, 0.7f * ta };
             draw_shape(x, TILE_Y, sz, sz, 14, 0, c);   /* (its shadow above is not cut: barely visible) */
          }
+         if (g->port)
+         {  /* a native port of the game: a chip in the cover's top left corner, on every tile */
+            static label_t l_port;
+            const float k = sz / TILE_SEL, chip[4] = { 0.04f, 0.04f, 0.06f, 0.78f * ta }, edge[4] = { 1, 1, 1, 0.22f * ta }, tc[4] = { 1, 1, 1, 0.95f * ta };
+            float lw, lh, cw, ch;
+            label_set(&l_port, g_font_caps, tr("badge.port"));
+            lw = l_port.w * 0.86f * k; lh = l_port.h * 0.86f * k; cw = lw + 24.0f * k; ch = 26.0f * k;
+            draw_shape(x + 10 * k, TILE_Y + 10 * k, cw, ch, ch * 0.5f, 0, chip);
+            draw_shape(x + 10 * k, TILE_Y + 10 * k, cw, ch, ch * 0.5f, 1.0f, edge);
+            draw_2d(l_port.tex, x + 10 * k + (cw - lw) * 0.5f, TILE_Y + 10 * k + (ch - lh) * 0.5f, lw, lh, tc, 0);
+         }
          if (idx == sel)
          {  /* focus ring (fades in with the title) and the media badge */
             const float ring[4] = { 1, 1, 1, 0.95f * ta * info_a * gamef }, badge[4] = { 0.04f, 0.04f, 0.06f, 0.70f * ta };
@@ -4186,8 +4208,8 @@ int main(int argc, char **argv)
          {
             /* the flat launch (flat.inc) is drawn from pt alone; here: the click, the fade, the end */
             const float pt = play_pt, end = FLAT_END, fl_t = FLAT_FADE;
-            if (pdt > 0.0f && play_pt - pdt < FLAT_SEAT && play_pt >= FLAT_SEAT && g_flat.medium != FM_NONE)
-               music_click(g_flat.medium == FM_FRONT ? 1 : (g_flat.medium == FM_BEHIND ? 2 : 0));
+            if (pdt > 0.0f && play_pt - pdt < FLAT_SEAT && play_pt >= FLAT_SEAT && (g_flat.medium != FM_NONE || g_flat.port))
+               music_click(g_flat.medium == FM_FRONT ? 1 : (g_flat.medium == FM_BEHIND || g_flat.port ? 2 : 0));   /* a port switches on with the small snap */
             fade = clampf((pt - fl_t) / 0.30f, 0, 1);
             if (pt > end)
             {
@@ -4452,7 +4474,7 @@ int main(int argc, char **argv)
       launch_req_t req;
       memset(&req, 0, sizeof(req));
       snprintf(core, sizeof(core), "%s/%s", g_core_dir, lp->core);
-      req.app = !strcmp(lp->layout, "apps");
+      req.app = !strcmp(lp->layout, "apps") || g->port;
       if (req.app) snprintf(core, sizeof(core), "app");   /* no libretro core: run.sh runs the program */
       req.core = core; req.content = g->content; req.system = lp->id; req.title = g->title;
       req.profile = profiles_active()->id;
@@ -4460,7 +4482,7 @@ int main(int argc, char **argv)
       req.resume = !demo && g_play_resume;
       if (!req.app && crt_level() != CRT_OFF) req.crt = crt_id(crt_level());   /* same filter in the game */
       req.demo_seconds = demo && lp->demo_seconds > 0 ? lp->demo_seconds : settings_get_int("demo_seconds", 60, 20, 300);
-      if (lp->has_gfx)
+      if (lp->has_gfx && !req.app)   /* a native port has no core to configure */
       {
          char gkey[48];
          const char *gv, *nat;

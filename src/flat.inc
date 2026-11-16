@@ -56,7 +56,8 @@ typedef struct {
    SDL_Surface *art_s;           /* NULL: no cover file (five bands of pal instead) */
    float pal[5][3];              /* its five tones, dark to light */
    char painted[512]; int painted_ok;   /* the cover now in the layer's hole */
-   label_t l_kicker, l_title;
+   int port;                     /* this launch is a native port's (set at Play) */
+   label_t l_kicker, l_title, l_port;   /* l_port: the chip of a native port */
 } flat_t;
 static flat_t g_flat;
 
@@ -309,12 +310,15 @@ static void flat_poll(void)
 static void flat_want(const platform_t *pl, const game_t *g, int now)
 {
    flat_t *f = &g_flat;
-   if (strcmp(f->key, pl->flat))
+   /* a native port is not put into a machine: nothing is emulated. "-" is no folder, so it
+    * gets the cover as the object, drawn its own way (flat_draw) */
+   const char *key = g && g->port ? "-" : pl->flat;
+   if (strcmp(f->key, key))
    {
       if (g_flat_ljob && !now) return;   /* one job at a time: asked again next frame */
-      snprintf(f->key, sizeof(f->key), "%s", pl->flat);
+      snprintf(f->key, sizeof(f->key), "%s", key);
       f->ok = 0; f->generic = 0;
-      if (flat_read_ini(f, f->key))
+      if (key[0] != '-' && flat_read_ini(f, f->key))
       {
          flat_ljob_t *j = calloc(1, sizeof(*j));
          snprintf(j->key, sizeof(j->key), "%s", f->key);
@@ -379,6 +383,15 @@ static void flat_begin(const platform_t *pl, const game_t *g)
    }
    for (i = 0; pl->name[i] && i < (int)sizeof(up) - 1; i++) up[i] = (char)toupper((unsigned char)pl->name[i]);
    up[i] = 0;
+   f->port = g->port;
+   if (g->port)
+   {  /* "PLAYSTATION · NATIVE PORT" */
+      char k[160];
+      snprintf(k, sizeof(k), "%s \xc2\xb7 %s", up, tr("badge.port"));
+      label_set(&f->l_kicker, g_font_caps, k);
+      label_set(&f->l_port, g_font_caps, tr("badge.port"));
+   }
+   else
    label_set(&f->l_kicker, g_font_caps, up);
    label_set(&f->l_title, g_font_title, g->title);
 }
@@ -515,6 +528,45 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
    }
    lit = pt < 1.56f ? 0.0f : pt < 1.60f ? 0.7f : pt < 1.66f ? 0.2f : 1.0f;
 
+   if (f->generic && g->port)
+   {  /* a native port: the cover as a card that switches itself on where a medium would
+       * seat. Its frame lights, two rings leave it, the chip shows; then it grows into the
+       * frame. It does not turn. */
+      const float one[4] = { 1, 1, 1, 1 }, frame[4] = { 0.063f, 0.082f, 0.133f, 1.0f };
+      const float tw = (float)(g->tex_w > 0 ? g->tex_w : 1), th = (float)(g->tex_h > 0 ? g->tex_h : 1);
+      const float on = flat_ramp(pt, FLAT_SEAT, FLAT_SEAT + 0.06f), s = fabsf(body.sx);
+      float r[4], c[4], w, h;
+      for (i = 0; i < 2; i++)
+      {  /* the rings, the second a moment later and fainter */
+         const float t0 = FLAT_SEAT + 0.16f * i, e = flat_ramp(pt, t0, t0 + 0.60f), grow = 1.0f + 0.5f * (1.0f - (1.0f - e) * (1.0f - e));
+         const float rc[4] = { 1, 1, 1, (i ? 0.55f : 0.85f) * (1.0f - e) * (pt >= t0 ? 1.0f : 0.0f) };
+         if (rc[3] <= 0.003f) continue;
+         flat_rect(fx_mul(body, fx_about(240, 150, grow, grow)), 134, 44, 212, 212, r);
+         draw_shape(r[0], r[1], r[2], r[3], 18.0f * s * grow, 3.0f * s, rc);
+      }
+      flat_rect(body, 134, 44, 212, 212, r);
+      draw_shape(r[0], r[1], r[2], r[3], 18.0f * s, 0.0f, frame);
+      flat_rect(body, 140, 50, 200, 200, c);
+      if (g->tex)
+      {
+         if (tw / th > 1.0f) { h = c[3]; w = h * tw / th; } else { w = c[2]; h = c[2] * th / tw; }
+         glEnable(GL_SCISSOR_TEST);
+         gl_scissor(c[0], c[1], c[2], c[3]);
+         draw_2d(g->tex, c[0] + (c[2] - w) * 0.5f, c[1] + (c[3] - h) * 0.5f, w, h, one, 0);
+         glDisable(GL_SCISSOR_TEST);
+      }
+      if (on > 0.0f)
+      {  /* lit: a white edge on the frame and the chip in the cover's corner */
+         const float edge[4] = { 1, 1, 1, on }, chip[4] = { 0.04f, 0.04f, 0.06f, 0.78f * on }, tc[4] = { 1, 1, 1, on };
+         const float lw = f->l_port.w * 0.78f * s, lh = f->l_port.h * 0.78f * s, cw = lw + 22.0f * s, ch = 24.0f * s;
+         float p[4];
+         draw_shape(r[0], r[1], r[2], r[3], 18.0f * s, 3.0f * s, edge);
+         flat_rect(body, 150, 60, 10, 10, p);
+         draw_shape(p[0], p[1], cw, ch, ch * 0.5f, 0.0f, chip);
+         draw_2d(f->l_port.tex, p[0] + (cw - lw) * 0.5f, p[1] + (ch - lh) * 0.5f, lw, lh, tc, 0);
+      }
+      return;
+   }
    if (f->generic)
    {  /* the cover as a card in a dark frame; it turns once (flat: its width closes and
        * opens again, the back is the frame alone), then grows into the frame */

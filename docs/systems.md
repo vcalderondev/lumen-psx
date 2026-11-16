@@ -24,6 +24,8 @@ layout     = psc                ; psc: <path>/<n>/Game.ini folders | files: one 
                                 ; | apps: native homebrew programs (below)
 paths      = /media/games/psx   ; ';'-separated; default: <root>/games/<id>
 extensions = cue,pbp,chd,m3u    ; for layout = files (and multi-disc detection)
+ports      = /media/games/psx-native   ; native ports of this system's games (below);
+                                ; default: <root>/games/<id>-native
 
 [launch]
 core = pcsx_rearmed_libretro.so ; <home>/cores/<core>
@@ -180,10 +182,42 @@ declaration) gets the generic launch on the same field: nothing is assumed about
 hardware, the game's cover is the object. It floats as a card, turns once and grows into
 the frame.
 
+**A native port** (above) is not put into a machine, since nothing is emulated: the
+cover drops in as a card and, where a medium would seat, switches itself on: its frame
+lights with a white edge, two rings leave it, the "Native port" chip shows, with the small
+snap of the handhelds; then it grows into the frame. It does not turn (that is the generic
+launch). The kicker reads "<system> · Native port".
+
 Before 0.15 the launch was drawn in 3D (jewel and keep cases, cartridges and consoles as
 models). The keys of that renderer are ignored now: `[media] shape`, `aspect`, `color`,
 `art`, `media_art`, and `[animation] launch`, `slot`, `idle`. A game's own disc or
 cartridge picture (`<game>/disc.png`, `<name>-cart.png`) is no longer read.
+
+## Native ports: `[library] ports`
+
+A game recompiled to run on the console itself, with no emulator, is a program, but it is
+still a game of its system: it is listed among that system's games, sorted with them by
+title, and not under Homebrew. It lives in the system's ports folder, one folder per game,
+in the layout of a homebrew app (below):
+
+```
+/media/games/psx-native/<name>/app.ini      Title=  Exec=  Publisher=  Year=  Players=
+/media/games/psx-native/<name>/<Exec>       the program, or a shell script that starts it
+/media/games/psx-native/<name>/cover.png    (or icon.png / .jpg) the game's cover
+/media/games/psx-native/<name>/background.jpg, music.ogg   optional, like a game
+```
+
+- The folder is `[library] ports` (';'-separated), by default `<root>/games/<id>-native`;
+  it may not exist. Systems with `layout = stock` or `apps` have none.
+- A port's tile carries a "Native port" chip in its top left corner. Favourites, folders,
+  history and play time work as for any game (it is identified by the path of its program).
+- It launches like a homebrew app: launch request `kind=app`, `system` = the system's id,
+  no core; `run.sh` starts the program from its folder (`LUMEN_APP_DIR`), RESET or OPEN
+  quit it. The system's graphics levels and the CRT filter are not applied (there is no
+  core to configure), and a port is never picked as an attract-mode demo.
+- Its launch is its own (see "The launch"): the system's machine is not shown.
+- The same game can be on the stick twice, emulated (`games/psx/`) and as a port: they are
+  two entries; the chip tells them apart.
 
 ## Homebrew apps: `layout = apps`
 
