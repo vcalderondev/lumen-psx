@@ -90,6 +90,7 @@ static char s_root_disk[32];     /* "sda": the disk Lumen runs from, never touch
 static char s_root_fs[16];
 static int  s_utf8;              /* mount FAT with utf8 names (not when the Lumen stick is FAT without it) */
 static long s_kbps;              /* LUMEN_USB2_KBPS: test hook, slows the copy down   */
+static long s_free_mb = -1;      /* LUMEN_USB2_FREE_MB: test hook, the free space a copy believes in */
 
 /* the mount of `what` (a device node, or a mount point when by_dir) in /proc/mounts */
 static int mount_find(const char *what, int by_dir, char *dir, size_t dn, char *type, size_t tn, char *opts, size_t on)
@@ -652,6 +653,7 @@ static void do_copy(void)
          if (statvfs(dst, &sv) == 0)
          {
             avail = (long long)sv.f_bavail * (long long)sv.f_frsize;
+            if (s_free_mb >= 0) avail = s_free_mb * 1024LL * 1024;   /* test hook */
             need = w.bytes + (long long)w.files * (long long)sv.f_frsize + 8LL * 1024 * 1024;
             if (need > avail) cp_fail(&w, C_SPACE, "");
          }
@@ -1611,6 +1613,7 @@ void transfer_init(void)
    for (i = 0; i < POOL; i++) s_dslot[i] = -1;
    if (e && e[0]) snprintf(s_sim, sizeof(s_sim), "%s", e);
    if ((e = getenv("LUMEN_USB2_KBPS"))) s_kbps = atol(e);
+   if ((e = getenv("LUMEN_USB2_FREE_MB"))) s_free_mb = atol(e);
    root_find();
    systems_load();
    if (!s_sim[0] && !s_root_disk[0])
