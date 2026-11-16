@@ -3,6 +3,31 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- USB transfer: copy files between the Lumen stick and a second USB drive with the pad
+  (`docs/usb-transfer.md`; lumen-design `usb-transfer*.html`). Plugging a second drive in
+  shows a pill on the Home for 8 s (Square opens the transfer; nothing opens by itself),
+  and Settings, Library has "Transfer files". One card with two panes, one per drive:
+  Left / Right change pane, Cross opens a folder or marks a file, Square marks, Start
+  copies what is marked to the other drive, Triangle ejects the second drive. The
+  destination is the folder open in the other pane or, on the Lumen stick, the games
+  folder of any system declared in `systems/`. Both directions.
+- The copy runs on its own thread with a progress card (bytes, file count, time left) and
+  can be stopped. Free space is checked first; files already on the destination with the
+  same size are skipped, so a copy cut short can be repeated. Each file is written as
+  `<name>.lumen-part`, flushed and renamed; the second drive is mounted read-only and is
+  writable only while it is the destination. A drive that disappears mid-copy ends the
+  copy with a message and the unfinished file is removed. After a copy to the Lumen stick
+  the library is rescanned.
+- `LUMEN_USB2=<folder>` makes a folder play the second drive (psc-sim) and
+  `LUMEN_USB2_KBPS=<n>` slows the copy down, to test the flow without hardware.
+
+Checked in psc-sim only (browse, copy both ways, stop, the drive vanishing mid-copy, the
+offer, Settings). Not yet verified on the console: detecting and mounting a real second
+drive, remounting it writable, power drop-outs on the front ports.
+
 ## [0.17.0] - 2026-11-15
 
 Interface sounds. Checked in psc-sim (the sim has no audio output: the sounds were reviewed
