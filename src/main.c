@@ -3253,6 +3253,19 @@ static void splash_finish(void)
    }
 }
 
+/* the audio device and the interface sounds (0.3 s on the console), on their own thread */
+static int          g_audio_ok = -1;
+static SDL_atomic_t g_audio_done;
+static int audio_worker(void *unused)
+{
+   const double t0 = now_s();
+   (void)unused;
+   g_audio_ok = music_init();
+   logf_("boot: audio (its thread) %.0f ms", (now_s() - t0) * 1000.0);
+   SDL_AtomicSet(&g_audio_done, 1);
+   return 0;
+}
+
 /* the library scan of the start-up (files only, no GL), on its own thread */
 static SDL_atomic_t g_scan_done;
 static double       g_scan_ms;
@@ -3870,7 +3883,7 @@ int main(int argc, char **argv)
    double last_activity = 0;
    attract_out_t att;
    SDL_Window *win; SDL_GLContext ctx;
-   SDL_Thread *scan_th = NULL;   /* the start-up library scan */
+   SDL_Thread *scan_th = NULL, *audio_th = NULL;   /* the start-up library scan, the audio device */
    int win_w = W, win_h = H;
    double b_draw = 0, b_swap = 0;   /* bench: time issuing frames / blocked in the swap */
    SDL_GameController *pad = NULL;
@@ -4043,10 +4056,11 @@ int main(int argc, char **argv)
 
    /* what needs no library, while the scan runs: the audio device, the help bar */
    g_ortho = m4_ortho(0, W, H, 0);
-   if (music_init() == 0) ui_sound_changed();
+   audio_th = SDL_CreateThread(audio_worker, "audio", NULL);
+   if (!audio_th && music_init() == 0) ui_sound_changed();
    splash_tick(0.3f);
    hints_load(g_home);
-   boot_mark("audio+hints");
+   boot_mark("hints");
    while (scan_th && !SDL_AtomicGet(&g_scan_done)) splash_tick(0.6f);   /* the splash plays on, a frame at a time */
    if (scan_th) SDL_WaitThread(scan_th, NULL);
    else { scan_library(); build_platform_index(); }
@@ -4098,10 +4112,19 @@ int main(int argc, char **argv)
    if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
    boot_mark("resume");
    panel_init();
+   boot_mark("panel");
    transfer_init();
+   boot_mark("transfer");
    welcome_init();
    attract_init(start_attract, g_home);
-   boot_mark("ui");
+   boot_mark("welcome");
+   if (audio_th)
+   {  /* the splash plays on while the audio device finishes opening */
+      while (!SDL_AtomicGet(&g_audio_done)) splash_tick(0.9f);
+      SDL_WaitThread(audio_th, NULL);
+      if (g_audio_ok == 0) ui_sound_changed();
+   }
+   boot_mark("audio wait");
    memset(&att, 0, sizeof(att));
 
    splash_finish();
