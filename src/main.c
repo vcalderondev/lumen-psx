@@ -1503,6 +1503,37 @@ void draw_round_rect(float x, float y, float w, float h, float radius, const flo
 }
 
 /* flat rounded rectangle (mode 9): filled, or stroked inside with width `stroke` */
+/* A filled, opaque disc of radius r at cx, cy as large as the launch's field gets: the
+ * square inside it is drawn without blending (the GPU then shades nothing of the
+ * dashboard under it), the four segments around the square with the shape's shader as
+ * before. Same pixels as draw_shape() of the whole disc. */
+static void draw_disc(float cx, float cy, float r, const float rgba[4])
+{
+   const float k = g_ui_scale, p = 1.0f / k, hf = floorf(r * 0.70710678f) - 3.0f, d = 2.0f * r, e = r - hf;
+   int i;
+   if (hf < 24.0f || rgba[3] < 0.999f)
+   {
+      glUniform4f(u2_rect, d * k, d * k, r * k, 0.0f);
+      glUniform4f(u2_aux0, 0.0f, 0.0f, 0.0f, 0.0f);
+      draw_sdf(0, cx - r, cy - r, d, d, rgba, 9);
+      return;
+   }
+   glDisable(GL_BLEND);
+   draw_2d(0, cx - hf, cy - hf, 2.0f * hf, 2.0f * hf, rgba, 0);
+   glEnable(GL_BLEND);
+   glUniform4f(u2_rect, d * k, d * k, r * k, 0.0f);
+   glUniform4f(u2_aux0, 0.0f, 0.0f, 0.0f, 0.0f);
+   for (i = 0; i < 4; i++)
+   {  /* top, bottom (full width, with the edge's 1 px of fade), left, right (between them) */
+      /* each reaches 1 px into the square (same colour over it), so no seam can open */
+      const float px = i < 2 ? -p : (i == 2 ? -p : r + hf - 1.0f), py = i == 0 ? -p : (i == 1 ? r + hf - 1.0f : e + 1.0f);
+      const float pw = i < 2 ? d + 2 * p : e + p + 1.0f, ph = i < 2 ? e + p + 1.0f : 2.0f * hf - 2.0f;   /* the four never overlap each other */
+      glUniform4f(u2_uvw, px / d, py / d, pw / d, ph / d);
+      draw_2d(0, cx - r + px, cy - r + py, pw, ph, rgba, 9);
+   }
+   glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+}
+
 static void draw_shape(float x, float y, float w, float h, float radius, float stroke, const float rgba[4])
 {
    const float k = g_ui_scale;
