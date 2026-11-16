@@ -51,6 +51,8 @@
 #include "filepicker.h"
 #include "transfer.h"
 #include "audit.h"
+#include "net.h"
+#include "conn.h"
 #include "ui.h"
 #include "theme.h"
 #include "crt.h"
@@ -2444,6 +2446,17 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
       { { "cross" },    "btn.cross",        "hint.recheck" },
       { { "circle" },   "btn.circle",       "hint.back" } },
+   [HINTS_WIFI] = {           /* Connections, Wi-Fi networks (conn.h) */
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.connect" },
+      { { "square" },   "btn.square",       "hint.search" },
+      { { "triangle" }, "btn.triangle",     "hint.forget" },
+      { { "circle" },   "btn.circle",       "hint.back" } },
+   [HINTS_BT] = {             /* Connections, Bluetooth controllers (conn.h) */
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.pair" },
+      { { "triangle" }, "btn.triangle",     "hint.forget" },
+      { { "circle" },   "btn.circle",       "hint.back" } },
    [HINTS_DASH_TABS] = {      /* dashboard, focus on the system tabs */
       { { "dpad" },     "btn.dpad",         "hint.platform" },
       { { "cross" },    "btn.cross",        "hint.select" },
@@ -4339,6 +4352,7 @@ int main(int argc, char **argv)
    memset(&dpos, 0, sizeof(dpos)); dpos.x = (float)sel;
    boot_mark("resume");
    panel_init();
+   net_init();   /* after settings: Wi-Fi / Bluetooth / USB Ethernet as they were left */
    boot_mark("panel");
    transfer_init();
    boot_mark("transfer");
@@ -4421,7 +4435,7 @@ int main(int argc, char **argv)
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
-         attract_update(t, dt, !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
+         attract_update(t, dt, !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
          att_swallow = was || attract_active() || att.amount > 0.02f;
          if (att_swallow) g_want_settings = 0;
       }
@@ -4454,7 +4468,7 @@ int main(int argc, char **argv)
       {  /* focus: games <-> system tabs <-> profile with Up / Down. Away from the games,
           * Left / Right change the system (tabs), Cross goes back to the games (tabs) or
           * opens the profile settings (profile), Circle returns to the games */
-         const int free_ = !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !gamemenu_active() && !welcome_active() &&
+         const int free_ = !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !gamemenu_active() && !welcome_active() &&
                            !att_swallow && play_t < 0;
          open_profile = 0;
          if (attract_active() || play_t >= 0 || !g_nplat) g_focus = FOCUS_GAMES;
@@ -4508,6 +4522,18 @@ int main(int argc, char **argv)
          if (!au_open || att_swallow || fp_open) memset(&an, 0, sizeof(an));
          audit_update(&an, t, dt);
          if (au_open || audit_open_now())
+         { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
+      }
+      {  /* connections cards: over the panel; own the input while open (conn.h) */
+         ui_nav_t cn = fnav;
+         const int cn_open = conn_open_now();
+         const char *nt;
+         net_poll();
+         if ((nt = net_take_toast())) panel_toast(nt);
+         net_watch(panel_connections_page(), conn_wifi_shown(), conn_bt_shown());
+         if (!cn_open || att_swallow || fp_open) memset(&cn, 0, sizeof(cn));
+         conn_update(&cn, t, dt);
+         if (cn_open || conn_open_now())
          { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
       }
       {  /* settings panel: owns the input while open or closing (6.3) */
@@ -4807,6 +4833,7 @@ int main(int argc, char **argv)
                           filepicker_open_now() ? HINTS_FILEPICKER :
                           transfer_open_now() ? transfer_hint_set() :
                           audit_open_now() ? HINTS_AUDIT :
+                          conn_open_now() ? conn_hint_set() :
                           panel_active() ? panel_hint_set() :
                           gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
                           (attract_active() ? HINTS_ATTRACT : g_focus == FOCUS_TABS ? HINTS_DASH_TABS :
@@ -4844,6 +4871,12 @@ int main(int argc, char **argv)
             {
                glUseProgram(g_prog_2d);
                hints_draw(HINTS_AUDIT, 672, audit_amount() * (1 - fade));
+            }
+            conn_draw(t);
+            if (conn_active() && conn_open_now())
+            {
+               glUseProgram(g_prog_2d);
+               hints_draw(conn_hint_set(), 672, conn_amount() * (1 - fade));
             }
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);

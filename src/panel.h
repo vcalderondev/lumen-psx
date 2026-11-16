@@ -7,7 +7,7 @@
 enum { HINTS_CAROUSEL, HINTS_PANEL_ROOT, HINTS_PANEL_PAGE, HINTS_PANEL_LIST, HINTS_PANEL_INFO,
        HINTS_OSK, HINTS_CONFIRM, HINTS_ATTRACT, HINTS_WELCOME, HINTS_WELCOME_LAST, HINTS_WELCOME_LANG, HINTS_GAMEMENU,
        HINTS_GAMEMENU_FOLDERS, HINTS_FILEPICKER, HINTS_DASH_TABS, HINTS_DASH_PROFILE,
-       HINTS_TRANSFER, HINTS_TRANSFER_COPY, HINTS_AUDIT, HINTS_COUNT };
+       HINTS_TRANSFER, HINTS_TRANSFER_COPY, HINTS_AUDIT, HINTS_WIFI, HINTS_BT, HINTS_COUNT };
 
 void  panel_init(void);                 /* after fonts + i18n + settings */
 void  panel_open(void);
@@ -22,6 +22,12 @@ void  panel_toast(const char *key);     /* translated message in a pill above th
 void  panel_toast_draw(double t);
 /* the on-screen keyboard alone over the dashboard; accept returns NULL (done) or a tr key */
 void  panel_osk(const char *title_key, const char *initial, const char *(*accept)(const char *));
+/* for a card over the open panel (conn.c): the keyboard titled with title_text (password:
+ * kept as typed, up to max_chars), a question; panel_modal_open() is 1 while either is up */
+void  panel_keyboard(const char *title_text, int max_chars, int password, const char *(*accept)(const char *));
+void  panel_confirm(const char *message, const char *yes_key, void (*on_yes)(void));
+int   panel_modal_open(void);
+int   panel_connections_page(void);      /* the Connections page is the one open */
 
 /* callbacks implemented in main.c */
 void  ui_language_changed(void);        /* section 5.3 */

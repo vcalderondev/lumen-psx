@@ -2,10 +2,13 @@
 # Wi-Fi and Bluetooth for Lumen, entirely from RAM: nothing on the console's eMMC changes,
 # everything is gone at power-off. Run as root (Lumen runs as root).
 #
-#   net.sh caps                    wifi=<yes|load|no> bt=<yes|load|no> kernel=<stock|other>
+#   net.sh caps                    wifi=<yes|load|no> bt=<yes|load|no> eth=<yes|load|no> kernel=<stock|other>
 #   net.sh wifi on|off|status|scan
 #   net.sh wifi connect <ssid>     the password on stdin (empty: an open network)
 #   net.sh wifi forget <ssid>
+#   net.sh wifi saved              lines: <ssid> of the saved networks
+#   net.sh wifi select <ssid>      connect to a saved network
+#   net.sh eth on|off|status       USB Ethernet adapter (r8152, ax88179, asix, cdc_ether/ncm, smsc95xx): DHCP
 #   net.sh bt on|off|status
 #   net.sh bt scan [seconds]       lines: <mac>\t<name>   (devices seen, paired or not)
 #   net.sh bt devices              lines: <mac>\t<paired 0|1>\t<connected 0|1>\t<name>
@@ -51,8 +54,9 @@ load_set() {  # module names...
     if insmod "${MOD}/netmod/$m.ko" 2>>"${LOGF}"; then log "module: $m loaded"; else log "module: $m FAILED"; fi
   done
 }
-WIFI_SET="arc4 ecb ccm gcm ghash-generic cmac crc-ccitt mac80211 mt7601u rt2x00lib rt2800lib rt2x00usb rt2800usb rtl8xxxu
-          libphy usbnet asix ax88179_178a cdc_ether cdc_ncm cdc_subset r8152 smsc95xx"
+WIFI_SET="arc4 ecb ccm gcm ghash-generic cmac crc-ccitt mac80211 mt7601u rt2x00lib rt2800lib rt2x00usb rt2800usb rtl8xxxu"
+ETH_SET="libphy usbnet asix ax88179_178a cdc_ether cdc_ncm cdc_subset r8152 smsc95xx"
+ETH_DRIVERS="r8152 ax88179_178a asix cdc_ether cdc_ncm cdc_subset smsc95xx"
 BT_SET="ecb cmac bluetooth btbcm btintel btrtl btusb hidp"
 has_mod() { [ -d "/sys/module/$1" ]; }
 cap_of() {  # module: yes (in the kernel), load (in our stock set), no
@@ -170,12 +174,70 @@ wifi_forget_ids() {  # remove every saved network with this name
     [ "${s}" = "\"$1\"" ] || [ "${s}" = "${hex}" ] && wpa_cli remove_network "${id}" >/dev/null
   done
 }
+wifi_saved() {
+  if [ -f "${RUN}/wpa.pid" ] && kill -0 "$(cat "${RUN}/wpa.pid")" 2>/dev/null; then
+    for id in $(wpa_cli list_networks 2>/dev/null | awk -F'\t' 'NR > 1 {print $1}'); do
+      s=$(wpa_cli get_network "${id}" ssid 2>/dev/null | tail -1)
+      case "$s" in \"*\") s=${s#\"}; s=${s%\"} ;; *) s=$(printf '%s' "$s" | sed 's/../\\x&/g'); s=$(printf "$s") ;; esac
+      echo "$s"
+    done
+  fi
+}
+wifi_select() {  # a saved network: no password asked again
+  hex=$(printf '%s' "$1" | od -An -tx1 | tr -d ' \n')
+  for id in $(wpa_cli list_networks 2>/dev/null | awk -F'\t' 'NR > 1 {print $1}'); do
+    s=$(wpa_cli get_network "${id}" ssid 2>/dev/null | tail -1)
+    if [ "${s}" = "\"$1\"" ] || [ "${s}" = "${hex}" ]; then
+      wpa_cli select_network "${id}" >/dev/null
+      i=0; while [ $i -lt 20 ]; do
+        st=$(wpa_cli status 2>/dev/null | sed -n 's/^wpa_state=//p'); [ "${st}" = COMPLETED ] && break; sleep 1; i=$((i + 1)); done
+      [ "${st}" = COMPLETED ] || { echo "failed ${st}"; return 1; }
+      i=0; while [ ! -s "${RUN}/ip" ] && [ $i -lt 15 ]; do sleep 1; i=$((i + 1)); done
+      echo "connected $(cat "${RUN}/ip" 2>/dev/null)"; return 0
+    fi
+  done
+  echo "not saved"; return 1
+}
 wifi_forget() { wifi_forget_ids "$1"; wpa_cli save_config >/dev/null; wifi_save; echo forgotten; }
 
 time_sync() {
   unpack_pkg psc-net.tar.gz "${NET}" || return 1
   "${NET}/lib/psc-net/busybox" ntpd -n -q -p pool.ntp.org -p time.google.com >/dev/null 2>&1 &&
     { log "time: $(date -u '+%F %T') UTC"; echo "$(date -u '+%F %T')"; }
+}
+
+# ---- USB Ethernet: the adapter's interface (by driver: the console's own USB gadget
+# interface, if any, is not one of these), DHCP with the same script as Wi-Fi
+eth_if() {
+  for d in /sys/class/net/*; do
+    drv=$(basename "$(readlink "$d/device/driver" 2>/dev/null)" 2>/dev/null)
+    case " ${ETH_DRIVERS} " in *" ${drv} "*) basename "$d"; return 0 ;; esac
+  done; return 1
+}
+eth_on() {
+  unpack_pkg psc-net.tar.gz "${NET}"   # udhcpc script dir, ntpd
+  unpack_mod; load_set ${ETH_SET}
+  : > "${RUN}/eth.on"
+  i=0; while ! eth_if >/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  IF=$(eth_if) || { echo "noadapter"; return 0; }
+  ip link set "${IF}" up
+  resolv_on; dhcp_script
+  [ -f "${RUN}/eth-udhcpc.pid" ] && kill -0 "$(cat "${RUN}/eth-udhcpc.pid")" 2>/dev/null ||
+    udhcpc -b -i "${IF}" -s "${RUN}/udhcpc.sh" -p "${RUN}/eth-udhcpc.pid" -t 0 -T 3 -A 5 >/dev/null 2>&1
+  log "eth on (${IF})"; echo "on ${IF}"
+}
+eth_off() {
+  [ -f "${RUN}/eth-udhcpc.pid" ] && kill "$(cat "${RUN}/eth-udhcpc.pid")" 2>/dev/null
+  IF=$(eth_if) && { ip addr flush dev "${IF}"; ip link set "${IF}" down; }
+  rm -f "${RUN}/eth.on" "${RUN}/eth-udhcpc.pid"; log "eth off"; echo off
+}
+eth_status() {
+  IF=$(eth_if) || { echo "state=noadapter"; return 0; }
+  [ -f "${RUN}/eth.on" ] || { echo "state=off"; return 0; }
+  ip4=$(ip -4 addr show dev "${IF}" 2>/dev/null | sed -n 's/^ *inet \([0-9.]*\).*/\1/p' | head -1)
+  carrier=$(cat "/sys/class/net/${IF}/carrier" 2>/dev/null)
+  if [ -n "${ip4}" ]; then echo "state=connected"; elif [ "${carrier}" = 1 ]; then echo "state=connecting"; else echo "state=nocable"; fi
+  echo "ip=${ip4}"; echo "if=${IF}"
 }
 
 # ---- Bluetooth
@@ -232,13 +294,16 @@ bt_remove() { bt_ctl remove "$1" >/dev/null; bt_save; log "bt: removed $1"; echo
 case "$1 $2" in
   "caps "*) unpack_mod
             k=other; is_stock && k=stock
-            echo "wifi=$(cap_of mac80211) bt=$(cap_of bluetooth) kernel=$k" ;;
+            e=$(cap_of usbnet); [ "$e" = no ] && [ -d /sys/module/r8152 ] && e=yes
+            echo "wifi=$(cap_of mac80211) bt=$(cap_of bluetooth) eth=$e kernel=$k" ;;
   "wifi on") wifi_on ;;       "wifi off") wifi_off ;;
   "wifi status") wifi_status ;; "wifi scan") wifi_scan ;;
   "wifi connect") wifi_connect "$3" ;; "wifi forget") wifi_forget "$3" ;;
+  "wifi saved") wifi_saved ;;     "wifi select") wifi_select "$3" ;;
+  "eth on") eth_on ;;         "eth off") eth_off ;;       "eth status") eth_status ;;
   "bt on") bt_on ;;           "bt off") bt_off ;;         "bt status") bt_status ;;
   "bt scan") bt_scan "$3" ;;  "bt devices") bt_devices ;;
   "bt pair") bt_pair "$3" ;;  "bt remove") bt_remove "$3" ;;
   "time "*) time_sync ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

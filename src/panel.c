@@ -23,6 +23,8 @@
 #include "transfer.h"
 #include "audit.h"
 #include "stats.h"
+#include "net.h"
+#include "conn.h"
 #include "ui.h"
 
 /* ------------------------------------------------------------------------ */
@@ -36,8 +38,8 @@
 #define RAIL_X  70.0f
 #define RAIL_Y  172.0f
 #define RAIL_W  320.0f
-#define RAIL_H  52.0f
-#define RAIL_P  56.0f        /* rail pitch */
+#define RAIL_H  46.0f        /* nine sections fit between y 172 and 640 (settings-connections.html) */
+#define RAIL_P  50.0f        /* rail pitch */
 #define CARD_X  420.0f
 #define CARD_Y  108.0f
 #define CARD_W  776.0f
@@ -77,10 +79,10 @@ static void draw_label(const label_t *l, float x, float y, const float c[4])
 /* ------------------------------------------------------------------------ */
 /* state                                                                     */
 /* root rows are the pages in this order (page_input() relies on it) */
-enum { P_ROOT, P_LANGUAGE, P_PROFILE, P_SCREENSAVER, P_SOUND, P_DISPLAY, P_GRAPHICS, P_LIBRARY, P_ABOUT, P_COUNT };
+enum { P_ROOT, P_LANGUAGE, P_PROFILE, P_SCREENSAVER, P_SOUND, P_DISPLAY, P_GRAPHICS, P_LIBRARY, P_CONNECTIONS, P_ABOUT, P_COUNT };
 static const char *const k_page_key[P_COUNT] = {
    "panel.title", "section.language", "section.profile", "section.screensaver", "section.sound",
-   "section.display", "section.graphics", "section.library", "section.about"
+   "section.display", "section.graphics", "section.library", "section.connections", "section.about"
 };
 
 enum { R_ACTION, R_CHOICE, R_INFO };
@@ -88,7 +90,8 @@ enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_REN
        ID_PROFILE_AVATAR, ID_PROFILE_AVATAR_REMOVE,
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
        ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_SND_UI, ID_LIB_STOCK = 500, ID_LIB_TRANSFER, ID_LIB_AUDIT,
-       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_DSP_CRT, ID_INFO = 900 };
+       ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_DSP_CRT, ID_INFO = 900,
+       ID_NET_WIFI = 1000, ID_NET_WIFI_LIST, ID_NET_BT, ID_NET_BT_LIST, ID_NET_ETH, ID_NET_TIME };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
  * next boot (settings display / scanout). The compositor is not a choice: boot.sh runs
@@ -196,6 +199,16 @@ typedef const char *(*osk_accept_fn)(const char *text);  /* NULL = accepted, els
 #define OSK_H 340.0f
 #define OSK_MAX_CHARS 16
 #define OSK_MAX_BYTES 48
+#define OSK_TEXT_MAX  200         /* buffer; a Wi-Fi password is up to 63 characters */
+static int   s_osk_chars = OSK_MAX_CHARS, s_osk_bytes = OSK_MAX_BYTES;
+static int   s_osk_raw;           /* password: spaces kept, empty allowed to reach accept() */
+static int   s_sym;               /* the symbols layer (Shift cycles A -> a -> #+=) */
+static const char *const k_sym[40] = {
+   "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+   "!", "\"", "#", "$", "%", "&", "'", "(", ")", "*",
+   "+", ",", "/", ":", ";", "<", "=", ">", "?", "@",
+   "[", "\\", "]", "^", "`", "{", "|", "}", "~", "-",
+};
 static const char *const k_keys[40] = {
    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
@@ -206,9 +219,9 @@ static char        s_klower[40][4];
 enum { OK_SHIFT, OK_SPACE, OK_ERASE, OK_OK };
 static const int   k_act_col[4] = { 0, 2, 6, 8 }, k_act_span[4] = { 2, 4, 2, 2 };
 static const char *const k_act_key[4] = { "osk.shift", "osk.space", "osk.erase", "osk.ok" };
-static label_t     s_kup[40], s_klo[40], s_kact[4], s_ktitle, s_ktext;
+static label_t     s_kup[40], s_klo[40], s_ksym[40], s_kact[4], s_ktitle, s_ktext;
 static char        s_ktitle_txt[96];
-static char        s_text[OSK_MAX_BYTES + 4];
+static char        s_text[OSK_TEXT_MAX + 4];
 static int         s_orow, s_ocol, s_lower;
 static osk_accept_fn s_osk_accept;
 static spring      s_kx, s_ky, s_kw;
@@ -301,6 +314,8 @@ static void page_build(void)
       r = row_add(R_ACTION, P_GRAPHICS, tr("section.graphics"), NULL);
       if (r) r->enter = 1;
       r = row_add(R_ACTION, P_LIBRARY, tr("section.library"), NULL);
+      if (r) r->enter = 1;
+      r = row_add(R_ACTION, P_CONNECTIONS, tr("section.connections"), NULL);
       if (r) r->enter = 1;
       r = row_add(R_ACTION, P_ABOUT, tr("section.about"), NULL);
       if (r) r->enter = 1;
@@ -416,6 +431,45 @@ static void page_build(void)
       if ((r = row_add(R_ACTION, ID_LIB_AUDIT, tr("audit.title"), NULL))) r->enter = 1;
       if ((r = row_add(R_ACTION, ID_LIB_TRANSFER, tr("xfer.title"), NULL))) r->enter = 1;
       snprintf(s_foot, sizeof(s_foot), "%s", tr("lib.stock_note"));
+      break;
+   }
+   case P_CONNECTIONS:
+   {  /* lumen-design, settings-connections.html: a switch and a card per radio, the cable */
+      const net_state_t *ns = net_state();
+      char cnt[16], cnt2[16];
+      if ((r = row_add(R_CHOICE, ID_NET_WIFI, tr("net.wifi"), tr(ns->wifi_on ? "value.on" : "value.off"))))
+      {
+         r->at_lo = !ns->wifi_on; r->at_hi = ns->wifi_on;
+         if (ns->wifi_cap == NET_CAP_NO && !ns->wifi_on) { r->enabled = 0; r->dim = 1; r->why = "net.wifi_nokernel"; }
+      }
+      if ((r = row_add(R_ACTION, ID_NET_WIFI_LIST, tr("net.network"),
+                       ns->wifi == NET_CONNECTED ? ns->ssid : !ns->wifi_on ? "" : ns->wifi == NET_NOADAPTER ? tr("net.noadapter") :
+                       ns->wifi == NET_CONNECTING ? tr("net.connecting") : tr("net.notconnected"))))
+      {
+         r->enter = 1; r->check = ns->wifi == NET_CONNECTED;
+         if (!ns->wifi_on) { r->enabled = 0; r->dim = 1; r->why = "net.wifi_off"; }
+         else if (ns->wifi == NET_NOADAPTER) { r->enabled = 0; r->dim = 1; r->why = "net.wifi_noadapter"; }
+      }
+      if ((r = row_add(R_CHOICE, ID_NET_BT, tr("net.bt"), tr(ns->bt_on ? "value.on" : "value.off"))))
+      {
+         r->at_lo = !ns->bt_on; r->at_hi = ns->bt_on;
+         if (ns->bt_cap == NET_CAP_NO && !ns->bt_on) { r->enabled = 0; r->dim = 1; r->why = "net.bt_nokernel"; }
+      }
+      snprintf(cnt, sizeof(cnt), "%d", ns->paired); snprintf(cnt2, sizeof(cnt2), "%d", ns->connected);
+      if ((r = row_add(R_ACTION, ID_NET_BT_LIST, tr("net.controllers"),
+                       !ns->bt_on ? "" : ns->bt == NET_NOADAPTER ? tr("net.noadapter") :
+                       trf(v, sizeof(v), "net.paired_n", "n", cnt, "c", cnt2, NULL))))
+      {
+         r->enter = 1;
+         if (!ns->bt_on) { r->enabled = 0; r->dim = 1; r->why = "net.bt_off"; }
+         else if (ns->bt == NET_NOADAPTER) { r->enabled = 0; r->dim = 1; r->why = "net.bt_noadapter"; }
+      }
+      row_add(R_INFO, ID_NET_ETH, tr("net.cable"),
+              ns->eth == NET_CONNECTED ? ns->eth_ip : ns->eth == NET_CONNECTING ? tr("net.connecting") :
+              ns->eth == NET_NOCABLE ? tr("net.nocable") : tr("net.noadapter"));
+      if ((r = row_add(R_CHOICE, ID_NET_TIME, tr("net.time"), tr(ns->time_on ? "value.on" : "value.off"))))
+      { r->at_lo = !ns->time_on; r->at_hi = ns->time_on; }
+      snprintf(s_foot, sizeof(s_foot), "%s", tr("net.note"));
       break;
    }
    case P_ABOUT:
@@ -656,6 +710,8 @@ static void row_action(const row_t *r)
    {
       audit_open();
    }
+   else if (r->id == ID_NET_WIFI_LIST) conn_open_wifi();
+   else if (r->id == ID_NET_BT_LIST) conn_open_bt();
    else if (r->id == ID_LIB_TRANSFER)
    {
       transfer_open();   /* a toast when no second drive is plugged in */
@@ -716,6 +772,9 @@ static void row_change(const row_t *r, int dir)
    case ID_DSP_SCANOUT:
       settings_set_int("scanout", dir > 0);
       break;
+   case ID_NET_WIFI: net_wifi_set(dir > 0); break;
+   case ID_NET_BT:   net_bt_set(dir > 0); break;
+   case ID_NET_TIME: net_time_set(dir > 0); break;
    case ID_DSP_CRT:
       i = crt_level() + dir;
       if (i >= CRT_OFF && i < CRT_LEVELS) { settings_set("crt", crt_id(i)); logf_("panel: crt %s", crt_id(i)); }
@@ -842,7 +901,9 @@ static void osk_open(const char *title_key, const char *initial, osk_accept_fn a
    {
       label_set(&s_kup[k], g_font_sub, k_keys[k]);
       if (strcmp(s_klower[k], k_keys[k])) label_set(&s_klo[k], g_font_sub, s_klower[k]);
+      label_set(&s_ksym[k], g_font_sub, k_sym[k]);
    }
+   s_osk_chars = OSK_MAX_CHARS; s_osk_bytes = OSK_MAX_BYTES; s_osk_raw = 0; s_sym = 0;
    for (k = 0; k < 4; k++) label_set(&s_kact[k], g_font_small, tr(k_act_key[k]));
    snprintf(s_ktitle_txt, sizeof(s_ktitle_txt), "%s", tr(title_key));
    snprintf(s_text, sizeof(s_text), "%s", initial ? initial : "");
@@ -857,7 +918,7 @@ static void osk_open(const char *title_key, const char *initial, osk_accept_fn a
 static void osk_free(void)
 {
    int k;
-   for (k = 0; k < 40; k++) { label_free(&s_kup[k]); label_free(&s_klo[k]); }
+   for (k = 0; k < 40; k++) { label_free(&s_kup[k]); label_free(&s_klo[k]); label_free(&s_ksym[k]); }
    for (k = 0; k < 4; k++) label_free(&s_kact[k]);
    label_free(&s_ktitle); label_free(&s_ktext);
 }
@@ -866,9 +927,9 @@ static void osk_type(const char *s)
 {
    size_t len = strlen(s_text), add = strlen(s);
    int was_empty = len == 0;
-   if (utf8_chars(s_text) >= OSK_MAX_CHARS || len + add > OSK_MAX_BYTES) return;
+   if (utf8_chars(s_text) >= s_osk_chars || len + add > (size_t)s_osk_bytes) return;
    memcpy(s_text + len, s, add + 1);
-   if (was_empty && !s_lower && strcmp(s, " ")) s_lower = 1;   /* first letter upper case, then lower */
+   if (was_empty && !s_lower && !s_sym && !s_osk_raw && strcmp(s, " ")) s_lower = 1;   /* first letter upper case, then lower */
 }
 
 /* accent layer: L1 / R1 cycle the last typed letter through its accented forms
@@ -900,7 +961,7 @@ static void osk_accent(int dir)
    lo = found & 1;
    if (!strcmp(k_accents[fg][found & ~1], k_accents[fg][(found & ~1) + 1])) lo = s_lower;   /* ß */
    i = ((found / 2 + dir + n / 2) % (n / 2)) * 2 + lo;
-   if (start + strlen(k_accents[fg][i]) > OSK_MAX_BYTES) return;
+   if (start + strlen(k_accents[fg][i]) > (size_t)s_osk_bytes) return;
    snprintf(s_text + start, sizeof(s_text) - start, "%s", k_accents[fg][i]);
 }
 
@@ -915,9 +976,16 @@ static void osk_erase(void)
 
 static void osk_ok(void)
 {
-   char name[OSK_MAX_BYTES + 4];
+   char name[OSK_TEXT_MAX + 4];
    const char *b = s_text, *err;
    size_t n;
+   if (s_osk_raw)
+   {  /* a password: exactly as typed; accept() judges it */
+      err = s_osk_accept ? s_osk_accept(s_text) : NULL;
+      if (err) { panel_toast(err); return; }
+      s_modal = M_NONE;
+      return;
+   }
    while (*b == ' ') b++;
    snprintf(name, sizeof(name), "%s", b);
    n = strlen(name);
@@ -951,11 +1019,15 @@ static void osk_input(const ui_nav_t *nav)
       if (s_orow < 4)
       {
          int k = s_orow * 10 + s_ocol;
-         osk_type(s_lower ? s_klower[k] : k_keys[k]);
+         osk_type(s_sym ? k_sym[k] : s_lower ? s_klower[k] : k_keys[k]);
       }
       else switch (osk_act_of_col(s_ocol))
       {
-      case OK_SHIFT: s_lower = !s_lower; break;
+      case OK_SHIFT:   /* A -> a -> #+= -> A */
+         if (s_sym) { s_sym = 0; s_lower = 0; }
+         else if (s_lower) { s_sym = 1; s_lower = 0; }
+         else s_lower = 1;
+         break;
       case OK_SPACE: osk_type(" "); break;
       case OK_ERASE: osk_erase(); break;
       case OK_OK:    osk_ok(); break;
@@ -993,8 +1065,8 @@ static void osk_draw(double t, float a)
          const int primary = r == 4 && k == OK_OK;
          osk_key_rect(r, k, &x, &y, &w);
          if (primary) ui_fill(mx(x), my(y), w, 36, 10, white, a);
-         else ui_fill(mx(x), my(y), w, 36, 10, white, ((r == 4 && k == OK_SHIFT && !s_lower) ? UI_SELECTED : UI_REST) * a);
-         if (r < 4) l = (s_lower && s_klo[r * 10 + k].tex) ? &s_klo[r * 10 + k] : &s_kup[r * 10 + k];
+         else ui_fill(mx(x), my(y), w, 36, 10, white, ((r == 4 && k == OK_SHIFT && (!s_lower || s_sym)) ? UI_SELECTED : UI_REST) * a);
+         if (r < 4) l = s_sym ? &s_ksym[r * 10 + k] : (s_lower && s_klo[r * 10 + k].tex) ? &s_klo[r * 10 + k] : &s_kup[r * 10 + k];
          else l = &s_kact[k];
          col(c, C_TXT, a);
          m_label(l, x + (w - l->w) * 0.5f, y + (36 - l->h) * 0.5f, primary ? ink : c);
@@ -1080,6 +1152,27 @@ void panel_init(void)
       theme_color(TC_ACCENT, C_ACC); theme_color(TC_DANGER, C_RED);
    }
 }
+
+/* the keyboard or a question for a card over the panel (conn.c): the card steps aside
+ * (closes) and calls this; the panel, open underneath, owns the input until the modal
+ * closes, and the card comes back when panel_modal_open() is 0 again */
+void panel_keyboard(const char *title_text, int max_chars, int password, const char *(*accept)(const char *))
+{
+   if (!s_open || s_modal != M_NONE) return;
+   osk_open("panel.title", "", accept);
+   snprintf(s_ktitle_txt, sizeof(s_ktitle_txt), "%s", title_text);
+   s_osk_chars = max_chars > 0 ? max_chars : OSK_MAX_CHARS;
+   s_osk_bytes = s_osk_chars * 2 < OSK_TEXT_MAX ? s_osk_chars * 2 : OSK_TEXT_MAX;
+   s_osk_raw = password;
+   s_lower = password;   /* a password starts in lower case */
+}
+void panel_confirm(const char *message, const char *yes_key, void (*on_yes)(void))
+{
+   if (!s_open || s_modal != M_NONE) return;
+   confirm_open_ex(message, NULL, yes_key, on_yes);
+}
+int panel_modal_open(void) { return s_open && s_modal != M_NONE; }
+int panel_connections_page(void) { return s_open && s_page == P_CONNECTIONS; }
 
 /* the on-screen keyboard alone, over the dashboard (game menu: New folder) */
 void panel_osk(const char *title_key, const char *initial, const char *(*accept)(const char *))
@@ -1220,10 +1313,10 @@ void panel_draw(double t)
 {
    /* the section rises 0..34 px into place while it fades in; a modal or the file picker
     * over it takes the stage: the section fades out under them */
-   const float m = clampf(s_mod.x, 0.0f, 1.0f), fp = fmaxf(filepicker_amount(), fmaxf(transfer_amount(), audit_amount())), over = m > fp ? m : fp;
+   const float m = clampf(s_mod.x, 0.0f, 1.0f), fp = fmaxf(fmaxf(filepicker_amount(), conn_amount()), fmaxf(transfer_amount(), audit_amount())), over = m > fp ? m : fp;
    float a = panel_amount() * (1.0f - over), rise = s_slide.x * 0.06f;
    float ca, cx, cy = CARD_Y + rise, top, bottom, c[4], f[4];
-   char buf[200], num[24];
+   char buf[200], num[80];
    int i;
    if (s_slide.x > SLIDE_OFF - 10.0f && panel_amount() < 0.003f && s_modal_drawn == M_NONE) return;
    gl_use_2d();
@@ -1258,6 +1351,20 @@ void panel_draw(double t)
          kick = tr("section.profile"); title = profiles_display_name(profiles_active());
          snprintf(num, sizeof(num), "%d", played);
          cap = trf(buf, sizeof(buf), played == 1 ? "dash.profile_games_one" : "dash.profile_games", "n", num, NULL);
+      }
+      if (s_page == P_CONNECTIONS)
+      {  /* the connection's face: online / offline / unavailable, then where and the clock */
+         const net_state_t *ns = net_state();
+         const int wifi = ns->wifi == NET_CONNECTED, eth = ns->eth == NET_CONNECTED;
+         size_t o = 0;
+         kick = tr("section.connections");
+         title = tr(wifi || eth ? "net.online" : (ns->wifi_cap == NET_CAP_NO && ns->eth_cap == NET_CAP_NO) ? "net.unavailable" : "net.offline");
+         buf[0] = 0;
+         if (eth) o += (size_t)snprintf(buf + o, sizeof(buf) - o, "%s  \xC2\xB7  %s", tr("net.cable"), ns->eth_ip);
+         else if (wifi) o += (size_t)snprintf(buf + o, sizeof(buf) - o, "%s  \xC2\xB7  %s", ns->ssid, ns->ip);
+         if (ns->time_ok && o < sizeof(buf)) o += (size_t)snprintf(buf + o, sizeof(buf) - o, "%s%s", o ? "  \xC2\xB7  " : "",
+                                                                   trf(num, sizeof(num), "net.time_set", "t", ns->time_text + 11, NULL));
+         cap = buf;
       }
       ui_kicker(&s_kick, kick, hx, cy + 28, ca);
       label_set(&s_ptitle, g_font_title, title);
