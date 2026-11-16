@@ -1607,7 +1607,7 @@ static void draw_dialog(const char *title, const char *l1, const char *l2, const
    label_set(&s_st, g_font_medium, ui_fit(g_font_medium, title, w - 64, buf, sizeof(buf)));
    draw_label(&s_st, x + 32, y + 28, txt);
    if (!l1) { l1 = l2; l2 = NULL; }
-   label_set(&s_l1, g_font_small, l1 ? ui_fit(g_font_small, l1, w - 64, buf, sizeof(buf)) : "");
+   label_set(&s_l1, g_font_small, l1 ? fit_path(g_font_small, l1, w - 64, buf, sizeof(buf)) : "");
    draw_label(&s_l1, x + 32, y + 66, dim);
    label_set(&s_l2, g_font_small, l2 ? ui_fit(g_font_small, l2, w - 64, buf, sizeof(buf)) : "");
    draw_label(&s_l2, x + 32, y + 92, dim);
@@ -1675,6 +1675,9 @@ static void draw_menu(float a)
    snprintf(num, sizeof(num), "%d", s_nsel);
    label_set(&s_l2, g_font_sub, s_nsel == 1 ? tr("xfer.del_one") : trf(buf, sizeof(buf), "xfer.del_n", "n", num, NULL));
    draw_label(&s_l2, lx + 20, ly + ROW + (ROW - s_l2.h) * 0.5f, red);
+   /* from which drive, as the row's value: "Delete 3 items" alone does not say */
+   label_set(&s_l3, g_font_sub, side_name(pn->side));
+   draw_label(&s_l3, lx + lw - 20 - s_l3.w, ly + ROW + (ROW - s_l3.h) * 0.5f, dim);
    label_set(&s_l1, g_font_small, fit_path(g_font_small, pn->path_txt, w - 2 * PADX, buf, sizeof(buf)));
    draw_label(&s_l1, x + PADX, y + h - 20 - s_l1.h, dim);
 }
@@ -1682,17 +1685,19 @@ static void draw_menu(float a)
 static void draw_delq(float a)
 {
    const pane_t *pn = &s_pane[s_act];
-   char title[300], num[16];
-   const char *one = NULL;
+   char title[300], num[16], where[820];
    int i;
    snprintf(num, sizeof(num), "%d", s_nsel);
+   snprintf(where, sizeof(where), "%s", pn->path_txt);
    if (s_nsel == 1)
-   {  /* one entry: its name goes on the second line */
-      for (i = 0; i < pn->n; i++) if (pn->nmark ? pn->ent[i].mark : i == pn->sel) { one = pn->ent[i].name; break; }
+   {  /* one entry: the line under the question ends in its name */
+      for (i = 0; i < pn->n; i++)
+         if (pn->nmark ? pn->ent[i].mark : i == pn->sel)
+         { snprintf(where, sizeof(where), "%s  /  %s", pn->path_txt, pn->ent[i].name); break; }
       trf(title, sizeof(title), "xfer.del_q_one", "drive", side_name(pn->side), NULL);
    }
    else trf(title, sizeof(title), "xfer.del_q", "n", num, "drive", side_name(pn->side), NULL);
-   draw_dialog(title, one, tr("xfer.del_note"), tr("confirm.cancel"), tr("confirm.delete"), 0, 1, a);
+   draw_dialog(title, where, tr("xfer.del_note"), tr("confirm.cancel"), tr("confirm.delete"), 0, 1, a);
 }
 
 static void draw_offer(double t)
