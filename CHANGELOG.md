@@ -28,8 +28,9 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   that points to a missing file (or writes its name with other capitals on a
   case-sensitive stick), empty files, a `.bin` without its `.cue`, an empty game folder, a
   system whose core is missing, a homebrew app without `app.ini` or its program, an
-  unfinished copy, and an `.sbi` that is not named like its disc. Discs listed in an
-  optional `systems/<id>.protected` are reported when their `.sbi` is missing. Each
+  unfinished copy, an `.sbi` that is not named like its disc, and a LibCrypt-protected
+  disc without its `.sbi`: the serial is read from the image (`SYSTEM.CNF`) and looked up
+  in `systems/psx.protected` (197 serials, from PSX Data Center's SBI list). Each
   problem shows the file and the folder. Read-only; the scan runs on its own thread.
 - `LUMEN_USB2=<folder>` makes a folder play the second drive (psc-sim) and
   `LUMEN_USB2_KBPS=<n>` slows the copy down, to test the flow without hardware.
