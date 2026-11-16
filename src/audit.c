@@ -231,6 +231,92 @@ static void check_content(const asys_t *sy, const char *label, const char *dir, 
    }
 }
 
+/* "SLES_012.34", "sles-01234" -> "SLES01234" */
+static void serial_norm(char *out, size_t n, const char *s)
+{
+   size_t o = 0;
+   for (; *s && o + 1 < n; s++) if (isalnum((unsigned char)*s)) out[o++] = (char)toupper((unsigned char)*s);
+   out[o] = 0;
+}
+
+static int is_protected(const char *serial)
+{
+   char k[20];
+   int i;
+   serial_norm(k, sizeof(k), serial);
+   for (i = 0; k[0] && i < w_nprot; i++) if (!strcmp(w_prot[i], k)) return 1;
+   return 0;
+}
+
+/* The serial a PlayStation disc image carries: the BOOT line of SYSTEM.CNF
+ * ("BOOT = cdrom:\\SLES_012.34;1"), found through the ISO 9660 root folder. Works on raw
+ * images (2352-byte sectors, .bin / .img) and plain ones (2048, .iso); a compressed image
+ * (.chd, .pbp) cannot be read this way. out = "" when it is not found. */
+static void image_serial(const char *path, char *out, size_t n)
+{
+   static const unsigned char sync[12] = { 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0 };
+   unsigned char sec[2048], head[16];
+   FILE *f = fopen(path, "rb");
+   long long ssz = 2048, off = 0;
+   unsigned long lba, len, pos, cnf = 0;
+   int k;
+   out[0] = 0;
+   if (!f) return;
+   if (fread(head, 1, 16, f) == 16 && !memcmp(head, sync, 12)) { ssz = 2352; off = head[15] == 2 ? 24 : 16; }
+#define RD(l) (fseeko(f, (off_t)((long long)(l) * ssz + off), SEEK_SET) == 0 && fread(sec, 1, 2048, f) == 2048)
+   if (!RD(16) || memcmp(sec + 1, "CD001", 5)) { fclose(f); return; }
+   lba = sec[158] | sec[159] << 8 | sec[160] << 16 | (unsigned long)sec[161] << 24;
+   len = sec[166] | sec[167] << 8 | sec[168] << 16 | (unsigned long)sec[169] << 24;
+   for (k = 0; k < 8 && (unsigned long)k * 2048 < len && !cnf; k++)
+   {
+      if (!RD(lba + (unsigned long)k)) break;
+      for (pos = 0; pos + 34 < 2048 && sec[pos]; pos += sec[pos])
+         if (sec[pos + 32] >= 10 && !strncasecmp((const char *)sec + pos + 33, "SYSTEM.CNF", 10))
+         { cnf = sec[pos + 2] | sec[pos + 3] << 8 | sec[pos + 4] << 16 | (unsigned long)sec[pos + 5] << 24; break; }
+   }
+   if (cnf && RD(cnf))
+   {
+      char *b, *e;
+      sec[2047] = 0;
+      if ((b = strcasestr((char *)sec, "cdrom")))
+      {
+         b += 5;
+         while (*b == ':' || *b == '\\' || *b == '/' || (*b >= '0' && *b <= '9' && b[1] == ':')) b++;
+         for (e = b; *e && *e != ';' && *e != '\r' && *e != '\n' && *e != ' '; ) e++;
+         *e = 0;
+         if ((e = strrchr(b, '\\'))) b = e + 1;   /* cdrom:\DIR\SLES_012.34 */
+         serial_norm(out, n, b);
+      }
+   }
+#undef RD
+   fclose(f);
+}
+
+/* a protected disc (in <id>.protected) needs <stem>.sbi next to it; stem = the disc's
+ * name without extension, which is what the core looks for */
+static void check_sbi(const asys_t *sy, const char *label, const char *dir, const char *content)
+{
+   static char cue[8 * 1024];
+   char stem[NAME_LEN], name[NAME_LEN + 8], path[PATH_LEN], serial[20] = "", *dot, *p, *a, *b;
+   const char *x = ext_of(content);
+   if (!w_nprot) return;
+   snprintf(stem, sizeof(stem), "%s", content);
+   if ((dot = strrchr(stem, '.'))) *dot = 0;
+   path[0] = 0;
+   if (!strcasecmp(x, "cue"))
+   {  /* the image is the first FILE of the .cue */
+      read_text(dir, content, cue, sizeof(cue));
+      if ((p = strcasestr(cue, "\nFILE")) && (a = strchr(p, '"')) && (b = strchr(a + 1, '"')) && b - a < NAME_LEN)
+         snprintf(path, sizeof(path), "%s/%.*s", dir, (int)(b - a - 1), a + 1);
+   }
+   else if (!strcasecmp(x, "bin") || !strcasecmp(x, "img") || !strcasecmp(x, "iso")) snprintf(path, sizeof(path), "%s/%s", dir, content);
+   if (path[0]) image_serial(path, serial, sizeof(serial));
+   /* no serial in the image (compressed, or the image is missing): the name may say it */
+   if (!is_protected(serial) && !is_protected(stem)) return;
+   snprintf(name, sizeof(name), "%s.sbi", stem);
+   if (list_find(name, 1) < 0) issue(K_SBI, sy, label, name, dir);
+}
+
 static void leftovers(const asys_t *sy, const char *label, const char *dir)
 {
    int i;
@@ -282,13 +368,7 @@ static void audit_psc(const asys_t *sy, const char *dir)
          }
          if (found < 0) { snprintf(name, sizeof(name), "%s.%s", tok, first_ext); issue(K_NODISC, sy, title, name, gdir); continue; }
          check_content(sy, title, gdir, w_list[found]);
-         /* a protected disc (listed in <id>.protected) needs its subchannel file */
-         for (k = 0; k < w_nprot; k++)
-            if (!strcasecmp(w_prot[k], tok))
-            {
-               snprintf(name, sizeof(name), "%s.sbi", tok);
-               if (list_find(name, 1) < 0) issue(K_SBI, sy, title, name, gdir);
-            }
+         check_sbi(sy, title, gdir, w_list[found]);
       }
       for (i = 0; i < w_nlist; i++)
       {  /* an .sbi the core will not find: it must be named like its disc */
@@ -314,6 +394,7 @@ static void audit_files(const asys_t *sy, const char *dir)
       if (names[i][0] == '.' || !ext_in(names[i], sy->exts) || is_dir(dir, names[i])) continue;
       s_games++;
       check_content(sy, names[i], dir, names[i]);
+      check_sbi(sy, names[i], dir, names[i]);
    }
    for (i = 0; cues && i < n; i++)
    {  /* a disc image nobody points to: its .cue is missing, so the game is not listed */
@@ -437,7 +518,7 @@ static int worker_main(void *arg)
       {
          char line[64];
          while (fgets(line, sizeof(line), f) && w_nprot < 512)
-         { char *s = trim(line); if (*s && *s != '#') snprintf(w_prot[w_nprot++], sizeof(w_prot[0]), "%s", s); }
+         { char *s = trim(line); if (*s && *s != '#') serial_norm(w_prot[w_nprot++], sizeof(w_prot[0]), s); }
          fclose(f);
       }
       snprintf(paths, sizeof(paths), "%s", sy->paths);

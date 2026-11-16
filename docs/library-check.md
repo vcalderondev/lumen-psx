@@ -21,7 +21,7 @@ console's and are not checked.
 | The file is empty | all | 0 bytes: a copy that never finished |
 | Disc image without its `.cue` | files | a `.bin` / `.img` no `.cue` or `.m3u` of the folder points to (systems whose `extensions` include `cue`) |
 | The `.m3u` list points to a file that is not there | psc, files | a line of the playlist |
-| Protected game without its `.sbi` | psc | the disc is in `<home>/systems/<id>.protected` and `<disc>.sbi` is missing (below) |
+| Protected game without its `.sbi` | psc, files | the disc's serial is in `<home>/systems/<id>.protected` and `<disc>.sbi` is missing (below) |
 | The `.sbi` is not named like the disc | psc | the core looks for `<disc>.sbi`: any other name is ignored |
 | Empty game folder | psc, apps | |
 | The system's core is missing | psc, files | `<home>/cores/<core>` of a system that has games |
@@ -34,7 +34,12 @@ folder; the pane on the right gives the file and the folder.
 ## Copy-protected discs: `<id>.protected`
 
 Some PAL PlayStation discs (LibCrypt) only work with their subchannel file, `<disc>.sbi`,
-next to the image. The frontend cannot tell from an image whether a disc is protected, so
-the check takes it from an optional list, `<home>/systems/<id>.protected`: one disc name
-per line as written in `Discs=` (e.g. `SLES-01234`), `#` for comments. No list ships yet;
-without it only a misnamed `.sbi` is reported.
+next to the image, named like the disc (`Discs=juego` -> `juego.sbi`). Which discs are
+protected comes from `<home>/systems/<id>.protected`: one serial per line (`SLES-02080`),
+`#` for comments. `psx.protected` ships with the 197 serials of PSX Data Center's SBI list.
+
+The disc's serial is read from the image itself, so the file names do not matter: the
+`BOOT` line of `SYSTEM.CNF`, found through the ISO 9660 root folder of the first `FILE`
+of the `.cue` (raw 2352-byte images and plain 2048-byte ones). A compressed image
+(`.chd`, `.pbp`) cannot be read this way: there the disc's name is compared with the list,
+so it is only caught when the file is named after its serial.
