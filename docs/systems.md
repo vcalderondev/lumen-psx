@@ -182,11 +182,15 @@ declaration) gets the generic launch on the same field: nothing is assumed about
 hardware, the game's cover is the object. It floats as a card, turns once and grows into
 the frame.
 
-**A native port** (above) is not put into a machine, since nothing is emulated: the
-cover drops in as a card and, where a medium would seat, switches itself on: its frame
-lights with a white edge, two rings leave it, the "Native port" chip shows, with the small
-snap of the handhelds; then it grows into the frame. It does not turn (that is the generic
-launch). The kicker reads "<system> · Native port".
+**A native port** (above) runs on its system's machine, energized:
+`<home>/assets/launch/<flat>-native/` (shipped: `psx-native`), an illustration with
+`fx = energy` and four more layers (`aura`, `trace`, `bolt`, `bolt2`). The medium goes in as
+always; then the machine charges up: energy runs along its edges and seams, an aura builds
+behind it, arcs flicker off it in turn, it shakes harder and harder, crouches and rises on
+a shockwave, and the energy floods the frame from the lid in flat rings of cyan. 3.4 s
+instead of 2.7. The kicker reads "<system> · Native port". A system without a `-native`
+illustration shows its ports as the cover, a card that switches itself on (a white edge,
+two rings, the chip) and grows into the frame.
 
 Before 0.15 the launch was drawn in 3D (jewel and keep cases, cartridges and consoles as
 models). The keys of that renderer are ignored now: `[media] shape`, `aspect`, `color`,
@@ -215,7 +219,7 @@ in the layout of a homebrew app (below):
   no core; `run.sh` starts the program from its folder (`LUMEN_APP_DIR`), RESET or OPEN
   quit it. The system's graphics levels and the CRT filter are not applied (there is no
   core to configure), and a port is never picked as an attract-mode demo.
-- Its launch is its own (see "The launch"): the system's machine is not shown.
+- Its launch is its own (see "The launch"): the system's machine, energized.
 - The same game can be on the stick twice, emulated (`games/psx/`) and as a port: they are
   two entries; the chip tells them apart.
 
