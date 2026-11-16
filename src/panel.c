@@ -25,6 +25,7 @@
 #include "stats.h"
 #include "net.h"
 #include "conn.h"
+#include "kern.h"
 #include "ui.h"
 
 /* ------------------------------------------------------------------------ */
@@ -91,7 +92,7 @@ enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_REN
        ID_SS_AFTER = 300, ID_SS_DEMOS, ID_SS_LENGTH, ID_SS_PREVIEW, ID_GFX = 400,
        ID_SND_MUSIC = 600, ID_SND_VOLUME, ID_SND_UI, ID_LIB_STOCK = 500, ID_LIB_TRANSFER, ID_LIB_AUDIT,
        ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_DSP_CRT, ID_INFO = 900,
-       ID_NET_WIFI = 1000, ID_NET_WIFI_LIST, ID_NET_BT, ID_NET_BT_LIST, ID_NET_ETH, ID_NET_TIME };
+       ID_NET_WIFI = 1000, ID_NET_WIFI_LIST, ID_NET_BT, ID_NET_BT_LIST, ID_NET_ETH, ID_NET_TIME, ID_KERNEL = 1100 };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
  * next boot (settings display / scanout). The compositor is not a choice: boot.sh runs
@@ -474,6 +475,8 @@ static void page_build(void)
    }
    case P_ABOUT:
       row_add(R_INFO, ID_INFO, tr("about.version"), LUMEN_VERSION);
+      if (*kern_name_key() && (r = row_add(R_ACTION, ID_KERNEL, tr("about.kernel"), tr(kern_name_key()))))
+         r->enter = 1;   /* not Sony's stock kernel, or a backup to go back to: kern.c */
       snprintf(num, sizeof(num), "%d", g_ngames);
       row_add(R_INFO, ID_INFO, tr("about.games"), num);
       snprintf(num, sizeof(num), "%d", g_nplat);
@@ -710,6 +713,7 @@ static void row_action(const row_t *r)
    {
       audit_open();
    }
+   else if (r->id == ID_KERNEL) kern_open();
    else if (r->id == ID_NET_WIFI_LIST) conn_open_wifi();
    else if (r->id == ID_NET_BT_LIST) conn_open_bt();
    else if (r->id == ID_LIB_TRANSFER)
@@ -1313,7 +1317,7 @@ void panel_draw(double t)
 {
    /* the section rises 0..34 px into place while it fades in; a modal or the file picker
     * over it takes the stage: the section fades out under them */
-   const float m = clampf(s_mod.x, 0.0f, 1.0f), fp = fmaxf(fmaxf(filepicker_amount(), conn_amount()), fmaxf(transfer_amount(), audit_amount())), over = m > fp ? m : fp;
+   const float m = clampf(s_mod.x, 0.0f, 1.0f), fp = fmaxf(fmaxf(fmaxf(filepicker_amount(), conn_amount()), kern_amount()), fmaxf(transfer_amount(), audit_amount())), over = m > fp ? m : fp;
    float a = panel_amount() * (1.0f - over), rise = s_slide.x * 0.06f;
    float ca, cx, cy = CARD_Y + rise, top, bottom, c[4], f[4];
    char buf[200], num[80];

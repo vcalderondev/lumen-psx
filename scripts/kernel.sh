@@ -9,7 +9,8 @@
 #                            intact by every console for recovery) -> BOOTIMG1
 #   kernel.sh restore-backup <file>   write a backup made by restore-stock back to BOOTIMG1
 #
-# Progress on stdout, one line per step: "step backup|write|verify", then "ok <file>" or
+# Progress on stdout, one line per step: "step backup|write|verify" ("backup <file>" once the
+# copy is verified), then "ok <file>" or
 # "error <code>" (and exit 1). Codes: boot2 (BOOTIMG2 is not Sony's), same (nothing to do),
 # space, backup (the copy on the stick did not verify), image (a backup file is not a
 # kernel partition), write (written but did not verify: the backup was written back and
@@ -82,12 +83,15 @@ check_image() {
 
 install_image() {  # image md5 what
   img=$1; want=$2
+  # POWER waits while this exists (power.sh suspend); gone however this script ends
+  : > /tmp/lumen-kernel-writing; trap 'rm -f /tmp/lumen-kernel-writing' EXIT INT TERM
   [ "$(md5_part "${BOOT1}")" = "${want}" ] && fail same "BOOTIMG1 already is ${3}"
   avail=$(df -k "${LUMEN_HOME}" 2>/dev/null | awk 'NR == 2 {print $4}')
   [ -n "${avail}" ] && [ "${avail}" -lt 20480 ] && fail space "${avail} KiB free on the stick"
   echo "step backup"
   bk=$(backup_boot1) || fail backup "the copy of BOOTIMG1 did not verify"
   log "backup ${bk} ($(md5_of "${bk}"))"
+  echo "backup ${bk}"   # reported at once: if anything after fails, this file saves the console
   echo "step write"
   log "writing ${3} (${want}) to BOOTIMG1"
   if write_verify "${img}" "${want}"; then

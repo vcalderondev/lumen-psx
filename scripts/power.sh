@@ -70,6 +70,10 @@ suspend)
   # and the automatic state on quit) and the frontend, stop the compositor; run.sh waits
   # for /tmp/lumen-suspending to go and starts the frontend again
   say "=== suspend (POWER)"
+  # a kernel being written to the internal memory (kernel.sh): it must finish first,
+  # Sony's power manager waits for our answer (at most 30 s; the write takes about one)
+  i=0; while [ -f /tmp/lumen-kernel-writing ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+  [ $i -gt 0 ] && say "suspend: waited $((i / 10)) s for the kernel write"
   say "suspend: closing the session"
   : > /tmp/lumen-suspending
   if pidof retroarch >/dev/null 2>&1; then

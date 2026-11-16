@@ -53,6 +53,7 @@
 #include "audit.h"
 #include "net.h"
 #include "conn.h"
+#include "kern.h"
 #include "ui.h"
 #include "theme.h"
 #include "crt.h"
@@ -2452,6 +2453,11 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "square" },   "btn.square",       "hint.search" },
       { { "triangle" }, "btn.triangle",     "hint.forget" },
       { { "circle" },   "btn.circle",       "hint.back" } },
+   [HINTS_KERNEL] = {         /* Settings, About, Kernel (kern.h) */
+      { { "dpad" },     "btn.dpad",         "hint.move" },
+      { { "cross" },    "btn.cross",        "hint.select" },
+      { { "circle" },   "btn.circle",       "hint.cancel" } },
+   [HINTS_KERNEL_BUSY] = { { { NULL }, NULL, NULL } },   /* writing: nothing may interrupt it */
    [HINTS_BT] = {             /* Connections, Bluetooth controllers (conn.h) */
       { { "dpad" },     "btn.dpad",         "hint.move" },
       { { "cross" },    "btn.cross",        "hint.pair" },
@@ -4353,6 +4359,7 @@ int main(int argc, char **argv)
    boot_mark("resume");
    panel_init();
    net_init();   /* after settings: Wi-Fi / Bluetooth / USB Ethernet as they were left */
+   kern_init();  /* which kernel runs (Settings, About) */
    boot_mark("panel");
    transfer_init();
    boot_mark("transfer");
@@ -4435,7 +4442,7 @@ int main(int argc, char **argv)
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
-         attract_update(t, dt, !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
+         attract_update(t, dt, !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !kern_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
          att_swallow = was || attract_active() || att.amount > 0.02f;
          if (att_swallow) g_want_settings = 0;
       }
@@ -4468,7 +4475,7 @@ int main(int argc, char **argv)
       {  /* focus: games <-> system tabs <-> profile with Up / Down. Away from the games,
           * Left / Right change the system (tabs), Cross goes back to the games (tabs) or
           * opens the profile settings (profile), Circle returns to the games */
-         const int free_ = !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !gamemenu_active() && !welcome_active() &&
+         const int free_ = !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !kern_active() && !gamemenu_active() && !welcome_active() &&
                            !att_swallow && play_t < 0;
          open_profile = 0;
          if (attract_active() || play_t >= 0 || !g_nplat) g_focus = FOCUS_GAMES;
@@ -4534,6 +4541,14 @@ int main(int argc, char **argv)
          if (!cn_open || att_swallow || fp_open) memset(&cn, 0, sizeof(cn));
          conn_update(&cn, t, dt);
          if (cn_open || conn_open_now())
+         { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
+      }
+      {  /* kernel card: over the panel; owns the input while open (kern.h) */
+         ui_nav_t kn = fnav;
+         const int kn_open = kern_open_now();
+         if (!kn_open || att_swallow || fp_open) memset(&kn, 0, sizeof(kn));
+         kern_update(&kn, t, dt);
+         if (kn_open || kern_open_now())
          { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
       }
       {  /* settings panel: owns the input while open or closing (6.3) */
@@ -4834,6 +4849,7 @@ int main(int argc, char **argv)
                           transfer_open_now() ? transfer_hint_set() :
                           audit_open_now() ? HINTS_AUDIT :
                           conn_open_now() ? conn_hint_set() :
+                          kern_open_now() ? kern_hint_set() :
                           panel_active() ? panel_hint_set() :
                           gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
                           (attract_active() ? HINTS_ATTRACT : g_focus == FOCUS_TABS ? HINTS_DASH_TABS :
@@ -4877,6 +4893,12 @@ int main(int argc, char **argv)
             {
                glUseProgram(g_prog_2d);
                hints_draw(conn_hint_set(), 672, conn_amount() * (1 - fade));
+            }
+            kern_draw(t);
+            if (kern_open_now())
+            {
+               glUseProgram(g_prog_2d);
+               hints_draw(kern_hint_set(), 672, kern_amount() * (1 - fade));
             }
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);

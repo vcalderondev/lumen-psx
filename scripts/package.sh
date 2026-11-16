@@ -40,7 +40,7 @@ fi
 ST="$(mktemp -d)"; L="$ST/lumen"
 mkdir -p "$L/retroarch/autoconfig" "$L/cores" "$L/compositor" "$L/systems" "$L/lang" "$L/profiles" \
          "$L/assets" "$L/logs"
-cp out/lumen out/lumen-buttons scripts/run.sh scripts/boot.sh scripts/power.sh scripts/net.sh psc/lumen.conf "$L/"
+cp out/lumen out/lumen-buttons scripts/run.sh scripts/boot.sh scripts/power.sh scripts/net.sh scripts/kernel.sh psc/lumen.conf "$L/"
 chmod 755 "$L/lumen" "$L/lumen-buttons"
 for f in dist/*; do [ -f "$f" ] && cp "$f" "$L/"; done
 cp dist/systems/* "$L/systems/"
