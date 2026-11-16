@@ -73,6 +73,8 @@ void   label_free(label_t *l);
 void   gl_use_2d(void);        /* glUseProgram(g_prog_2d) + sampler 0 */
 void   gl_scissor(float x, float y, float w, float h);   /* logical rect, top-left origin */
 void   ui_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float a);
+void   ui_glass_card(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha,
+                     float blur, float dy, float sh_a);   /* a glass card (draw_round_rect) on its shadow */
 /* flat rounded rectangle: filled (stroke 0) or a ring of `stroke` px inside its edge */
 void   ui_shape(float x, float y, float w, float h, float radius, float stroke, const float rgba[4]);
 GLuint tex_from_surface(SDL_Surface *s);   /* mipmapped RGBA texture; the surface stays the caller's */

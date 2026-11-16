@@ -1050,6 +1050,10 @@ static const char *FS_2D =
    "                  if (aux0.y > 0.0) { highp vec2 q2 = abs(pp + vec2(0.0, aux0.z)) - (hs - vec2(r));\n"
    "                    highp float d2 = length(max(q2, 0.0)) + min(max(q2.x, q2.y), 0.0) - r; k *= clamp(d2 + 0.5, 0.0, 1.0); }\n"
    "                  frag = vec4(0.0, 0.0, 0.0, color.a * k); return; }\n"
+   /* 11: the inside of a glass card and its shadow under it as one layer (ui_glass_card):
+    *     mode 5's fill, times aux0.x, at opacity aux0.y */
+   "  if (mode==11) { vec3 fill = clamp(color.rgb + vec3(mix(0.06, -0.04, v_uv.y)), 0.0, 1.0);\n"
+   "                  frag = vec4(fill * aux0.x, aux0.y); return; }\n"
    "  if (mode==5) { highp vec2 hs = rect.xy * 0.5; highp float r = min(rect.z, min(hs.x, hs.y));\n"
    "                 highp vec2 q = abs((v_uv - 0.5) * rect.xy) - (hs - vec2(r));\n"
    "                 highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
@@ -1801,6 +1805,74 @@ static void draw_shadow(float x, float y, float w, float h, float radius, float 
 void ui_shadow(float x, float y, float w, float h, float radius, float blur, float dy, float a)
 {
    draw_shadow_ex(x, y, w, h, radius, blur, dy, a, 0);
+}
+
+/* A glass card on its shadow (ui_card). The shadow, at full strength under the card, and
+ * the card's fill over it were two blended layers over the whole card: half a megapixel
+ * each for the settings' card at 1080p, on top of the art and its scrim. Inside the card,
+ * away from the rounded corners, the border and the shadow's falloff, the two are one
+ * layer: a shadow of opacity s under a fill of opacity k is that fill at opacity
+ * 1 - (1 - s)(1 - k), its colour scaled by k over that. So the inside (a rectangle on
+ * whole device pixels) is drawn once, and the shadow and the card only as the four strips
+ * around it. Needs the shadow's baked texture: until it exists (its first two frames, or
+ * a size that is animating) both are drawn whole. Setting card_merge=0 always does. */
+static int g_card_merge = 1;
+void ui_glass_card(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha,
+                   float blur, float dy, float sh_a)
+{
+   const float k = g_ui_scale, p = 1.0f / k;
+   const float inset = fmaxf(radius + 4.0f, dy + 0.35f * blur + 5.0f);
+   const float ix0 = ceilf((x + inset) * k) / k, iy0 = ceilf((y + inset) * k) / k;
+   const float ix1 = floorf((x + w - inset) * k) / k, iy1 = floorf((y + h - inset) * k) / k;
+   const float qx = x - blur, qy = y - blur + dy, qw = w + 2 * blur, qh = h + 2 * blur;
+   const float sc[4] = { 0, 0, 0, sh_a };
+   shadow_key_t q;
+   GLuint tex = 0;
+   int i;
+   if (g_card_merge && g_fx_shadows && sh_a > 0.003f && rgba[3] > 0.003f && ix1 - ix0 > 32.0f && iy1 - iy0 > 32.0f)
+   {
+      q.w = qw * k; q.h = qh * k; q.r = radius * k; q.blur = blur * k; q.dy = dy * k; q.cut = 0; q.fx = q.fy = 0.0f;
+      tex = shadow_lookup(&q);
+   }
+   if (!tex)
+   {
+      draw_shadow_ex(x, y, w, h, radius, blur, dy, sh_a, 0);
+      draw_round_rect(x, y, w, h, radius, rgba, border_alpha);
+      return;
+   }
+   /* the shadow's frame: its quad without the inside */
+   glUseProgram(g_prog_tex);
+   glUniform4fv(ut_color, 1, sc);
+   glBindTexture(GL_TEXTURE_2D, tex);
+   for (i = 0; i < 4; i++)
+   {
+      const float sx = i < 2 ? qx : (i == 2 ? qx : ix1), sy = i == 0 ? qy : (i == 1 ? iy1 : iy0);
+      const float sw = i < 2 ? qw : (i == 2 ? ix0 - qx : qx + qw - ix1), sh = i == 0 ? iy0 - qy : (i == 1 ? qy + qh - iy1 : iy1 - iy0);
+      mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(sx + sw * 0.5f, sy + sh * 0.5f, 0), m4_scale(sw, -sh, 1)));
+      if (g_cost_on) cost_add_at(sx, sy, sw, sh, 0);
+      glUniform4f(ut_uvw, (sx - qx) / qw, (sy - qy) / qh, sw / qw, sh / qh);
+      glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, m.m);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+   }
+   glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   glUseProgram(g_prog_2d);
+   /* the card's frame (rounded corners, border; 1 px more outside for the edge's fade) */
+   glUniform4f(u2_rect, w * k, h * k, radius * k, border_alpha);
+   glUniform4f(u2_aux0, 2.0f * k, 0.0f, 0.0f, 0.0f);
+   for (i = 0; i < 4; i++)
+   {
+      const float sx = i < 2 ? x - p : (i == 2 ? x - p : ix1), sy = i == 0 ? y - p : (i == 1 ? iy1 : iy0);
+      const float sw = i < 2 ? w + 2 * p : (i == 2 ? ix0 - (x - p) : x + w + p - ix1), sh = i == 0 ? iy0 - (y - p) : (i == 1 ? y + h + p - iy1 : iy1 - iy0);
+      glUniform4f(u2_uvw, (sx - x) / w, (sy - y) / h, sw / w, sh / h);
+      draw_2d(0, sx, sy, sw, sh, rgba, 5);
+   }
+   {  /* the inside: fill and shadow as one layer */
+      const float s = sh_a, kf = rgba[3], a = 1.0f - (1.0f - s) * (1.0f - kf);
+      glUniform4f(u2_uvw, (ix0 - x) / w, (iy0 - y) / h, (ix1 - ix0) / w, (iy1 - iy0) / h);
+      glUniform4f(u2_aux0, kf / a, a, 0.0f, 0.0f);
+      draw_2d(0, ix0, iy0, ix1 - ix0, iy1 - iy0, rgba, 11);
+   }
+   glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
 }
 
 /* label with a soft 1-2 px shadow, for text over bright art */
@@ -4293,6 +4365,7 @@ int main(int argc, char **argv)
    test_parse();
    if (g_perf_on) stuck_start();
    g_scrim_fold = settings_get_int("scrim_fold", 1, 0, 1);
+   g_card_merge = settings_get_int("card_merge", 1, 0, 1);
    rec_start();
 
    while (running)

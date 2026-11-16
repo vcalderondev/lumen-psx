@@ -37,8 +37,7 @@ void ui_card(float x, float y, float w, float h, float a)
    theme_color(TC_CARD, c);
    for (i = 0; i < 3; i++) c[i] = (c[i] * base * (1.0f - tint) + tint) / cover;
    c[3] = cover * a;
-   ui_shadow(x, y, w, h, UI_CARD_R, 28, 12, 0.45f * a);
-   draw_round_rect(x, y, w, h, UI_CARD_R, c, UI_EDGE * a);
+   ui_glass_card(x, y, w, h, UI_CARD_R, c, UI_EDGE * a, 28, 12, 0.45f * a);
 }
 
 void ui_rest(float x, float y, float w, float h, float radius, float a)
