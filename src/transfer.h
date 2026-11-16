@@ -7,7 +7,8 @@
  * The card has two panes, one per drive: Left / Right change pane, Cross opens a folder
  * or marks a file, Square marks, Start copies what is marked to the other drive (a list
  * of destinations: the folder open in the other pane, then one per system of the
- * library), Triangle ejects the second drive, Circle goes up one folder or closes.
+ * library), Triangle opens the options (eject the second drive; delete what is marked,
+ * after a confirmation), Circle goes up one folder or closes.
  *
  * Nothing slow runs on the render thread: listings, the copy and every mount, sync and
  * unmount run on a worker. A copy writes each file under a temporary name, flushes it

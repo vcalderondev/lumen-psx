@@ -22,7 +22,7 @@ The card has one pane per drive: the second USB on the left, the Lumen USB on th
 | Square | mark a file or a folder and step down |
 | Start | copy what is marked (or the highlighted entry) to the other drive |
 | Circle | up one folder; close at the top |
-| Triangle | eject the second drive |
+| Triangle | options: eject the second drive, delete what is marked |
 
 Start asks where to copy: the folder open in the other pane, or (towards the Lumen USB)
 the games folder of any system declared in `systems/`, created if it does not exist. Then
@@ -30,8 +30,16 @@ the copy runs with a progress card; Circle asks before stopping it. When it ends
 says how many files were copied; after a copy to the Lumen USB the library is rescanned,
 so new games appear at once.
 
-**Eject before pulling the drive out.** "Eject USB" (in the result, or Triangle) unmounts
-it and says when it can be removed.
+**Eject before pulling the drive out.** "Eject USB" (in the result, or in Triangle's
+options) unmounts it and says when it can be removed.
+
+## Deleting
+
+Triangle, "Delete N items" removes what is marked (or the highlighted entry) in the pane
+with the focus, folders with everything in them. It always asks first, with Cancel
+focused, and it cannot be undone. On the Lumen USB the `lumen/` folder, anything in it
+and anything that holds it are refused. After a delete on the Lumen USB the library is
+rescanned. Nothing is ever moved.
 
 ## What a copy does
 
@@ -45,7 +53,7 @@ it and says when it can be removed.
   lost drive the part is removed. The whole filesystem is synced before the result shows.
 - Not copied: links and devices, `System Volume Information`, `$RECYCLE.BIN`, macOS's
   `._*`, `.DS_Store`, `.Spotlight-V100`, `.fseventsd`, `.Trashes`, `lost+found`.
-- Nothing is ever deleted or moved.
+- A copy never deletes or moves anything.
 
 ## The second drive
 
