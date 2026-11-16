@@ -13,9 +13,15 @@ void ui_fill(float x, float y, float w, float h, float radius, const float rgb[3
    if (a > 0.003f) ui_shape(x, y, w, h, radius, 0.0f, c);
 }
 
+/* the next ui_scrim() draws nothing: the frame under it was drawn with it folded in
+ * (main.c dim_fold) */
+static int s_scrim_skip;
+void ui_scrim_skip(int on) { s_scrim_skip = on; }
+
 void ui_scrim(float a)
 {
    float c[4];
+   if (s_scrim_skip) { s_scrim_skip = 0; return; }
    if (a <= 0.003f) return;
    theme_color(TC_BACKDROP, c); c[3] = UI_SCRIM * a;
    draw_2d(0, 0, 0, W, H, c, 0);
