@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "lumen.h"
+#include "music.h"
 #include "gamemenu.h"
 #include "collections.h"
 #include "i18n.h"
@@ -63,6 +64,7 @@ static void open_common(int gi, int mode)
    if (s_fade.x < 0.02f) { s_fade.x = 0; s_fade.v = 0; }
    s_t0 = now_s();
    rows_build();
+   music_sfx(SFX_OPEN);
    logf_("game menu: %s (%s)", mode ? "resume" : "options", s_content);
 }
 
@@ -115,12 +117,27 @@ static void activate(const mrow_t *r)
    }
 }
 
+static void gm_input(const ui_nav_t *nav);
+
 void gamemenu_update(const ui_nav_t *nav, double t, float dt)
 {
    s_dt = dt > 0.0f ? dt : s_dt;
    spring_step(&s_fade, s_open ? 1.0f : 0.0f, 120, 18, dt);
    spring_step(&s_exp, s_expanded ? 1.0f : 0.0f, 200, 22, dt);
    if (!s_open || !nav || t - s_t0 < 0.15) return;   /* the Start that opened it */
+   {  /* interface sounds (guidelines/06 "Sound"): what this frame's input changed */
+      int sel = s_sel, exp = s_expanded, id = -1;
+      gm_input(nav);
+      if (!s_open) id = s_result == GM_NONE ? SFX_BACK : -1;   /* Play: the dashboard sounds the launch */
+      else if (nav->confirm || exp < s_expanded) id = SFX_CONFIRM;
+      else if (exp > s_expanded) id = SFX_BACK;
+      else if (sel != s_sel) id = SFX_FOCUS;
+      if (id >= 0) music_sfx(id);
+   }
+}
+
+static void gm_input(const ui_nav_t *nav)
+{
    if (nav->up)   { int i = s_sel - 1; while (i >= 0 && !navigable(i)) i--; if (i >= 0) s_sel = i; }
    if (nav->down) { int i = s_sel + 1; while (i < s_n && !navigable(i)) i++; if (i < s_n) s_sel = i; }
    if (s_sel < s_n && s_rows[s_sel].type == R_FOLDERS && nav->right && !s_expanded) { s_expanded = 1; return; }

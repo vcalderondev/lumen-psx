@@ -85,6 +85,7 @@ ss.note = Les démos n'enregistrent rien. Appuyez sur un bouton pour revenir.
 sound.music = Musique du menu
 sound.volume = Volume
 sound.vol_value = {n} %
+sound.ui = Sons de l'interface
 sound.note = Chaque jeu peut avoir sa propre piste (music.ogg dans son dossier) ; sinon, c'est le thème du menu qui joue.
 
 # graphismes

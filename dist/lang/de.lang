@@ -85,6 +85,7 @@ ss.note = Demos speichern nie. Drücke eine beliebige Taste, um zurückzukehren.
 sound.music = Menümusik
 sound.volume = Lautstärke
 sound.vol_value = {n} %
+sound.ui = Bedienklänge
 sound.note = Jedes Spiel kann einen eigenen Titel mitbringen (music.ogg in seinem Ordner); sonst läuft das Menüthema.
 
 # Grafik

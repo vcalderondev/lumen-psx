@@ -3,6 +3,20 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+Interface sounds. Checked in psc-sim only (the sim has no audio output: the sounds were
+reviewed from LUMEN_SFX_DUMP); not yet verified on the console.
+
+### Added
+- Interface sounds on the dashboard, Settings, the game menu and the keyboard
+  (lumen-design guidelines/06 "Sound"): a tick per move, air for a page, two mallet notes
+  a fifth apart for a system, notes for open / back / confirm / play. Synthesised at
+  start like the launch clicks; up to four at once.
+- Settings, Sound, "Interface sounds" (on by default, setting `ui_sounds`); the Volume
+  of that page scales them.
+- `LUMEN_SFX_DUMP=<dir>` writes every effect as a WAV, to review them or put them on a video.
+
 ## [0.16.0] - 2026-11-15
 
 The first start asks for the language. Checked in psc-sim only; not yet verified on the

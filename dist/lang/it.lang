@@ -85,6 +85,7 @@ ss.note = Le demo non salvano mai. Premi un tasto qualsiasi per tornare.
 sound.music = Musica del menu
 sound.volume = Volume
 sound.vol_value = {n} %
+sound.ui = Suoni dell'interfaccia
 sound.note = Ogni gioco può avere una propria traccia (music.ogg nella sua cartella); altrimenti suona il tema del menu.
 
 # grafica

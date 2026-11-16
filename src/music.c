@@ -136,9 +136,13 @@ static float ramp(float x, float t, float st)
 
 /* ---- one-shot effects (cartridge clicks) ---- */
 #define NCLICK 3
-static float *clk[NCLICK];        /* mono, dev_rate; written once at init */
-static int clk_len[NCLICK];
-static int sfx_k = -1, sfx_pos;   /* playing effect; under audio lock */
+#define NFX    (NCLICK + SFX_COUNT)  /* clicks first, then the interface sounds */
+#define NSLOT  4
+static float *clk[NFX];           /* mono, dev_rate, S16 scale; written once at init */
+static int clk_len[NFX];
+static struct { int k, pos; float gain; } slot[NSLOT];   /* playing effects; under audio lock */
+static unsigned slot_age[NSLOT], slot_clock;
+static float ui_level = 0.6f;     /* main thread: interface sounds gain (0 = off) */
 
 static unsigned rnd_state = 0x1234567u;
 static float rnd(void) { rnd_state = rnd_state * 1664525u + 1013904223u; return (float)(rnd_state >> 8) / 8388608.0f - 1.0f; }
@@ -175,13 +179,167 @@ static void click_make(int k)
    clk[k] = b; clk_len[k] = n;
 }
 
+/* ---- interface sounds (guidelines/06 "Sound"): short glides and air, mono ---- */
+
+/* a sine gliding from f0 to f1 (exponentially), with an octave partial when rich,
+ * a 2 ms attack and an exponential decay over dur */
+static void fx_glide(float *b, int n, float at, float f0, float f1, float dur, float amp, int rich)
+{
+   int i, i0 = (int)(at * dev_rate), m = (int)(dur * dev_rate);
+   double ph = 0;
+   for (i = 0; i < m && i0 + i < n; i++)
+   {
+      float t = (float)i / dev_rate, f = f0 * powf(f1 / f0, t / dur);
+      float e = expf(-t * 6.0f / dur) * (t < 0.002f ? t / 0.002f : 1.0f);
+      ph += 6.2831853 * f / dev_rate;
+      b[i0 + i] += (sinf((float)ph) + (rich ? 0.25f * sinf(2.0f * (float)ph) : 0.0f)) * e * amp;
+   }
+}
+
+/* air: noise through a low-pass whose cutoff sweeps 600 Hz -> 4 kHz (or back), minus its
+ * lowest part, under a sin^2 envelope */
+static void fx_whoosh(float *b, int n, float dur, int up, float amp)
+{
+   int i, m = (int)(dur * dev_rate);
+   float lp1 = 0, lp = 0, lo = 0;
+   for (i = 0; i < m && i < n; i++)
+   {
+      float u = (float)i / m, x = rnd(), fc = up ? 600.0f * powf(6.67f, u) : 4000.0f * powf(0.15f, u);
+      float a = 1.0f - expf(-6.2831853f * fc / dev_rate), e = sinf(3.1415927f * u);
+      lp1 += a * (x - lp1); lp += a * (lp1 - lp);   /* 12 dB/octave: air, not hiss */
+      lo += (1.0f - expf(-6.2831853f * 200.0f / dev_rate)) * (x - lo);
+      b[i] += (lp - lo) * e * e * amp;
+   }
+}
+
+/* a soft mallet note at `at`: the fundamental with a slight pitch fall into tune (15 ms),
+ * a bright 4th partial that dies fast (the strike), a warm octave below, 1.5 ms attack */
+static void fx_mallet(float *b, int n, float at, float f, float amp)
+{
+   int i, i0 = (int)(at * dev_rate);
+   double ph = 0, ph4 = 0, phl = 0;
+   for (i = 0; i0 + i < n; i++)
+   {
+      float t = (float)i / dev_rate, bend = 1.0f + 0.012f * expf(-t / 0.005f);
+      float att = t < 0.0015f ? t / 0.0015f : 1.0f;
+      ph += 6.2831853 * f * bend / dev_rate;
+      ph4 += 6.2831853 * f * 4.0f / dev_rate;
+      phl += 6.2831853 * f * 0.5f / dev_rate;
+      b[i0 + i] += (sinf((float)ph) * expf(-t * 13.0f) + 0.16f * sinf((float)ph4) * expf(-t * 70.0f)
+                    + 0.12f * sinf((float)phl) * expf(-t * 22.0f)) * att * amp;
+   }
+}
+
+/* air through a band-pass (two one-poles) whose centre glides f0 -> f1, sin^2 envelope */
+static void fx_air(float *b, int n, float at, float dur, float f0, float f1, float amp)
+{
+   int i, i0 = (int)(at * dev_rate), m = (int)(dur * dev_rate);
+   float lo1 = 0, lo2 = 0, hi1 = 0, hi2 = 0;   /* two-pole each side: 12 dB/octave */
+   for (i = 0; i < m && i0 + i < n; i++)
+   {
+      float u = (float)i / m, fc = f0 * powf(f1 / f0, u), x = rnd(), e = sinf(3.1415927f * u);
+      float ah = 1.0f - expf(-6.2831853f * fc * 1.5f / dev_rate), al = 1.0f - expf(-6.2831853f * fc * 0.65f / dev_rate);
+      hi1 += ah * (x - hi1); hi2 += ah * (hi1 - hi2);
+      lo1 += al * (x - lo1); lo2 += al * (lo1 - lo2);
+      b[i0 + i] += (hi2 - lo2) * e * e * amp;
+   }
+}
+
+static void sfx_make(int id)
+{
+   static const float len_s[SFX_COUNT] = { 0.07f, 0.07f, 0.07f, 0.32f, 0.32f, 0.5f, 0.5f, 0.3f, 0.2f, 0.24f, 0.45f };
+   const int n = (int)(len_s[id] * dev_rate);
+   float *b = calloc(n, sizeof(float)), peak = 0, want;
+   int i;
+   if (!b) return;
+   switch (id)
+   {
+   case SFX_MOVE_NEXT: fx_glide(b, n, 0, 1650, 1500, 0.045f, 1, 0); break;
+   case SFX_MOVE_PREV: fx_glide(b, n, 0, 1500, 1350, 0.045f, 1, 0); break;
+   case SFX_FOCUS:     fx_glide(b, n, 0, 1250, 1150, 0.040f, 1, 0); break;
+   case SFX_PAGE_NEXT: fx_whoosh(b, n, 0.22f, 1, 1); break;
+   case SFX_PAGE_PREV: fx_whoosh(b, n, 0.22f, 0, 1); break;
+   /* the system: two mallet notes a fifth apart (E5, B5), up for the next, down for the
+    * previous, over a breath of air gliding the same way */
+   case SFX_SYSTEM_NEXT: fx_air(b, n, 0, 0.18f, 1200, 3000, 1.6f); fx_mallet(b, n, 0.02f, 659.3f, 1); fx_mallet(b, n, 0.075f, 987.8f, 0.85f); break;
+   case SFX_SYSTEM_PREV: fx_air(b, n, 0, 0.18f, 3000, 1200, 1.6f); fx_mallet(b, n, 0.02f, 987.8f, 0.85f); fx_mallet(b, n, 0.075f, 659.3f, 1); break;
+   case SFX_OPEN:      fx_glide(b, n, 0, 880, 880, 0.12f, 1, 1); fx_glide(b, n, 0.06f, 1320, 1320, 0.14f, 1, 1); break;
+   case SFX_BACK:      fx_glide(b, n, 0, 990, 600, 0.12f, 1, 1); break;
+   case SFX_CONFIRM:   fx_glide(b, n, 0, 660, 990, 0.16f, 1, 1); break;
+   case SFX_PLAY:      fx_glide(b, n, 0, 523, 1046, 0.35f, 1, 1); break;
+   }
+   for (i = 0; i < n; i++)
+   {  /* the last 25 ms fade out: an effect never ends on a cut */
+      int left = n - i, f = dev_rate / 40;
+      if (left < f) b[i] *= (float)left / f;
+      if (fabsf(b[i]) > peak) peak = fabsf(b[i]);
+   }
+   /* peaks: a tick about -18 dBFS, the air a little under, the notes a little over */
+   want = id <= SFX_FOCUS ? 0.125f : (id <= SFX_PAGE_PREV ? 0.11f : 0.15f);
+   for (i = 0; i < n; i++) b[i] *= want * 32767.0f / (peak > 0 ? peak : 1);
+   clk[NCLICK + id] = b; clk_len[NCLICK + id] = n;
+}
+
+/* LUMEN_SFX_DUMP=<dir>: every effect as <dir>/<name>.wav (mono S16 at the device rate),
+ * to review the sounds or to put the very same sounds on a video */
+static void sfx_dump(const char *dir)
+{
+   static const char *const names[NFX] = { "click-top", "click-front", "click-handheld",
+      "move-next", "move-prev", "focus", "page-next", "page-prev", "system-next", "system-prev",
+      "open", "back", "confirm", "play" };
+   int k, i;
+   if (!dir || !*dir) return;
+   for (k = 0; k < NFX; k++)
+   {
+      char path[600];
+      FILE *f;
+      unsigned hdr[11], bytes = (unsigned)clk_len[k] * 2;
+      if (!clk[k]) continue;
+      snprintf(path, sizeof(path), "%s/%s.wav", dir, names[k]);
+      if (!(f = fopen(path, "wb"))) { logf_("music: cannot write %s", path); continue; }
+      hdr[0] = 0x46464952; hdr[1] = 36 + bytes; hdr[2] = 0x45564157; hdr[3] = 0x20746d66; hdr[4] = 16;
+      hdr[5] = 1 | (1 << 16); hdr[6] = dev_rate; hdr[7] = dev_rate * 2; hdr[8] = 2 | (16 << 16);
+      hdr[9] = 0x61746164; hdr[10] = bytes;   /* little-endian RIFF (both targets are LE) */
+      fwrite(hdr, 4, 11, f);
+      for (i = 0; i < clk_len[k]; i++)
+      {
+         float x = clk[k][i];
+         short v = x > 32767 ? 32767 : x < -32768 ? -32768 : (short)x;
+         fwrite(&v, 2, 1, f);
+      }
+      fclose(f);
+   }
+   logf_("music: effects written to %s", dir);
+}
+
+/* start effect k (index into clk) at gain g: a free slot, else the oldest one */
+static void slot_start(int k, float g)
+{
+   int i, best = 0;
+   SDL_LockAudioDevice(dev);
+   for (i = 0; i < NSLOT; i++)
+   {
+      if (slot[i].k < 0) { best = i; break; }
+      if (slot_age[i] < slot_age[best]) best = i;
+   }
+   slot[best].k = k; slot[best].pos = 0; slot[best].gain = g;
+   slot_age[best] = ++slot_clock;
+   SDL_UnlockAudioDevice(dev);
+}
+
 void music_click(int kind)
 {
    if (!dev || kind < 0 || kind >= NCLICK || !clk[kind]) return;
-   SDL_LockAudioDevice(dev);
-   sfx_k = kind; sfx_pos = 0;
-   SDL_UnlockAudioDevice(dev);
+   slot_start(kind, 1.0f);
 }
+
+void music_sfx(int id)
+{
+   if (!dev || id < 0 || id >= SFX_COUNT || !clk[NCLICK + id] || ui_level <= 0) return;
+   slot_start(NCLICK + id, ui_level);
+}
+
+void music_sfx_level(float v) { ui_level = v < 0 ? 0 : v > 1 ? 1 : v; }
 
 static void SDLCALL audio_cb(void *ud, Uint8 *stream, int len)
 {
@@ -223,12 +381,13 @@ static void SDLCALL audio_cb(void *ud, Uint8 *stream, int len)
       m = mvol * (1 - duck);
       l *= m;
       r *= m;
-      if (sfx_k >= 0)
-      {  /* the effect on top of the music, centred */
-         float e = clk[sfx_k][sfx_pos];
-         l += e; r += e;
-         if (++sfx_pos >= clk_len[sfx_k]) sfx_k = -1;
-      }
+      for (k = 0; k < NSLOT; k++)
+         if (slot[k].k >= 0)
+         {  /* effects on top of the music, centred */
+            float e = clk[slot[k].k][slot[k].pos] * slot[k].gain;
+            l += e; r += e;
+            if (++slot[k].pos >= clk_len[slot[k].k]) slot[k].k = -1;
+         }
       out[i * 2]     = l > 32767 ? 32767 : l < -32768 ? -32768 : (short)l;
       out[i * 2 + 1] = r > 32767 ? 32767 : r < -32768 ? -32768 : (short)r;
    }
@@ -445,7 +604,10 @@ int music_init(void)
    rstep = 1.0f / (0.2f * dev_rate);
    {
       int k;
+      for (k = 0; k < NSLOT; k++) slot[k].k = -1;
       for (k = 0; k < NCLICK; k++) click_make(k);
+      for (k = 0; k < SFX_COUNT; k++) sfx_make(k);
+      sfx_dump(getenv("LUMEN_SFX_DUMP"));
    }
    logf_("music: device %d Hz, %d ch, %d samples", got.freq, got.channels, got.samples);
    req_mx = SDL_CreateMutex();
@@ -538,7 +700,8 @@ void music_shutdown(void)
    SDL_CloseAudioDevice(dev);                  /* callback no longer runs */
    {
       int k;
-      for (k = 0; k < NCLICK; k++) { free(clk[k]); clk[k] = NULL; }
+      for (k = 0; k < NFX; k++) { free(clk[k]); clk[k] = NULL; }
+      for (k = 0; k < NSLOT; k++) slot[k].k = -1;
    }
    for (k = 0; k < NV; k++) src_free(&vo[k].s);
    for (k = 0; k < nfree; k++) src_free(&freel[k]);

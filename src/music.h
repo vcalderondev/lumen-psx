@@ -17,6 +17,12 @@ void music_duck(float amount);                  /* 0..1 extra attenuation (panel
  * small snap). Synthesised at init; mixed over the music at a fixed level (the music
  * volume setting does not mute it). */
 void music_click(int kind);
+/* interface sounds (guidelines/06 "Sound"), synthesised at init; up to four play at once
+ * (a fifth replaces the oldest, clicks included). Gain: music_sfx_level (0 = off). */
+enum { SFX_MOVE_NEXT, SFX_MOVE_PREV, SFX_FOCUS, SFX_PAGE_NEXT, SFX_PAGE_PREV,
+       SFX_SYSTEM_NEXT, SFX_SYSTEM_PREV, SFX_OPEN, SFX_BACK, SFX_CONFIRM, SFX_PLAY, SFX_COUNT };
+void music_sfx(int id);
+void music_sfx_level(float v);                  /* 0..1; the Sound page: switch x volume */
 void music_shutdown(void);                      /* stop, close the device, join the loader (before exit) */
 
 #endif
