@@ -10,7 +10,7 @@
 # zip has no boot payload, which is refused unless LUMEN_ALLOW_NO_PAYLOAD=1.
 #
 # <platform dir> holds the psc-platform release assets pinned in platform.lock:
-#   psc-weston-16.tar.gz psc-retroarch.tar.gz
+#   psc-weston-16.tar.gz psc-retroarch.tar.gz [psc-sdl3.tar.gz]
 #   pcsx_rearmed_libretro.so versions.txt
 # out/lumen and out/lumen-buttons must be built (build.sh).
 #
@@ -53,6 +53,8 @@ mkdir -p "$L/assets/brand"; cp assets/brand/*.png "$L/assets/brand/"   # the SVG
 mkdir -p "$L/assets/launch"; cp -R assets/launch/. "$L/assets/launch/"   # flat launch illustrations (lumen-design tools/export-launch.sh)
 # platform: compositor packages, RetroArch, cores
 cp "$PF/psc-weston-16.tar.gz" "$L/compositor/"
+# SDL3 + sdl2-compat, overlaid with the compositor (boot.sh); optional until psc-platform ships it
+[ -f "$PF/psc-sdl3.tar.gz" ] && cp "$PF/psc-sdl3.tar.gz" "$L/compositor/"
 T="$(mktemp -d)"; tar xzf "$PF/psc-retroarch.tar.gz" -C "$T"
 cp "$T/bin/retroarch" "$L/retroarch/retroarch"; chmod 755 "$L/retroarch/retroarch"
 cp -R "$T/share/retroarch/autoconfig/udev" "$L/retroarch/autoconfig/"

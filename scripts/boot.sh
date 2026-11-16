@@ -119,6 +119,17 @@ PW_VER=""; PW_ON=""; PW_SAMPLER=""
 # picture (crash, black screen, power-off): it becomes .failed-<version> and that
 # version is skipped from then on (the installer clears it, or delete it by hand).
 PW_MARK="${LUMEN_HOME}/compositor/.trying"
+# SDL3 (psc-platform's psc-sdl3.tar.gz: SDL3 + sdl2-compat, the SDL2 API on SDL3) goes in
+# the same overlay as the compositor, so it only runs on Weston 16 (SDL3 needs
+# xdg_wm_base; Sony's Weston 1.11 keeps SDL 2.0.4). Its own guard: .trying-sdl3 is set
+# once Weston is up and cleared with the compositor's when Lumen has presented frames.
+# Still there at boot = Lumen never showed a picture with SDL3: it becomes .failed-sdl3,
+# SDL 2.0.4 from then on, and the compositor is not blamed. sdl=stock in settings.ini
+# turns it off by hand.
+SDL_PKG="${LUMEN_HOME}/compositor/psc-sdl3.tar.gz"
+SDL_MARK="${LUMEN_HOME}/compositor/.trying-sdl3"
+SDL_FAILED="${LUMEN_HOME}/compositor/.failed-sdl3"
+SDL_IN=""
 pw_tar() {  # version -> package path
   [ -f "${LUMEN_HOME}/compositor/psc-weston-$1.tar.gz" ] && echo "${LUMEN_HOME}/compositor/psc-weston-$1.tar.gz"
 }
@@ -136,6 +147,7 @@ psc_weston_off() {
   if umount -l /usr; then rm -rf /tmp/pw_upper /tmp/pw_work; echo "psc compositor overlay removed"
   else echo "psc compositor: umount /usr failed"; fi
   PW_ON=""; LUMEN_WESTON=""
+  rm -f "${SDL_MARK}"; SDL_IN=""   # SDL3 lived in that overlay
 }
 weston_stock() {
   psc_weston_off
@@ -194,6 +206,12 @@ try_psc_weston() {  # version package
   if ! tar xzpf "$2" -C /tmp/pw_upper/usr; then
     echo "psc compositor ${v}: unpack failed"; rm -rf /tmp/pw_upper /tmp/pw_work; return 1
   fi
+  SDL_IN=""
+  if [ -f "${SDL_PKG}" ] && [ "$(setting sdl)" != stock ] && [ ! -f "${SDL_FAILED}" ]; then
+    if tar xzpf "${SDL_PKG}" -C /tmp/pw_upper/usr; then SDL_IN=1; echo "  $(date +%T) sdl3 + sdl2-compat in the overlay"
+    else echo "sdl3: unpack failed, SDL 2.0.4"; rm -f /tmp/pw_upper/usr/lib/libSDL3* /tmp/pw_upper/usr/lib/libSDL2*; fi
+  elif [ -f "${SDL_FAILED}" ]; then echo "sdl3: skipped (.failed-sdl3), SDL 2.0.4"
+  fi
   echo "  $(date +%T) stopping Sony's weston"
   splash_off
   systemctl stop weston.service; pw_stop_weston
@@ -226,6 +244,7 @@ try_psc_weston() {  # version package
   done
   [ -n "${LUMEN_WESTON}" ] || { psc_weston_off; return 1; }
   PW_VER=${v}
+  [ -n "${SDL_IN}" ] && { : > "${SDL_MARK}"; sync; }
   echo "psc compositor up (${LUMEN_WESTON}): $(/usr/bin/weston --version 2>&1 | head -1)"
   grep -aiE 'video modes|, current|scanout|atomic|renderer:|enabled with head' "${LOG}/weston-psc.log" | head -8
   grep -aqE '^ +1920x1080@[0-9.]+.*, current' "${LOG}/weston-psc.log" || DISPLAY_MODE=720p
@@ -242,6 +261,10 @@ psc_weston_ready() {  # socket up, process alive, an output mode set
     grep -aqE '^ +[0-9]+x[0-9]+@[0-9.]+.*, current' "${LOG}/weston-psc.log"
 }
 
+if [ -f "${SDL_MARK}" ]; then   # Weston came up but Lumen showed no picture with SDL3
+  mv -f "${SDL_MARK}" "${SDL_FAILED}"; rm -f "${PW_MARK}"; sync
+  echo "sdl3: the last boot with it showed no picture: SDL 2.0.4 from now on (delete compositor/.failed-sdl3 to retry)"
+fi
 if [ "${COMPOSITOR}" != stock ]; then
   if [ -f "${PW_MARK}" ]; then   # the last attempt never showed a picture
     v=$(head -1 "${PW_MARK}" | tr -dc 0-9)
@@ -360,7 +383,7 @@ if [ -f /tmp/lumen-splash.sh ] || pidof sdl_display >/dev/null 2>&1; then
 fi
 if [ -f "${PW_MARK}" ]; then
   ( i=0; while [ $i -lt 120 ]; do
-      [ -f /tmp/lumen-presented ] && { rm -f "${PW_MARK}"; sync; echo "psc compositor: first frame presented"; exit 0; }
+      [ -f /tmp/lumen-presented ] && { rm -f "${PW_MARK}" "${SDL_MARK}"; sync; echo "psc compositor: first frame presented${SDL_IN:+ (SDL3)}"; exit 0; }
       sleep 1; i=$((i + 1)); done ) &
 fi
 echo "starting the frontend: $(cut -d' ' -f1 /proc/uptime) s since power-on"
