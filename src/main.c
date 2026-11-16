@@ -1006,11 +1006,11 @@ static const char *FS_2D =
    "#version 300 es\n"
    "precision mediump float;\n"
    "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color; uniform int mode; uniform highp vec4 rect; out vec4 frag;\n"
-   "uniform highp vec4 aux0, aux1, aux2;\n"
+   "uniform highp vec4 aux0, aux1, aux2; uniform vec4 dim;\n"
    /* signed distance to a rounded rectangle of rect.xy pixels, corner radius rect.z */
    "highp float rr_dist(){ highp vec2 hs = rect.xy * 0.5; highp float r = min(rect.z, min(hs.x, hs.y));\n"
    "  highp vec2 q = abs((v_uv - 0.5) * rect.xy) - (hs - vec2(r)); return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }\n"
-   "void main(){\n"
+   "void shade(){\n"
    /* 6: dashboard tile: texture (uv window aux0) in a rounded mask; aux1.x sheen position
     *    (< -1 none), aux1.y top-light amount */
    "  if (mode==6) { float m = clamp(0.5 - rr_dist(), 0.0, 1.0);\n"
@@ -1068,15 +1068,18 @@ static const char *FS_2D =
    "                 vec2 q = (v_uv - vec2(0.5, 0.4167)) / vec2(0.328, 0.4167); float as = color.a * pow(clamp(1.0 - length(q), 0.0, 1.0), 2.2);\n"
    "                 float a = as + av * (1.0 - as); frag = vec4(color.rgb * as / max(a, 0.001), a); return; }\n"
    "  frag = t * color;\n"
-   "}\n";
+   "}\n"
+   /* dim: a scrim folded into what is under it, see scrim_fold() (0, 0, 0, 1 = none) */
+   /* (clamped first, as the frame buffer would have: a tile's sheen goes over 1) */
+   "void main(){ shade(); frag.rgb = clamp(frag.rgb, 0.0, 1.0) * dim.a + dim.rgb; }\n";
 
 /* plain textured quad (mode 0: backgrounds, text, glyphs): its own tiny program, so the
  * most-drawn pixels do not run through FS_2D's chain of mode branches */
 static const char *FS_TEX =
    "#version 300 es\n"
    "precision mediump float;\n"
-   "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color; out vec4 frag;\n"
-   "void main(){ frag = texture(tex, v_uv) * color; }\n";
+   "in highp vec2 v_uv; uniform sampler2D tex; uniform vec4 color, dim; out vec4 frag;\n"
+   "void main(){ frag = texture(tex, v_uv) * color; frag.rgb = clamp(frag.rgb, 0.0, 1.0) * dim.a + dim.rgb; }\n";
 static GLuint g_prog_tex;
 static GLint  ut_mvp, ut_color, ut_uvw;
 
@@ -1091,10 +1094,38 @@ static const char *VS_MIX =
 static const char *FS_MIX =
    "#version 300 es\n"
    "precision mediump float;\n"
-   "in highp vec2 v_a; in highp vec2 v_b; uniform sampler2D ta, tb; uniform float k; out vec4 frag;\n"
-   "void main(){ frag = vec4(mix(texture(ta, v_a).rgb, texture(tb, v_b).rgb, k), 1.0); }\n";
+   "in highp vec2 v_a; in highp vec2 v_b; uniform sampler2D ta, tb; uniform float k; uniform vec4 dim; out vec4 frag;\n"
+   "void main(){ frag = vec4(mix(texture(ta, v_a).rgb, texture(tb, v_b).rgb, k) * dim.a + dim.rgb, 1.0); }\n";
 static GLuint g_prog_mix;
 static GLint  um_mvp, um_ma, um_mb, um_k;
+
+/* A scrim folded into what is under it. A menu's scrim was a full-screen quad of colour c
+ * at opacity a blended over the finished dashboard: 2.07 Mpx more on every frame a menu
+ * was open (6.5 Mpx in all with the settings, 6.9 with the game menu: 30 fps on the
+ * console). Blending is linear: with every colour written under the scrim sent through
+ * x * (1 - a) + c * a (the clear colour, the opaque background, and each blended draw's
+ * own colour), the frame is what the quad would have left, to the rounding, and the quad
+ * is not drawn. `dim` = (c * a, 1 - a) in the three 2D programs; (0, 0, 0, 1) is none. */
+static GLint u2_dim, ut_dim, um_dim;
+static int   g_scrim_fold = 1;   /* setting scrim_fold=0: the scrims are drawn as quads again */
+static float g_dim[4] = { 0, 0, 0, 1 };
+static void dim_apply(const float d[4])
+{
+   memcpy(g_dim, d, sizeof(g_dim));
+   glUseProgram(g_prog_mix); glUniform4fv(um_dim, 1, d);
+   glUseProgram(g_prog_tex); glUniform4fv(ut_dim, 1, d);
+   glUseProgram(g_prog_2d);  glUniform4fv(u2_dim, 1, d);
+}
+static void dim_fold(const float c[3], float a)
+{
+   const float d[4] = { c[0] * a, c[1] * a, c[2] * a, 1.0f - a };
+   dim_apply(d);
+}
+static void dim_none(void)
+{
+   static const float d[4] = { 0, 0, 0, 1 };
+   if (g_dim[3] != 1.0f || g_dim[0] != 0.0f || g_dim[1] != 0.0f || g_dim[2] != 0.0f) dim_apply(d);
+}
 static int    g_fx_bgflat;   /* bench: draw the background as a flat colour (fill without the fetch) */
 
 static GLuint compile(GLenum type, const char *src)
@@ -1217,21 +1248,27 @@ static void gl_setup(void)
    u2_aux1 = glGetUniformLocation(g_prog_2d, "aux1");
    u2_aux2 = glGetUniformLocation(g_prog_2d, "aux2");
    u2_uvw = glGetUniformLocation(g_prog_2d, "uvw");
+   u2_dim = glGetUniformLocation(g_prog_2d, "dim");
    glUseProgram(g_prog_2d);
    glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   glUniform4f(u2_dim, 0.0f, 0.0f, 0.0f, 1.0f);
    g_prog_tex = link_prog(VS_2D, FS_TEX);
    ut_mvp = glGetUniformLocation(g_prog_tex, "mvp");
    ut_color = glGetUniformLocation(g_prog_tex, "color");
    glUseProgram(g_prog_tex);
    glUniform1i(glGetUniformLocation(g_prog_tex, "tex"), 0);
    ut_uvw = glGetUniformLocation(g_prog_tex, "uvw");
+   ut_dim = glGetUniformLocation(g_prog_tex, "dim");
    glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+   glUniform4f(ut_dim, 0.0f, 0.0f, 0.0f, 1.0f);
    g_prog_mix = link_prog(VS_MIX, FS_MIX);
    um_mvp = glGetUniformLocation(g_prog_mix, "mvp");
    um_ma = glGetUniformLocation(g_prog_mix, "ma");
    um_mb = glGetUniformLocation(g_prog_mix, "mb");
    um_k = glGetUniformLocation(g_prog_mix, "k");
+   um_dim = glGetUniformLocation(g_prog_mix, "dim");
    glUseProgram(g_prog_mix);
+   glUniform4f(um_dim, 0.0f, 0.0f, 0.0f, 1.0f);
    glUniform1i(glGetUniformLocation(g_prog_mix, "ta"), 0);
    glUniform1i(glGetUniformLocation(g_prog_mix, "tb"), 1);
 
@@ -2693,6 +2730,7 @@ static void bg_poll_upload(void)
 static void bg_gen_render(bgtex_t *b, double t)
 {
    const float one[4] = { 1, 1, 1, 1 };
+   float keep_dim[4];
    float a[3], acc[3], base[3];
    int k;
    if (b->gfbo && t >= b->gen_t && t - b->gen_t < GEN_DT) return;   /* its picture is recent enough */
@@ -2719,6 +2757,11 @@ static void bg_gen_render(bgtex_t *b, double t)
       base[k] = a[k] * 0.22f + 0.015f;
    }
    for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
+   {  /* the picture itself is not under a folded scrim: the quad that shows it is */
+      static const float none[4] = { 0, 0, 0, 1 };
+      memcpy(keep_dim, g_dim, sizeof(keep_dim));
+      glUniform4fv(u2_dim, 1, none);
+   }
    glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
    glViewport(0, 0, GEN_W, GEN_H);
    glDisable(GL_BLEND);
@@ -2733,6 +2776,7 @@ static void bg_gen_render(bgtex_t *b, double t)
    draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
    glBindFramebuffer(GL_FRAMEBUFFER, crt_target());   /* the window, or the CRT filter's target */
    glViewport(0, 0, g_dw, g_dh);
+   glUniform4fv(u2_dim, 1, keep_dim);
 }
 
 /* draw a layer: images "cover"-fitted with a slow drift (scrim already baked in);
@@ -4248,6 +4292,7 @@ int main(int argc, char **argv)
    logf_("startup %.0f ms, rss %ld kB", (last - t0) * 1000, rss_kb());
    test_parse();
    if (g_perf_on) stuck_start();
+   g_scrim_fold = settings_get_int("scrim_fold", 1, 0, 1);
    rec_start();
 
    while (running)
@@ -4568,7 +4613,8 @@ int main(int argc, char **argv)
 
       /* animation targets */
       {
-         int covered, blackout, panel_cleared = 0;
+         int covered, blackout, panel_cleared = 0, fold = 0;
+         float fold_a = 0.0f, fold_c[4] = { 0, 0, 0, 0 };
          float launch_ui;   /* dashboard UI and help bar: fade out in 0.35 s as the launch starts */
          float pdt = 0.0f;   /* launch clock step this frame */
          /* the launch runs on real time (launch_dt): at 15 fps it lasts what it lasts at
@@ -4614,8 +4660,22 @@ int main(int argc, char **argv)
          /* settings fully open: an opaque full-screen section. The clear takes its colour
           * (free on a tile-based GPU) instead of a full-screen quad drawn over the clear */
          panel_cleared = 0;   /* the settings sit on the art now (lumen-design): nothing is cleared to a slab */
+         {  /* the scrim of the menu that is open, folded into everything under it (dim_fold):
+             * the settings' (drawn after the dashboard) or, with no settings, the game menu's
+             * (drawn after the help bar) */
+            const float pa0 = panel_amount(), ga0 = gamemenu_amount();
+            fold = 0; fold_a = 0.0f;
+            theme_color(TC_BACKDROP, fold_c);
+            if (!blackout && play_t < 0 && g_scrim_fold)
+            {
+               if (pa0 > 0.003f) { fold = 1; fold_a = UI_SCRIM * pa0; }
+               else if (ga0 > 0.003f) { fold = 2; fold_a = UI_SCRIM * ga0; }
+            }
+            if (fold) dim_fold(fold_c, fold_a); else dim_none();
+         }
          if (blackout) glClearColor(0, 0, 0, 1);
-         else glClearColor(bg[0].x, bg[1].x, bg[2].x, 1);
+         else glClearColor(bg[0].x * (1 - fold_a) + fold_c[0] * fold_a, bg[1].x * (1 - fold_a) + fold_c[1] * fold_a,
+                           bg[2].x * (1 - fold_a) + fold_c[2] * fold_a, 1);
          glClearDepthf(1.0f);
          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
          glEnable(GL_BLEND);
@@ -4655,7 +4715,8 @@ int main(int argc, char **argv)
                const float dimq[4] = { 0, 0, 0, att.dim };
                draw_2d(0, 0, 0, W, H, dimq, 0);
             }
-            if (pa > 0.003f && !panel_cleared)
+            if (fold == 1) dim_none();   /* scrim.menu, folded: what follows is over it */
+            else if (pa > 0.003f && !panel_cleared)
             {
                ui_scrim(pa);   /* scrim.menu: the art and the status row stay, quieter */
             }
@@ -4678,7 +4739,9 @@ int main(int argc, char **argv)
                if (h_prev >= 0 && h_mix < 1.0f) hints_draw(h_prev, 672, ha * (1.0f - h_mix));
                hints_draw(h_cur, 672, ha * h_mix);
             }
+            if (fold == 2) { dim_none(); ui_scrim_skip(1); }   /* its scrim is in the frame already */
             gamemenu_draw(t);
+            ui_scrim_skip(0);
             if (gamemenu_active())
             {  /* its scrim covered the help bar: the hints describe the focused layer, never dimmed */
                glUseProgram(g_prog_2d);
