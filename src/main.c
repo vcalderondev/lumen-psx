@@ -3485,9 +3485,12 @@ static int audio_worker(void *unused)
    return 0;
 }
 
-/* the library scan of the start-up (files only, no GL), on its own thread */
+/* the library scan of the start-up (files only, no GL), on its own thread; with it, the
+ * other small reads the start-up makes on the stick: the selection to resume and whether
+ * there is menu music (read on the main thread they waited 527 ms on a busy stick) */
 static SDL_atomic_t g_scan_done;
 static double       g_scan_ms;
+static int          g_resume_plat, g_resume_sel;
 static int scan_worker(void *unused)
 {
    const double t0 = now_s();
@@ -3495,6 +3498,12 @@ static int scan_worker(void *unused)
    scan_library();
    build_platform_index();
    g_scan_ms = (now_s() - t0) * 1000.0;
+   {
+      FILE *f = fopen(g_state, "r");
+      if (f) { if (fscanf(f, "%d %d", &g_resume_plat, &g_resume_sel) != 2) g_resume_plat = g_resume_sel = 0; fclose(f); }
+      asset_path(g_menu_music, sizeof(g_menu_music), "music/menu.ogg", "music/menu.ogg");
+      if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
+   }
    icons_preload(g_home);
    flat_preload();   /* every system's launch declaration: read here, not when its row is first settled on */
    SDL_AtomicSet(&g_scan_done, 1);
@@ -4294,8 +4303,7 @@ int main(int argc, char **argv)
 
    /* resume last selection */
    {
-      FILE *f = fopen(g_state, "r");
-      if (f) { if (fscanf(f, "%d %d", &sel_plat, &sel) != 2) sel_plat = sel = 0; fclose(f); }
+      sel_plat = g_resume_plat; sel = g_resume_sel;   /* read by the scan thread */
       if (sel_plat < 0 || sel_plat >= g_nplat) sel_plat = 0;
       if (g_nplat && (sel < 0 || sel >= g_plat[sel_plat].count)) sel = 0;
    }
@@ -4329,8 +4337,6 @@ int main(int argc, char **argv)
    bg[0].x = 0.05f; bg[1].x = 0.05f; bg[2].x = 0.08f;
    memset(&info_y, 0, sizeof(info_y)); memset(&info_a, 0, sizeof(info_a)); memset(&plat_x, 0, sizeof(plat_x));
    memset(&dpos, 0, sizeof(dpos)); dpos.x = (float)sel;
-   asset_path(g_menu_music, sizeof(g_menu_music), "music/menu.ogg", "music/menu.ogg");
-   if (!file_exists(g_menu_music)) g_menu_music[0] = 0;
    boot_mark("resume");
    panel_init();
    boot_mark("panel");
