@@ -184,37 +184,86 @@ static int flat_floats(const char *v, float *out, int n)
    return i;
 }
 
-static int flat_read_ini(flat_t *f, const char *key)
+/* A launch declaration as read from <home>/assets/launch/<key>/launch.ini, kept: each is
+ * read once, by the start-up's scan thread for every system (flat_preload). Read when the
+ * selection settled on another system's row, the open of that small file held the main
+ * thread 250 to 860 ms on the console whenever the stick was busy. */
+typedef struct {
+   char key[48]; int found;
+   int medium, door, has_clip_y, has_screen, art_layer, fx;
+   float clip_y, clip_rect[4], origin[2], door_o[2], tick_o[2], screen[4], art[4], shadow;
+} flat_decl_t;
+static flat_decl_t g_flat_decl[40];
+static int g_nflat_decl;
+
+static const flat_decl_t *flat_decl(const char *key)
 {
    char path[512], line[320];
    FILE *fp;
+   flat_decl_t *f;
+   int i;
+   for (i = 0; i < g_nflat_decl; i++) if (!strcmp(g_flat_decl[i].key, key)) return &g_flat_decl[i];
+   if (g_nflat_decl >= (int)(sizeof(g_flat_decl) / sizeof(g_flat_decl[0]))) g_nflat_decl = 0;   /* more systems than ever seen: start over */
+   f = &g_flat_decl[g_nflat_decl];
+   memset(f, 0, sizeof(*f));
+   snprintf(f->key, sizeof(f->key), "%s", key);
    snprintf(path, sizeof(path), "%s/assets/launch/%s/launch.ini", g_home, key);
-   if (!(fp = fopen(path, "r"))) return 0;
-   f->medium = FM_NONE; f->door = 0; f->has_clip_y = f->has_screen = 0; f->art_layer = -1; f->shadow = 300; f->fx = 0;
-   while (fgets(line, sizeof(line), fp))
+   if ((fp = fopen(path, "r")))
    {
-      char k[32], v[256];
-      if (sscanf(line, " %31[a-z_] = %255[^\r\n]", k, v) != 2) continue;
-      if (!strcmp(k, "medium"))
-         f->medium = !strcmp(v, "behind") ? FM_BEHIND : !strcmp(v, "over") ? FM_OVER : !strcmp(v, "clip") ? FM_CLIP :
-                     !strcmp(v, "front") ? FM_FRONT : !strcmp(v, "coin") ? FM_COIN : FM_NONE;
-      else if (!strcmp(k, "clip_y")) { f->clip_y = (float)atof(v); f->has_clip_y = 1; }
-      else if (!strcmp(k, "clip_rect")) flat_floats(v, f->clip_rect, 4);
-      else if (!strcmp(k, "origin")) flat_floats(v, f->origin, 2);
-      else if (!strcmp(k, "door")) f->door = !strcmp(v, "lid") ? 1 : !strcmp(v, "flap") ? 2 : 0;
-      else if (!strcmp(k, "door_origin")) flat_floats(v, f->door_o, 2);
-      else if (!strcmp(k, "tick_origin")) flat_floats(v, f->tick_o, 2);
-      else if (!strcmp(k, "screen")) f->has_screen = flat_floats(v, f->screen, 4) == 4;
-      else if (!strcmp(k, "shadow")) f->shadow = (float)atof(v);
-      else if (!strcmp(k, "fx")) f->fx = !strcmp(v, "energy");
-      else if (!strcmp(k, "art"))
+      f->found = 1;
+      f->medium = FM_NONE; f->door = 0; f->has_clip_y = f->has_screen = 0; f->art_layer = -1; f->shadow = 300; f->fx = 0;
+      while (fgets(line, sizeof(line), fp))
       {
-         f->art_layer = !strncmp(v, "medium,", 7) ? FL_MEDIUM : !strncmp(v, "body,", 5) ? FL_BODY : -1;
-         if (f->art_layer >= 0 && flat_floats(strchr(v, ',') + 1, f->art, 4) != 4) f->art_layer = -1;
+         char k[32], v[256];
+         if (sscanf(line, " %31[a-z_] = %255[^\r\n]", k, v) != 2) continue;
+         if (!strcmp(k, "medium"))
+            f->medium = !strcmp(v, "behind") ? FM_BEHIND : !strcmp(v, "over") ? FM_OVER : !strcmp(v, "clip") ? FM_CLIP :
+                        !strcmp(v, "front") ? FM_FRONT : !strcmp(v, "coin") ? FM_COIN : FM_NONE;
+         else if (!strcmp(k, "clip_y")) { f->clip_y = (float)atof(v); f->has_clip_y = 1; }
+         else if (!strcmp(k, "clip_rect")) flat_floats(v, f->clip_rect, 4);
+         else if (!strcmp(k, "origin")) flat_floats(v, f->origin, 2);
+         else if (!strcmp(k, "door")) f->door = !strcmp(v, "lid") ? 1 : !strcmp(v, "flap") ? 2 : 0;
+         else if (!strcmp(k, "door_origin")) flat_floats(v, f->door_o, 2);
+         else if (!strcmp(k, "tick_origin")) flat_floats(v, f->tick_o, 2);
+         else if (!strcmp(k, "screen")) f->has_screen = flat_floats(v, f->screen, 4) == 4;
+         else if (!strcmp(k, "shadow")) f->shadow = (float)atof(v);
+         else if (!strcmp(k, "fx")) f->fx = !strcmp(v, "energy");
+         else if (!strcmp(k, "art"))
+         {
+            f->art_layer = !strncmp(v, "medium,", 7) ? FL_MEDIUM : !strncmp(v, "body,", 5) ? FL_BODY : -1;
+            if (f->art_layer >= 0 && flat_floats(strchr(v, ',') + 1, f->art, 4) != 4) f->art_layer = -1;
+         }
       }
+      fclose(fp);
    }
-   fclose(fp);
+   g_nflat_decl++;
+   return f;
+}
+
+static int flat_read_ini(flat_t *f, const char *key)
+{
+   const flat_decl_t *d = flat_decl(key);
+   if (!d->found) return 0;
+   f->medium = d->medium; f->door = d->door; f->has_clip_y = d->has_clip_y; f->has_screen = d->has_screen;
+   f->art_layer = d->art_layer; f->fx = d->fx; f->clip_y = d->clip_y; f->shadow = d->shadow;
+   memcpy(f->clip_rect, d->clip_rect, sizeof(f->clip_rect)); memcpy(f->origin, d->origin, sizeof(f->origin));
+   memcpy(f->door_o, d->door_o, sizeof(f->door_o)); memcpy(f->tick_o, d->tick_o, sizeof(f->tick_o));
+   memcpy(f->screen, d->screen, sizeof(f->screen)); memcpy(f->art, d->art, sizeof(f->art));
    return 1;
+}
+
+/* every system's declaration and its native ports' one, from the scan thread */
+static void flat_preload(void)
+{
+   int p;
+   for (p = 0; p < g_nplat; p++)
+   {
+      char nkey[48];
+      if (!g_plat[p].flat[0] || g_plat[p].flat[0] == '-') continue;
+      flat_decl(g_plat[p].flat);
+      snprintf(nkey, sizeof(nkey), "%s-native", g_plat[p].flat);
+      flat_decl(nkey);
+   }
 }
 
 static void flat_layers_upload(flat_t *f, flat_ljob_t *j)
@@ -369,20 +418,8 @@ static void flat_want(const platform_t *pl, const game_t *g, int now)
    if (g_flat_pjob) { if (!now) return; flat_paint_wait(); flat_poll(); }   /* see flat_pjob_t */
    if (g && g->port)
    {
-      char ini[400];
-      /* asked once per system: this runs every frame while a port is selected, and a
-       * question to the stick can hang for as long as the stick is busy */
-      static char known[8][48]; static signed char has[8]; static int nknown;
-      int q;
       snprintf(nkey, sizeof(nkey), "%s-native", pl->flat);
-      for (q = 0; q < nknown && strcmp(known[q], nkey); q++) { }
-      if (q == nknown)
-      {
-         snprintf(ini, sizeof(ini), "%s/assets/launch/%s/launch.ini", g_home, nkey);
-         if (nknown < 8) { snprintf(known[nknown], sizeof(known[0]), "%s", nkey); has[nknown++] = (signed char)file_exists(ini); }
-         else q = -1;
-      }
-      key = (q >= 0 ? has[q] : file_exists(ini)) ? nkey : "-";
+      key = flat_decl(nkey)->found ? nkey : "-";   /* from the cache: this runs every frame */
    }
    if (strcmp(f->key, key))
    {

@@ -2363,23 +2363,50 @@ typedef struct { const icon_t *icon[3]; int have_icons; GLuint fb, txt; int fbw,
 static hint_gl_t g_hint_gl[HINTS_COUNT][SET_HINTS];
 static float     g_hint_cx = W * 0.5f;   /* horizontal centre of the help bar */
 
+/* the icon's picture from the stick (theme's glyphs/ or icons/ first, then the flat
+ * glyphs, the pixel-art icons, the old layout); no GL: any thread */
+static SDL_Surface *icon_file(const char *home, const char *name)
+{
+   char path[400], rel[64];
+   snprintf(rel, sizeof(rel), "glyphs/%s.png", name);
+   if (!theme_asset(path, sizeof(path), rel)) { snprintf(rel, sizeof(rel), "icons/%s.png", name); if (!theme_asset(path, sizeof(path), rel)) path[0] = 0; }
+   if (!path[0]) snprintf(path, sizeof(path), "%s/assets/glyphs/%s.png", home, name);
+   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/assets/icons/%s.png", home, name);
+   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/icons/%s.png", home, name);   /* old layout */
+   return IMG_Load(path);
+}
+
+/* Every icon the interface can show, read and decoded by the start-up's scan thread: an
+ * icon first drawn in the middle of a session (a help bar set, a glyph) then costs an
+ * upload, not a question and a read to the stick, which hang while the stick is busy
+ * (157 ms and more per set on the console). */
+static struct { const char *name; SDL_Surface *sf; int done; } g_icon_pre[] = {
+   { "cross" }, { "circle" }, { "square" }, { "triangle" }, { "start" }, { "select" }, { "dpad" },
+   { "l1" }, { "r1" }, { "l2" }, { "r2" }, { "pad" }, { "network" }, { "disc" }, { "cartridge" }, { "coin" },
+   { "clock" }, { "gallery" }, { "info" }, { "settings" },
+};
+static void icons_preload(const char *home)
+{
+   int i;
+   for (i = 0; i < (int)(sizeof(g_icon_pre) / sizeof(g_icon_pre[0])); i++)
+   {
+      g_icon_pre[i].sf = icon_file(home, g_icon_pre[i].name);
+      g_icon_pre[i].done = 1;
+   }
+}
+
 static const icon_t *icon_get(const char *home, const char *name)
 {
-   int i; char path[400]; SDL_Surface *sf; icon_t *ic;
+   int i; SDL_Surface *sf = NULL; icon_t *ic;
    for (i = 0; i < g_nicons; i++) if (!strcmp(g_icons[i].name, name)) return &g_icons[i];
    if (g_nicons >= (int)(sizeof(g_icons) / sizeof(g_icons[0]))) return NULL;
    ic = &g_icons[g_nicons++];
    snprintf(ic->name, sizeof(ic->name), "%s", name);
-   /* flat glyphs first (dashboard style), then the pixel-art icons, then the old layout */
-   {  /* the theme's glyphs/ or icons/ first */
-      char rel[64];
-      snprintf(rel, sizeof(rel), "glyphs/%s.png", name);
-      if (!theme_asset(path, sizeof(path), rel)) { snprintf(rel, sizeof(rel), "icons/%s.png", name); if (!theme_asset(path, sizeof(path), rel)) path[0] = 0; }
-   }
-   if (!path[0]) snprintf(path, sizeof(path), "%s/assets/glyphs/%s.png", home, name);
-   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/assets/icons/%s.png", home, name);
-   if (!file_exists(path)) snprintf(path, sizeof(path), "%s/icons/%s.png", home, name);   /* old layout */
-   if ((sf = IMG_Load(path))) { ic->w = sf->w; ic->h = sf->h; ic->tex = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
+   for (i = 0; i < (int)(sizeof(g_icon_pre) / sizeof(g_icon_pre[0])); i++)
+      if (!strcmp(g_icon_pre[i].name, name) && g_icon_pre[i].done) break;
+   if (i < (int)(sizeof(g_icon_pre) / sizeof(g_icon_pre[0]))) { sf = g_icon_pre[i].sf; g_icon_pre[i].sf = NULL; }
+   else sf = icon_file(home, name);   /* not in the list, or asked before the scan thread got to it */
+   if (sf) { ic->w = sf->w; ic->h = sf->h; ic->tex = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
    return ic;
 }
 
@@ -3352,6 +3379,8 @@ static int scan_worker(void *unused)
    scan_library();
    build_platform_index();
    g_scan_ms = (now_s() - t0) * 1000.0;
+   icons_preload(g_home);
+   flat_preload();   /* every system's launch declaration: read here, not when its row is first settled on */
    SDL_AtomicSet(&g_scan_done, 1);
    return 0;
 }
@@ -4135,11 +4164,11 @@ int main(int argc, char **argv)
    audio_th = SDL_CreateThread(audio_worker, "audio", NULL);
    if (!audio_th && music_init() == 0) ui_sound_changed();
    splash_tick(0.3f);
-   hints_load(g_home);
-   boot_mark("hints");
    while (scan_th && !SDL_AtomicGet(&g_scan_done)) splash_tick(0.6f);   /* the splash plays on, a frame at a time */
    if (scan_th) SDL_WaitThread(scan_th, NULL);
    else { scan_library(); build_platform_index(); }
+   hints_load(g_home);   /* its icons were read by the scan thread */
+   boot_mark("hints");
    logf_("games: %d, platforms: %d, scan %.0f ms on its thread, done %.0f ms after the start", g_ngames, g_nplat, g_scan_ms, (now_s() - t0) * 1000);
    boot_mark("scan wait");
    platforms_load_art();
