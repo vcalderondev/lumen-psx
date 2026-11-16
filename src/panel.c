@@ -98,10 +98,15 @@ static const char *const k_comp_id[] = { "stock", "weston16" };
 static const char *const k_comp_key[] = { "display.comp_stock", "display.comp_w16" };
 static int comp_available(int i)
 {
+   static int has = -1;   /* asked once: the settings ask every frame, and the stick can be busy */
    char p[400];
    if (i == 0) return 1;
-   snprintf(p, sizeof(p), "%s/compositor/psc-weston-16.tar.gz", g_home);
-   return access(p, R_OK) == 0;
+   if (has < 0)
+   {
+      snprintf(p, sizeof(p), "%s/compositor/psc-weston-16.tar.gz", g_home);
+      has = access(p, R_OK) == 0;
+   }
+   return has;
 }
 /* the compositor boot.sh will start: Lumen's when installed */
 static int comp_setting(void)
