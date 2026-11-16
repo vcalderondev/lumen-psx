@@ -226,6 +226,7 @@ static void perf_stall(const char *what, double since)
    double ms = (now_s() - since) * 1000.0;
    if (g_perf_on && ms > 2.0) logf_("perf: stall %s %.1f ms", what, ms);
 }
+static double g_pf_text_ms; static int g_pf_text_n;   /* text rendered and uploaded during this frame */
 static struct { int frames, slow, nin; double upd, draw, swap, upd_max, draw_max, swap_max, in_sum, in_max; Uint32 in_ts[8]; int in_n; } g_pf;
 static void perf_input(Uint32 ts) { if (g_perf_on && g_pf.in_n < 8) g_pf.in_ts[g_pf.in_n++] = ts; }
 static void perf_frame(double t, double t_upd, double t_pre, double t_end)
@@ -238,7 +239,16 @@ static void perf_frame(double t, double t_upd, double t_pre, double t_end)
    if (u > g_pf.upd_max) g_pf.upd_max = u;
    if (d > g_pf.draw_max) g_pf.draw_max = d;
    if (w > g_pf.swap_max) g_pf.swap_max = w;
-   if (t_end - t > 0.025) g_pf.slow++;
+   if (t_end - t > 0.025)
+   {  /* a frame the eye sees as a stutter: one line each (at most 30 a second) */
+      static double win0; static int nwin;
+      g_pf.slow++;
+      if (t - win0 > 1.0) { win0 = t; nwin = 0; }
+      if (nwin++ < 30)
+         logf_("perf: slow frame %.0f ms (update %.1f, draw %.1f, swap %.1f; %d texts %.1f ms)", (t_end - t) * 1000.0, u * 1000.0, d * 1000.0, w * 1000.0,
+               g_pf_text_n, g_pf_text_ms);
+   }
+   g_pf_text_ms = 0.0; g_pf_text_n = 0;
    for (i = 0; i < g_pf.in_n; i++)
    {
       double l = (double)(Uint32)(SDL_GetTicks() - g_pf.in_ts[i]);
@@ -1270,11 +1280,14 @@ GLuint text_tex(TTF_Font *f, const char *s, int *w, int *h)
 {
    SDL_Color white = { 255, 255, 255, 255 };
    SDL_Surface *surf; GLuint t;
+   double q0;
    if (!f || !s || !*s) { *w = *h = 0; return 0; }
+   q0 = now_s();
    surf = TTF_RenderUTF8_Blended(f, s, white);
    if (!surf) { *w = *h = 0; return 0; }
    t = text_upload(surf, w, h);
    SDL_FreeSurface(surf);
+   g_pf_text_ms += (now_s() - q0) * 1000.0; g_pf_text_n++;
    return t;
 }
 
