@@ -1755,12 +1755,37 @@ void gl_use_2d(void)
    glUniform1i(u2_tex, 0);
 }
 
+/* A font file is read once, whole, and every size of it is opened from that copy.
+ * Opened from the file, FreeType reads each glyph's outline from the stick the first time
+ * the glyph is drawn: a round trip to the FUSE daemon in the middle of a frame whenever a
+ * new title or a new letter appeared, and one more open and parse per size at start-up. */
+static const void *font_bytes(const char *path, int *len)
+{
+   static struct { char path[300]; void *data; int len; } cache[8];
+   static int n;
+   FILE *f; long sz; void *d; int i;
+   for (i = 0; i < n; i++) if (!strcmp(cache[i].path, path)) { *len = cache[i].len; return cache[i].data; }
+   if (n >= 8 || !(f = fopen(path, "rb"))) return NULL;
+   fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET);
+   d = sz > 0 && sz < (16 << 20) ? malloc((size_t)sz) : NULL;
+   if (d && fread(d, 1, (size_t)sz, f) != (size_t)sz) { free(d); d = NULL; }
+   fclose(f);
+   if (!d) return NULL;
+   snprintf(cache[n].path, sizeof(cache[n].path), "%s", path);
+   cache[n].data = d; cache[n].len = (int)sz;
+   *len = (int)sz;
+   return cache[n++].data;
+}
+
 static TTF_Font *open_font(const char **paths, int size)
 {
    int i;
    for (i = 0; paths[i]; i++)
    {
-      TTF_Font *f = TTF_OpenFont(paths[i], (int)(size * g_ui_scale + 0.5f));
+      int len = 0;
+      const void *d = font_bytes(paths[i], &len);
+      SDL_RWops *rw = d ? SDL_RWFromConstMem(d, len) : NULL;
+      TTF_Font *f = rw ? TTF_OpenFontRW(rw, 1, (int)(size * g_ui_scale + 0.5f)) : NULL;
       if (f) return f;
    }
    logf_("no font found for size %d", size);
