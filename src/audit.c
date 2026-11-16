@@ -48,7 +48,7 @@ static const char *const k_key[K_COUNT] = {
 };
 
 typedef struct { int kind, sysi; char sys[48], name[128], file[200], dir[600]; } issue_t;
-typedef struct { char id[32], name[48], layout[8], paths[512], exts[128], core[128]; int order; } asys_t;
+typedef struct { char id[32], name[48], layout[8], paths[512], ports[512], exts[128], core[128]; int order; } asys_t;
 
 /* ---- worker state: written by the worker while s_running, read by the UI after ---- */
 static issue_t s_iss[MAX_ISS];
@@ -345,11 +345,11 @@ static void audit_psc(const asys_t *sy, const char *dir)
       s_games++;
       if (list_dir(gdir) <= 0) { issue(K_EMPTYDIR, sy, e->d_name, NULL, gdir); continue; }
       w_nref = 0;
-      leftovers(sy, e->d_name, gdir);
-      if ((i = list_find("Game.ini", 1)) < 0) { issue(K_NOINI, sy, e->d_name, "Game.ini", gdir); continue; }
+      if ((i = list_find("Game.ini", 1)) < 0) { leftovers(sy, e->d_name, gdir); issue(K_NOINI, sy, e->d_name, "Game.ini", gdir); continue; }
       read_text(gdir, w_list[i], ini, sizeof(ini));
       ini_val(ini, "Title", title, sizeof(title));
       if (!title[0]) snprintf(title, sizeof(title), "%s", e->d_name);
+      leftovers(sy, title, gdir);   /* named like the game's other rows */
       ini_val(ini, "Discs", discs, sizeof(discs));
       if (!discs[0]) { issue(K_NODISCS, sy, title, "Game.ini", gdir); continue; }
       snprintf(first_ext, sizeof(first_ext), "%.*s", (int)strcspn(exts, ", "), exts);
@@ -474,7 +474,7 @@ static int systems_load(void)
          if (*k == ';' || *k == '#' || !(v = strchr(k, '='))) continue;
          *v++ = 0; k = trim(k);
          /* "; comment" ends a value; in paths ';' also separates folders, so only " ;" does */
-         if (!strcmp(k, "paths")) { if ((c = strstr(v, " ;"))) *c = 0; }
+         if (!strcmp(k, "paths") || !strcmp(k, "ports")) { if ((c = strstr(v, " ;"))) *c = 0; }
          else if ((c = strchr(v, ';'))) *c = 0;
          v = trim(v);
          if (!strcmp(sec, "system") && !strcmp(k, "id")) snprintf(sy->id, sizeof(sy->id), "%s", v);
@@ -482,6 +482,7 @@ static int systems_load(void)
          else if (!strcmp(sec, "system") && !strcmp(k, "order")) sy->order = atoi(v);
          else if (!strcmp(sec, "library") && !strcmp(k, "layout")) snprintf(sy->layout, sizeof(sy->layout), "%s", v);
          else if (!strcmp(sec, "library") && !strcmp(k, "paths")) snprintf(sy->paths, sizeof(sy->paths), "%s", v);
+         else if (!strcmp(sec, "library") && !strcmp(k, "ports")) snprintf(sy->ports, sizeof(sy->ports), "%s", v);
          else if (!strcmp(sec, "library") && !strcmp(k, "extensions")) snprintf(sy->exts, sizeof(sy->exts), "%s", v);
          else if (!strcmp(sec, "launch") && !strcmp(k, "core")) snprintf(sy->core, sizeof(sy->core), "%s", v);
       }
@@ -492,6 +493,7 @@ static int systems_load(void)
       if (!sy->layout[0]) snprintf(sy->layout, sizeof(sy->layout), "files");
       if (!strcmp(sy->layout, "stock")) continue;
       if (!sy->paths[0]) snprintf(sy->paths, sizeof(sy->paths), "%s/games/%s", g_root, id);
+      if (!sy->ports[0] && strcmp(sy->layout, "apps")) snprintf(sy->ports, sizeof(sy->ports), "%s/games/%s-native", g_root, id);   /* as the scanner */
       n++;
    }
    closedir(d);
@@ -537,6 +539,16 @@ static int worker_main(void *arg)
       {
          snprintf(p, sizeof(p), "%s/%s", g_core_dir, sy->core);
          if (!sy->core[0] || stat(p, &st) != 0) issue(K_NOCORE, sy, sy->name, sy->core[0] ? sy->core : "core =", g_core_dir);
+      }
+      /* its native ports (docs/systems.md): homebrew apps' rules; they need no core. A
+       * missing folder is no problem (audit_apps returns) */
+      snprintf(paths, sizeof(paths), "%s", sy->ports);
+      for (save = NULL, tok = strtok_r(paths, ";", &save); tok; tok = strtok_r(NULL, ";", &save))
+      {
+         size_t l;
+         tok = trim(tok);
+         for (l = strlen(tok); l > 1 && tok[l - 1] == '/'; ) tok[--l] = 0;
+         if (*tok) audit_apps(sy, tok);
       }
    }
    qsort(s_iss, (size_t)s_niss, sizeof(issue_t), cmp_issue);

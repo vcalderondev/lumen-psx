@@ -55,8 +55,9 @@ started from Lumen, and the cost of the native-port launch on the console's GPU.
   system whose core is missing, a homebrew app without `app.ini` or its program, an
   unfinished copy, an `.sbi` that is not named like its disc, and a LibCrypt-protected
   disc without its `.sbi`: the serial is read from the image (`SYSTEM.CNF`) and looked up
-  in `systems/psx.protected` (197 serials, from PSX Data Center's SBI list). Each
-  problem shows the file and the folder. Read-only; the scan runs on its own thread.
+  in `systems/psx.protected` (197 serials, from PSX Data Center's SBI list). The
+  native ports folders are checked too, with the rules of homebrew apps. Each problem
+  shows the file and the folder. Read-only; the scan runs on its own thread.
 - USB transfer, Triangle: options. "Eject USB", and "Delete N items" for what is marked on
   either drive, after a confirmation (Cancel focused). Lumen's own folder cannot be deleted.
 - `LUMEN_USB2=<folder>` makes a folder play the second drive (psc-sim) and
