@@ -3,6 +3,38 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.20.0] - 2026-11-17
+
+Connections: Wi-Fi, Bluetooth controllers and a USB network cable, from RAM, and the
+console's kernel: which one runs, and putting Sony's back so all of it works. Verified on
+the console: SDL3 runs Lumen; the kernel restore (Project Eris v47 to Sony's) with its full
+backup first; on Sony's kernel the network modules load. Not yet tried with real Wi-Fi /
+Bluetooth / Ethernet adapters.
+
+### Added
+- Settings, Connections: switches for Wi-Fi and Bluetooth, the networks in range (the
+  password on the on-screen keyboard, only its WPA hash kept on the stick), Bluetooth
+  controllers (search, pair with no PIN, forget), a USB Ethernet adapter that connects by
+  itself, and the clock set over the internet. The settings rail fits nine sections.
+- Settings, About, Kernel: shows the running kernel (Sony, Project Eris v47, ModMyClassic
+  2019, other). On one that is not Sony's, it can put Sony's back from the console's own
+  recovery partition: a full read-only firmware backup first (also on its own, Square),
+  the current kernel copied to the stick, the write checked and undone at once if it does
+  not match, and a way back to the previous kernel. The only place Lumen writes the
+  internal memory; while it is being proven on more consoles it needs the file
+  `lumen/kernel-write-ok` on the stick. Recovery guide: https://lpsx.dev/recovery
+- The on-screen keyboard has a symbols layer (Shift: A, a, #+=) and longer texts.
+
+### Changed
+- SDL3 3.4.20 with sdl2-compat runs Lumen on the PSC compositor (psc-platform 2.5.0): the
+  same SDL2 calls, newer controller support. If Lumen shows no picture with it, the next
+  start uses SDL 2.0.4 again by itself; `sdl=stock` in settings.ini turns it off.
+- POWER waits while the kernel is being written.
+
+### Platform
+- psc-platform 2.5.0: `psc-sdl3`, `psc-net`, `psc-bt` and `psc-netmod-stock` ship in
+  `lumen/compositor/`.
+
 ## [0.19.0] - 2026-11-16
 
 Less stutter: at start-up, on the dashboard, with a menu open and in the launch.
