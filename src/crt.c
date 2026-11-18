@@ -3,9 +3,9 @@
  *     With MSAA on (setting msaa, the window's samples) the target keeps it: PowerVR's
  *     GL_EXT_multisampled_render_to_texture resolves on chip for free; without it a
  *     multisampled renderbuffer is resolved with one blit (psc-sim's Mesa);
- *   - the pass draws one triangle over the window: 5 bilinear fetches (the pixel and 4
- *     halation taps) and ALU for the scanlines, the aperture grille, the curvature, the
- *     vignette and the rounded edge. No mipmaps, no second target, no extra resolve.
+ *   - the pass draws one triangle over the window: 1 bilinear fetch and mediump ALU for
+ *     the scanlines, the aperture grille, the curvature, the halation, the vignette and the
+ *     rounded edge (constants from the CPU). No mipmaps, no second target, no extra resolve.
  * Tile-based GPU: the target's depth and the window's previous contents are invalidated
  * so neither is ever written to or read back from memory.
  * The RetroArch preset (dist/shaders/crt-lumen.glsl) is the same maths on the game image. */
@@ -27,47 +27,48 @@ static const struct { float scan, mask, curv, halo, vig; int per720, per1080; } 
 
 static const char *VS_CRT =
    "#version 300 es\n"
-   "out highp vec2 vUv;\n"
+   "out highp vec2 vP;\n"
    "void main() {\n"
    "   vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"   /* (0,0) (2,0) (0,2) */
-   "   vUv = p;\n"
+   "   vP = p * 2.0 - 1.0;\n"                                                     /* the screen: -1..1 */
    "   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
    "}\n";
 
+/* Colour maths in mediump (FP16: twice the rate on the GE8300), coordinates in highp;
+ * everything that only depends on the level and the size is worked out on the CPU
+ * (crt_end) and comes in as uniforms. Per pixel: 1 bilinear fetch (the halation glows
+ * from the pixel's own colour: the old 4-tap blur was 2.6 px wide and the difference is
+ * under 1 dB), one sqrt, no exp or division. */
 static const char *FS_CRT =
    "#version 300 es\n"
    "precision mediump float;\n"
    "uniform sampler2D uTex;\n"
-   "uniform highp vec4 uRes;\n"    /* w, h, radius of the corners (px), halation tap (uv x) */
-   "uniform vec4 uA;\n"            /* scanline depth, mask depth, curvature, halation */
-   "uniform highp vec4 uB;\n"      /* vignette, virtual lines, gain, line phase */
-   "in highp vec2 vUv;\n"
+   "uniform vec4 uA;\n"            /* scanline depth, curvature, halation, vignette */
+   "uniform highp vec4 uB;\n"      /* virtual lines, line phase, mask bright level, bright - dim */
+   "uniform highp vec4 uE;\n"      /* half the window (px), the same minus the corner radius */
+   "uniform highp vec4 uH;\n"      /* z: 0.5 + corner radius / 1.5 */
+   "in highp vec2 vP;\n"
    "out vec4 oc;\n"
    "void main() {\n"
-   "   highp vec2 p = vUv * 2.0 - 1.0;\n"
-   "   p *= 1.0 + uA.z * p.yx * p.yx;\n"                    /* barrel: corners curve away */
+   "   highp vec2 p = vP;\n"
+   "   p *= 1.0 + uA.y * p.yx * p.yx;\n"                    /* barrel: corners curve away */
    "   highp vec2 uv = p * 0.5 + 0.5;\n"
-   "   highp vec2 o = vec2(uRes.w, uRes.w * uRes.x / uRes.y);\n"
    "   vec3 c = texture(uTex, uv).rgb;\n"
-   "   vec3 h = texture(uTex, uv + vec2(o.x, o.y)).rgb + texture(uTex, uv + vec2(-o.x, o.y)).rgb\n"
-   "          + texture(uTex, uv + vec2(o.x, -o.y)).rgb + texture(uTex, uv + vec2(-o.x, -o.y)).rgb;\n"
-   "   h *= 0.25;\n"
-   /* scanlines: a gaussian beam per virtual line, wider on bright pixels */
-   "   float f = fract(uv.y * uB.y + uB.w) - 0.5;\n"
+   /* scanlines: a gaussian beam per virtual line, wider on bright pixels: (1 - x/8)^8 ~
+    * exp(-x), x = f^2 / 2s^2, 1/s^2 a quadratic in the brightness (no exp, no division) */
+   "   highp float yl = uv.y * uB.x + uB.y;\n"
+   "   float f = fract(yl) - 0.5;\n"
    "   float l = dot(c, vec3(0.299, 0.587, 0.114));\n"
-   "   float s = mix(0.24, 0.44, l);\n"
-   "   float w = exp(-0.5 * f * f / (s * s));\n"
-   "   c *= mix(1.0, w, uA.x);\n"
-   /* aperture grille: R, G, B stripes one device pixel wide */
-   "   float mx = mod(floor(gl_FragCoord.x), 3.0);\n"
-   "   vec3 m = mix(vec3(1.0 - uA.y), vec3(1.0), vec3(equal(vec3(mx), vec3(0.0, 1.0, 2.0))));\n"
-   "   c = c * m * uB.z + h * h * uA.w;\n"                   /* halation glows over the mask */
-   /* vignette and the tube's rounded edge (1.5 px antialiased) */
+   "   float g = max(1.0 - f * f * (17.36 + l * (-21.4 + 9.2 * l)) * (1.0 / 16.0), 0.0);\n"
+   "   g *= g; g *= g; g *= g;\n"
+   /* vignette and the tube's rounded edge (1.5 px antialiased): one scalar */
    "   float r2 = dot(p, p) * 0.5;\n"
-   "   c *= 1.0 - uB.x * r2 * r2;\n"
-   "   highp vec2 hs = uRes.xy * 0.5;\n"
-   "   highp vec2 q = max(abs(p) * hs - (hs - uRes.z), 0.0);\n"
-   "   c *= clamp(0.5 - (length(q) - uRes.z) / 1.5, 0.0, 1.0);\n"
+   "   highp vec2 q = max(abs(p) * uE.xy - uE.zw, 0.0);\n"
+   "   float k = (1.0 - uA.w * r2 * r2) * clamp(uH.z - length(q) * (1.0 / 1.5), 0.0, 1.0);\n"
+   /* aperture grille: R, G, B stripes one device pixel wide (phase 1/6, 1/2, 5/6) */
+   "   highp float mx = fract(gl_FragCoord.x * (1.0 / 3.0));\n"
+   "   vec3 m = uB.z - uB.w * step(0.25, abs(vec3(1.0 / 6.0, 0.5, 5.0 / 6.0) - mx));\n"
+   "   c = c * (m * ((1.0 - uA.x + uA.x * g) * k) + c * (uA.z * k));\n"   /* halation (c^2) glows over the mask */
    "   oc = vec4(c, 1.0);\n"
    "}\n";
 
@@ -75,7 +76,7 @@ typedef void (*fbtex_ms_fn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
 typedef void (*rb_ms_fn)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
 
 static GLuint s_prog, s_vao, s_fbo, s_tex, s_depth, s_msfbo, s_mscol;
-static GLint  s_uTex, s_uRes, s_uA, s_uB;
+static GLint  s_uTex, s_uA, s_uB, s_uE, s_uH;
 static int    s_w, s_h, s_samples, s_mode;   /* mode: 0 plain, 1 on-chip MSAA, 2 MSAA + blit */
 static int    s_failed, s_on, s_level;
 
@@ -123,9 +124,10 @@ static int program_init(void)
    glGetProgramiv(s_prog, GL_LINK_STATUS, &ok);
    if (!ok) { logf_("crt: program link failed"); glDeleteProgram(s_prog); s_prog = 0; return -1; }
    s_uTex = glGetUniformLocation(s_prog, "uTex");
-   s_uRes = glGetUniformLocation(s_prog, "uRes");
    s_uA = glGetUniformLocation(s_prog, "uA");
    s_uB = glGetUniformLocation(s_prog, "uB");
+   s_uE = glGetUniformLocation(s_prog, "uE");
+   s_uH = glGetUniformLocation(s_prog, "uH");
    glGenVertexArrays(1, &s_vao);   /* no attributes: the vertex shader uses gl_VertexID */
    return 0;
 }
@@ -246,7 +248,7 @@ void crt_end(void)
    static const GLenum k_depth[1] = { GL_DEPTH_ATTACHMENT }, k_win[2] = { GL_COLOR, GL_DEPTH };
    GLint prog = 0, tex = 0, vao = 0, unit = 0;
    GLboolean blend, depth, scissor;
-   float gain, per;
+   float gain, per, rad, hx, hy;
    const int lv = s_level;
    if (!s_on) return;
    if (s_mode == 2)
@@ -274,10 +276,13 @@ void crt_end(void)
    per = (float)(s_h >= 1000 ? k_lv[lv].per1080 : k_lv[lv].per720);
    glUseProgram(s_prog);
    glUniform1i(s_uTex, 0);
-   /* corner radius ~3% of the height (more with more curvature); halation 2.6 px at 720p */
-   glUniform4f(s_uRes, (float)s_w, (float)s_h, s_h * (0.012f + k_lv[lv].curv * 0.6f), 2.6f / 1280.0f);
-   glUniform4f(s_uA, k_lv[lv].scan, k_lv[lv].mask, k_lv[lv].curv, k_lv[lv].halo);
-   glUniform4f(s_uB, k_lv[lv].vig, s_h / per, gain, 0.5f - 0.5f / per);
+   /* corner radius ~3% of the height (more with more curvature) */
+   rad = s_h * (0.012f + k_lv[lv].curv * 0.6f);
+   hx = s_w * 0.5f; hy = s_h * 0.5f;
+   glUniform4f(s_uA, k_lv[lv].scan, k_lv[lv].curv, k_lv[lv].halo, k_lv[lv].vig);
+   glUniform4f(s_uB, s_h / per, 0.5f - 0.5f / per, gain, gain * k_lv[lv].mask);
+   glUniform4f(s_uE, hx, hy, hx - rad, hy - rad);
+   glUniform4f(s_uH, 0.0f, 0.0f, 0.5f + rad / 1.5f, 0.0f);
    glBindTexture(GL_TEXTURE_2D, s_tex);
    glBindVertexArray(s_vao);
    glDrawArrays(GL_TRIANGLES, 0, 3);

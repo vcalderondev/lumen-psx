@@ -126,7 +126,8 @@ the Spanish key set and keeps its placeholders.
 `settings.ini` holds one `key=value` per line; unknown keys are kept. Keys:
 `language`, `profile`, `screensaver_minutes` (0 = off), `demo_enabled`, `demo_seconds`,
 `attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`),
-`show_stock_games` (`0`/`1`), `crt` (`off` / `soft` / `strong`), `version`.
+`show_stock_games` (`0`/`1`), `crt` (`off` / `soft` / `strong`), `crt_shader` (`fast`,
+the default, / `quality`: which maths the games' CRT filter uses), `version`.
 It is written atomically (temporary file + rename) and only when something changed.
 
 ## Enhanced graphics
@@ -148,8 +149,8 @@ with rounded edges, halation and a vignette. Soft keeps the picture bright and n
 flat; Strong is a curved consumer TV.
 
 - **Dashboard** (`src/crt.c`): the frame is drawn into an offscreen target the size of
-  the output and put on screen by one more full-screen pass (one triangle, 5 bilinear
-  fetches per pixel, the rest ALU). MSAA is kept: on the console the target is
+  the output and put on screen by one more full-screen pass (one triangle, 1 bilinear
+  fetch per pixel, the rest mediump ALU with no exp or division). MSAA is kept: on the console the target is
   multisampled on chip (`GL_EXT_multisampled_render_to_texture`, resolved for free);
   where that is missing a multisampled renderbuffer is resolved with one blit. The
   target's depth and the window's old contents are invalidated, so neither costs memory
@@ -157,7 +158,11 @@ flat; Strong is a curved consumer TV.
   Cost (`LUMEN_COST=1`, psc-sim): +0.92 Mpx/frame at 720p, +2.07 Mpx/frame at 1080p, one
   draw call; check it on the console with the `bench` file.
 - **Games**: `lumen/shaders/crt-lumen-{soft,strong}.glslp` (one-pass GLSL,
-  `dist/shaders/crt-lumen.glsl`, same maths and values). When the setting is on, the
+  `dist/shaders/crt-lumen.glsl`, same maths and values). The pass draws straight into
+  the screen (no `scale_type`, so RetroArch adds no FBO and no copy pass), with 1 bilinear
+  fetch per pixel, its constants worked out per vertex and its colour maths in mediump.
+  `crt_shader=quality` in `settings.ini` switches the games to the older, heavier maths
+  (`crt-lumen-{soft,strong}-quality.glslp`: 5 fetches, all highp). When the setting is on, the
   launch request carries `crt=soft|strong`; `run.sh` puts `video_shader_enable = "true"`
   first in the extra config and hands the preset to RetroArch with `--set-shader`
   (`LUMEN_RA_SHADER`; RetroArch 1.22 has no config key for the shader path). It works the
@@ -168,6 +173,26 @@ flat; Strong is a curved consumer TV.
   `run_retroarch()` in `lumen.conf` must pass `--set-shader "$LUMEN_RA_SHADER"` when it
   is set (the shipped `lumen.conf` does). Without the presets the game runs unfiltered
   (logged in `session.log`).
+
+### CRT filter cost
+
+`tools/crt-bench/crt-bench.sh` (needs psc-sim's Docker image) draws the shaders the way
+RetroArch's gl driver does (and the dashboard's pass), times them on llvmpipe with one
+thread and compares the pictures. Synthetic frames, 1280x720 screen, ms per frame:
+
+| | no filter | 0.20.0 | now |
+|---|---|---|---|
+| Game 320x240 (4:3 viewport), Soft / Strong | 6.0 | 21.2 / 21.4 | 8.8 / 9.0 |
+| Game 640x480 (enhanced), Soft / Strong | 6.1 / 6.2 | 21.8 / 22.2 | 9.5 / 8.9 |
+| Dashboard 1280x720, Soft / Strong | 8.4 / 8.3 | 19.2 / 19.2 | 12.7 / 12.8 |
+
+So the filter itself costs about 2.8 ms instead of 15.3 ms on a game frame (about 5x less)
+and 4.4 ms instead of 10.9 ms on the dashboard. The look stays within 38-44 dB PSNR of
+the quality maths (`docs/images/crt-fast-vs-quality.png`); the visible difference is a
+little less glow around thin bright strokes. llvmpipe is not the GE8300: on the console
+the removed FBO round trip (about 5.5 MB of memory traffic per frame) and the move from
+~15 transcendental ops per pixel in highp to one sqrt in mostly FP16 should weigh at least
+as much; check it there with the `bench` file and RetroArch's frame-time counter.
 
 ## Profiles
 

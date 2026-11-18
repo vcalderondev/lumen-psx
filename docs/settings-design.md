@@ -595,7 +595,8 @@ title=Crash Bandicoot
 profile=main
 mode=normal                    # normal | demo
 demo_seconds=60                # only meaningful with mode=demo
-crt=soft                       # soft | strong: CRT filter on (absent = off; not for apps)
+crt=soft                       # soft | strong (| soft-quality | strong-quality with crt_shader=quality):
+                               # CRT filter on (absent = off; not for apps)
 graphics=original              # original | enhanced                (step 4)
 opt_core_name=PCSX-ReARMed     # folder/file name of RetroArch's per-core .opt (step 4)
 opt.pcsx_rearmed_neon_enhancement_enable=disabled                     (step 4, 0..n lines)
