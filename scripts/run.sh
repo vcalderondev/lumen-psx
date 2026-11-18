@@ -88,7 +88,7 @@ lumen_parse_launch() {
   case "$L_DEMO_SECONDS" in *[!0-9]*|"") L_DEMO_SECONDS=60 ;; esac
   case "$L_RESUME" in 1) ;; *) L_RESUME=0 ;; esac
   case "$L_KIND" in app) ;; *) L_KIND=game ;; esac
-  case "$L_CRT" in soft|strong) ;; *) L_CRT="" ;; esac
+  case "$L_CRT" in soft|strong|soft-quality|strong-quality) ;; *) L_CRT="" ;; esac
   [ "$L_KIND" = app ] && [ -n "$L_CONTENT" ] && return 0
   [ -n "$L_CORE" ] && [ -n "$L_CONTENT" ]
 }
@@ -163,7 +163,8 @@ lumen_merge_opt() {
 # handed over with --appendconfig. RetroArch keeps the FIRST copy of a key within one
 # file, so these lines must never just be concatenated after its retroarch.cfg.
 # The merged .opt needs no line here: RetroArch reads its per-core file by itself.
-# CRT filter (request crt=soft|strong): shaders on, before the ra.* lines so it wins, and
+# CRT filter (request crt=soft|strong, or soft-quality|strong-quality when settings.ini has
+# crt_shader=quality: the heavier maths): shaders on, before the ra.* lines so it wins, and
 # the preset in LUMEN_RA_SHADER for run_retroarch's --set-shader (RetroArch 1.22 has no
 # cfg key for the shader path: --set-shader acts as a global auto-shader preset).
 lumen_build_ra_extra() {

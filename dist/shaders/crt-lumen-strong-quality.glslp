@@ -1,0 +1,15 @@
+# Lumen CRT filter, "strong", quality maths (crt-lumen-quality.glsl: 5 fetches, all highp;
+# about 5x the GPU time of crt-lumen-strong.glslp). Lumen uses it with crt_shader=quality
+# in settings.ini; it can also be loaded from RetroArch's menu.
+# No scale_type: the pass draws straight into the screen at its size (with one, RetroArch
+# renders into an extra viewport-sized FBO and copies it out with a second pass).
+shaders = "1"
+shader0 = "crt-lumen-quality.glsl"
+filter_linear0 = "true"
+wrap_mode0 = "clamp_to_border"
+parameters = "CRT_SCAN;CRT_MASK;CRT_CURV;CRT_HALO;CRT_VIG"
+CRT_SCAN = "0.55"
+CRT_MASK = "0.32"
+CRT_CURV = "0.045"
+CRT_HALO = "0.24"
+CRT_VIG = "0.34"

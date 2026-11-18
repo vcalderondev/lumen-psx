@@ -5090,7 +5090,13 @@ int main(int argc, char **argv)
       req.profile = profiles_active()->id;
       req.demo = demo;
       req.resume = !demo && g_play_resume;
-      if (!req.app && crt_level() != CRT_OFF) req.crt = crt_id(crt_level());   /* same filter in the game */
+      if (!req.app && crt_level() != CRT_OFF)
+      {  /* same filter in the game; crt_shader=quality in settings.ini: the heavier maths */
+         static char crt[24];
+         snprintf(crt, sizeof(crt), "%s%s", crt_id(crt_level()),
+                  strcmp(settings_get("crt_shader", "fast"), "quality") ? "" : "-quality");
+         req.crt = crt;
+      }
       req.demo_seconds = demo && lp->demo_seconds > 0 ? lp->demo_seconds : settings_get_int("demo_seconds", 60, 20, 300);
       if (lp->has_gfx && !req.app)   /* a native port has no core to configure */
       {
