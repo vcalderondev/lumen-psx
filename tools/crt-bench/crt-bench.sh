@@ -6,6 +6,8 @@
 #   before: crt-lumen-quality.glsl through the viewport FBO + copy pass (the 0.20 presets)
 #   after:  crt-lumen.glsl straight to the screen (the current presets)
 # and the dashboard's pass (src/crt.c) before (CRT_BENCH_BASE, default 0.20.0) and now.
+# CRT_BENCH_PASS=1 times the fastest single pass alone instead of whole frames (the number
+# to compare shader variants with: it leaves out the upload and the clear).
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SHADERS="$(cd "$HERE/../../dist/shaders" && pwd)"
@@ -14,11 +16,12 @@ FRAMES="${CRT_BENCH_FRAMES:-30}"
 BASE="${CRT_BENCH_BASE:-6418cd8}"
 mkdir -p "$OUT/dash"
 git -C "$HERE" show "$BASE:src/crt.c" > "$OUT/dash/crt-before.c"
-cp "$HERE/../../src/crt.c" "$OUT/dash/crt-after.c"
-docker run --rm -e LP_NUM_THREADS=1 -e FRAMES="$FRAMES" -v "$HERE":/bench:ro -v "$SHADERS":/shaders:ro \
+SRC="$(cd "$HERE/../../src" && pwd)"
+docker run --rm -e LP_NUM_THREADS=1 -e FRAMES="$FRAMES" ${CRT_BENCH_PASS:+-e CRT_BENCH_PASS=1} \
+  -v "$HERE":/bench:ro -v "$SHADERS":/shaders:ro -v "$SRC":/lumen-src:ro \
   -v "$OUT":/out psc-sim sh -c '
 set -e
-cc -O2 -o /tmp/crt-bench /bench/crt-bench.c -lEGL -lGLESv2 -lm
+cc -O2 -w -I/lumen-src -o /tmp/crt-bench /bench/crt-bench.c /lumen-src/crt.c -lEGL -lGLESv2 -lSDL2 -lm
 mkdir -p /tmp/f && python3 /bench/make-frames.py /tmp/f
 SOFT="0.30 0.16 0.022 0.14 0.22"; STRONG="0.55 0.32 0.045 0.24 0.34"
 {
@@ -41,8 +44,9 @@ for lv in soft strong; do
   [ $lv = soft ] && P="$SOFT" || P="$STRONG"
   cp /bench/dash-off.vs /tmp/dash-off.vs; cp /bench/dash-off.fs /tmp/dash-off.fs   # no filter: a copy
   for v in off before after; do
-    [ $v = off ] || python3 /bench/extract-dash.py /out/dash/crt-$v.c /tmp/dash-$v
-    ms=$(/tmp/crt-bench dash /tmp/dash-$v /tmp/f/dash-1280x720.ppm /tmp/o.ppm $FRAMES "$P")
+    [ $v = before ] && python3 /bench/extract-dash.py /out/dash/crt-before.c /tmp/dash-before
+    [ $v = after ] && m=live || m=dash   # after: the real src/crt.c
+    ms=$(/tmp/crt-bench $m /tmp/dash-$v /tmp/f/dash-1280x720.ppm /tmp/o.ppm $FRAMES "$P")
     python3 -c "from PIL import Image; Image.open(\"/tmp/o.ppm\").save(\"/out/dash-$lv-$v.png\")"
     printf "%-10s %-8s %-28s %10s\n" dashboard $lv $v $ms
   done

@@ -127,7 +127,8 @@ the Spanish key set and keeps its placeholders.
 `language`, `profile`, `screensaver_minutes` (0 = off), `demo_enabled`, `demo_seconds`,
 `attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`),
 `show_stock_games` (`0`/`1`), `crt` (`off` / `soft` / `strong`), `crt_shader` (`fast`,
-the default, / `quality`: which maths the games' CRT filter uses), `version`.
+the default, / `quality`: which maths the games' CRT filter uses), `crt_pass` (`pixel`,
+the default, / `mesh`: how the dashboard draws its CRT pass), `version`.
 It is written atomically (temporary file + rename) and only when something changed.
 
 ## Enhanced graphics
@@ -150,7 +151,13 @@ flat; Strong is a curved consumer TV.
 
 - **Dashboard** (`src/crt.c`): the frame is drawn into an offscreen target the size of
   the output and put on screen by one more full-screen pass (one triangle, 1 bilinear
-  fetch per pixel, the rest mediump ALU with no exp or division). MSAA is kept: on the console the target is
+  fetch per pixel, the rest mediump ALU with no exp or division; the level's constants
+  reach the pixel as flat varyings, so it loads no uniform). `crt_pass=mesh` in
+  `settings.ini` draws the pass as a curved mesh instead (about 1800 triangles): the
+  curvature, the vignette and the rounded edge are then worked out per vertex and the
+  pixel fetches at an interpolated coordinate. Same picture (50 dB apart); on psc-sim's
+  software GPU the triangles cost more than they save, on the console's tile-based GPU
+  it should be the cheaper of the two: try it there with the `bench` file. MSAA is kept: on the console the target is
   multisampled on chip (`GL_EXT_multisampled_render_to_texture`, resolved for free);
   where that is missing a multisampled renderbuffer is resolved with one blit. The
   target's depth and the window's old contents are invalidated, so neither costs memory
@@ -160,7 +167,8 @@ flat; Strong is a curved consumer TV.
 - **Games**: `lumen/shaders/crt-lumen-{soft,strong}.glslp` (one-pass GLSL,
   `dist/shaders/crt-lumen.glsl`, same maths and values). The pass draws straight into
   the screen (no `scale_type`, so RetroArch adds no FBO and no copy pass), with 1 bilinear
-  fetch per pixel, its constants worked out per vertex and its colour maths in mediump.
+  fetch per pixel, its constants worked out per vertex (flat varyings: the pixel loads no
+  uniform), a gaussian beam without exp or division and its colour maths in mediump.
   `crt_shader=quality` in `settings.ini` switches the games to the older, heavier maths
   (`crt-lumen-{soft,strong}-quality.glslp`: 5 fetches, all highp). When the setting is on, the
   launch request carries `crt=soft|strong`; `run.sh` puts `video_shader_enable = "true"`
@@ -177,22 +185,30 @@ flat; Strong is a curved consumer TV.
 ### CRT filter cost
 
 `tools/crt-bench/crt-bench.sh` (needs psc-sim's Docker image) draws the shaders the way
-RetroArch's gl driver does (and the dashboard's pass), times them on llvmpipe with one
-thread and compares the pictures. Synthetic frames, 1280x720 screen, ms per frame:
+RetroArch's gl driver does, and the dashboard's pass through the real `src/crt.c`, times
+them on llvmpipe with one thread and compares the pictures. Synthetic frames, 1280x720
+screen, ms per whole frame (Soft / Strong):
 
 | | no filter | 0.20.0 | now |
 |---|---|---|---|
-| Game 320x240 (4:3 viewport), Soft / Strong | 6.0 | 21.2 / 21.4 | 8.8 / 9.0 |
-| Game 640x480 (enhanced), Soft / Strong | 6.1 / 6.2 | 21.8 / 22.2 | 9.5 / 8.9 |
-| Dashboard 1280x720, Soft / Strong | 8.4 / 8.3 | 19.2 / 19.2 | 12.7 / 12.8 |
+| Game 320x240 (4:3 viewport) | 6.3 / 6.4 | 22.2 / 22.4 | 8.5 / 8.6 |
+| Game 640x480 (enhanced) | 6.4 / 6.3 | 22.8 / 23.2 | 8.7 / 8.8 |
+| Dashboard 1280x720 | 8.5 / 8.5 | 19.9 / 20.0 | 10.8 / 11.2 |
 
-So the filter itself costs about 2.8 ms instead of 15.3 ms on a game frame (about 5x less)
-and 4.4 ms instead of 10.9 ms on the dashboard. The look stays within 38-44 dB PSNR of
-the quality maths (`docs/images/crt-fast-vs-quality.png`); the visible difference is a
-little less glow around thin bright strokes. llvmpipe is not the GE8300: on the console
-the removed FBO round trip (about 5.5 MB of memory traffic per frame) and the move from
-~15 transcendental ops per pixel in highp to one sqrt in mostly FP16 should weigh at least
-as much; check it there with the `bench` file and RetroArch's frame-time counter.
+So the filter itself costs about 2.2 ms instead of 15.9 ms on a game frame (about 7x
+less) and 2.5 ms instead of 11.4 ms on the dashboard (about 4.5x less). The look stays
+within 38-44 dB PSNR of the quality maths (`docs/images/crt-fast-vs-quality.png`); the
+visible difference is a little less glow around thin bright strokes.
+
+How it got there: every formulation of the pixel's maths was measured against its
+alternatives (`CRT_BENCH_PASS=1` times the pass alone, without the upload and the clear,
+which are 5.3 ms of a game frame here) and the fastest that kept the picture was kept:
+no FBO, 1 fetch, constants per vertex as flat varyings, the beam as (1 - x/8)^8 with its
+width a quadratic of r + g + b, the mask as `min(abs(...))`, one scalar for beam, vignette
+and edge. Each alternative left is 0.05-0.9 ms slower. llvmpipe is not the GE8300: on the
+console the removed FBO round trip (about 5.5 MB of memory traffic per frame) and the move
+from ~15 transcendental ops per pixel in highp to one sqrt in mostly FP16 should weigh at
+least as much; check it there with the `bench` file and RetroArch's frame-time counter.
 
 ## Profiles
 

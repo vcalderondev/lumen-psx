@@ -19,7 +19,8 @@ int         crt_begin(int w, int h);
 void        crt_prepare(int w, int h);
 GLuint      crt_target(void);             /* framebuffer the frame draws into (0: window) */
 /* end the frame: draws the scene to the window through the shader (no-op when off).
- * Leaves the window bound; blend, depth, scissor, program, VAO and texture are restored. */
+ * Leaves the window bound; blend, depth, scissor, program, VAO, array buffer, clear colour
+ * and texture are restored. Setting crt_pass (pixel | mesh) picks how the pass is drawn. */
 void        crt_end(void);
 
 #endif

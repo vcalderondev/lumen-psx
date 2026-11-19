@@ -1,11 +1,13 @@
-/* CRT filter for the dashboard (crt.h). One extra full-screen pass at the end of the frame:
+/* CRT filter for the dashboard (crt.h). One extra pass at the end of the frame:
  *   - the frame is drawn into an offscreen colour + depth target the size of the window.
  *     With MSAA on (setting msaa, the window's samples) the target keeps it: PowerVR's
  *     GL_EXT_multisampled_render_to_texture resolves on chip for free; without it a
  *     multisampled renderbuffer is resolved with one blit (psc-sim's Mesa);
- *   - the pass draws one triangle over the window: 1 bilinear fetch and mediump ALU for
- *     the scanlines, the aperture grille, the curvature, the halation, the vignette and the
- *     rounded edge (constants from the CPU). No mipmaps, no second target, no extra resolve.
+ *   - the pass puts the target on the window: 1 bilinear fetch per pixel and mediump ALU
+ *     for the scanlines, the aperture grille, the halation, the curvature, the vignette
+ *     and the rounded edge (constants from the CPU). No mipmaps, no second target, no
+ *     extra resolve. Drawn as one triangle, or (setting crt_pass=mesh) as a curved mesh
+ *     that takes the curvature, the vignette and the edge off the pixel.
  * Tile-based GPU: the target's depth and the window's previous contents are invalidated
  * so neither is ever written to or read back from memory.
  * The RetroArch preset (dist/shaders/crt-lumen.glsl) is the same maths on the game image. */
@@ -25,58 +27,125 @@ static const struct { float scan, mask, curv, halo, vig; int per720, per1080; } 
    { 0.55f, 0.32f, 0.045f, 0.24f, 0.34f, 3, 4 },
 };
 
-static const char *VS_CRT =
+/* The pixel's maths shared by both ways of drawing the pass (below), on a colour c, a
+ * virtual line yl (highp) and k, the vignette times the edge's coverage. Colour maths in
+ * mediump (FP16: twice the rate on the GE8300); no exp, no division. The halation glows
+ * from the pixel's own colour (the old 4-tap blur was 2.6 px wide; under 1 dB apart). */
+#define FS_HEAD \
+   "#version 300 es\n" \
+   "precision mediump float;\n" \
+   "uniform sampler2D uTex;\n" \
+   "flat in vec4 uA;\n"            /* 1 - scanline depth, scanline depth, halation */ \
+   "flat in vec4 uB;\n"            /* mask: bright level, bright - dim */ \
+   "out vec4 oc;\n"
+/* the level's constants reach the pixel as flat varyings: the vertex shader copies the
+ * uniforms (kA, kB...) over, so the pixel has no uniform to load */
+#define VS_CONST \
+   "uniform vec4 kA, kB;\n" \
+   "flat out mediump vec4 uA, uB;\n"
+#define FS_TAIL \
+   /* scanlines: a gaussian beam per virtual line, wider on bright pixels: (1 - x/8)^8 ~ \
+    * exp(-x), x = f^2 / 2s^2, s = 0.24 + 0.2 brightness; 1/16s^2 as a quadratic of r+g+b */ \
+   "   float f = fract(yl) - 0.5;\n" \
+   "   float l = c.r + c.g + c.b;\n" \
+   "   float g = 1.0 - f * f * (1.085 + l * (-0.44583 + 0.06389 * l));\n" \
+   "   g *= g; g *= g; g *= g;\n" \
+   /* aperture grille: R, G, B stripes one device pixel wide */ \
+   "   highp float mx = fract(gl_FragCoord.x * (1.0 / 3.0));\n" \
+   "   vec3 m = uB.x - uB.y * min(abs(vec3(0.5, 1.5, 2.5) - mx * 3.0), 1.0);\n" \
+   "   float bk = (uA.x + uA.y * g) * k;\n" \
+   "   c = c * (m * bk + c * (uA.z * k));\n"                /* halation (c^2) glows over the mask */ \
+   "   oc = vec4(c, 1.0);\n" \
+   "}\n"
+
+/* Way 1, per pixel (the default): one triangle over the window; the pixel works out the
+ * curvature, the vignette and the rounded edge (one sqrt) itself. */
+static const char *VS_PIX =
    "#version 300 es\n"
+   VS_CONST
    "out highp vec2 vP;\n"
+   "flat out highp vec4 uC, uE, uK;\n"
+   "uniform vec4 kC, kE, kK;\n"
    "void main() {\n"
+   "   uA = kA; uB = kB; uC = kC; uE = kE; uK = kK;\n"
    "   vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"   /* (0,0) (2,0) (0,2) */
    "   vP = p * 2.0 - 1.0;\n"                                                     /* the screen: -1..1 */
    "   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
    "}\n";
-
-/* Colour maths in mediump (FP16: twice the rate on the GE8300), coordinates in highp;
- * everything that only depends on the level and the size is worked out on the CPU
- * (crt_end) and comes in as uniforms. Per pixel: 1 bilinear fetch (the halation glows
- * from the pixel's own colour: the old 4-tap blur was 2.6 px wide and the difference is
- * under 1 dB), one sqrt, no exp or division. */
-static const char *FS_CRT =
-   "#version 300 es\n"
-   "precision mediump float;\n"
-   "uniform sampler2D uTex;\n"
-   "uniform vec4 uA;\n"            /* scanline depth, curvature, halation, vignette */
-   "uniform highp vec4 uB;\n"      /* virtual lines, line phase, mask bright level, bright - dim */
-   "uniform highp vec4 uE;\n"      /* half the window (px), the same minus the corner radius */
-   "uniform highp vec4 uH;\n"      /* z: 0.5 + corner radius / 1.5 */
+static const char *FS_PIX =
+   FS_HEAD
+   "flat in highp vec4 uC;\n"      /* curvature, vignette / 4, virtual lines, line phase */
+   "flat in highp vec4 uE;\n"      /* half the window (px), the same minus the corner radius */
+   "flat in highp vec4 uK;\n"      /* 0.5 + corner radius / 1.5 */
    "in highp vec2 vP;\n"
-   "out vec4 oc;\n"
    "void main() {\n"
    "   highp vec2 p = vP;\n"
-   "   p *= 1.0 + uA.y * p.yx * p.yx;\n"                    /* barrel: corners curve away */
+   "   p *= 1.0 + uC.x * p.yx * p.yx;\n"                    /* barrel: corners curve away */
    "   highp vec2 uv = p * 0.5 + 0.5;\n"
    "   vec3 c = texture(uTex, uv).rgb;\n"
-   /* scanlines: a gaussian beam per virtual line, wider on bright pixels: (1 - x/8)^8 ~
-    * exp(-x), x = f^2 / 2s^2, 1/s^2 a quadratic in the brightness (no exp, no division) */
-   "   highp float yl = uv.y * uB.x + uB.y;\n"
-   "   float f = fract(yl) - 0.5;\n"
-   "   float l = dot(c, vec3(0.299, 0.587, 0.114));\n"
-   "   float g = max(1.0 - f * f * (17.36 + l * (-21.4 + 9.2 * l)) * (1.0 / 16.0), 0.0);\n"
-   "   g *= g; g *= g; g *= g;\n"
+   "   highp float yl = uv.y * uC.z + uC.w;\n"
    /* vignette and the tube's rounded edge (1.5 px antialiased): one scalar */
-   "   float r2 = dot(p, p) * 0.5;\n"
+   "   highp vec2 p2 = p * p;\n"
+   "   float r2 = p2.x + p2.y;\n"
    "   highp vec2 q = max(abs(p) * uE.xy - uE.zw, 0.0);\n"
-   "   float k = (1.0 - uA.w * r2 * r2) * clamp(uH.z - length(q) * (1.0 / 1.5), 0.0, 1.0);\n"
-   /* aperture grille: R, G, B stripes one device pixel wide (phase 1/6, 1/2, 5/6) */
-   "   highp float mx = fract(gl_FragCoord.x * (1.0 / 3.0));\n"
-   "   vec3 m = uB.z - uB.w * step(0.25, abs(vec3(1.0 / 6.0, 0.5, 5.0 / 6.0) - mx));\n"
-   "   c = c * (m * ((1.0 - uA.x + uA.x * g) * k) + c * (uA.z * k));\n"   /* halation (c^2) glows over the mask */
-   "   oc = vec4(c, 1.0);\n"
+   "   float k = (1.0 - uC.y * r2 * r2) * clamp(uK.x - length(q) * (1.0 / 1.5), 0.0, 1.0);\n"
+   FS_TAIL;
+
+/* Way 2, a curved mesh (setting crt_pass=mesh): the curvature, the vignette and the
+ * rounded, antialiased edge are worked out per vertex, so the pixel is left with a fetch
+ * at an interpolated coordinate (no dependent read) and the shared maths: about a third
+ * less work per pixel, for about 1800 triangles. The mesh (mesh_build) holds, per
+ * vertex, the point of the frame it shows (aP.xy, -1..1, slightly more on the antialiasing
+ * ring) and the edge's coverage (aP.z: 1, or 0 on the outer ring). The vertex goes where
+ * the barrel distortion p' = p (1 + curv p.yx^2) puts that point on the screen: the
+ * inverse, by fixed-point iteration (it converges fast, curv is small). */
+static const char *VS_MESH =
+   "#version 300 es\n"
+   "layout(location = 0) in vec3 aP;\n"
+   VS_CONST
+   "uniform vec4 kC;\n"            /* curvature, vignette / 4, virtual lines, line phase */
+   "out highp vec2 vUv;\n"
+   "out highp float vYl;\n"
+   "out mediump float vK;\n"
+   "void main() {\n"
+   "   uA = kA; uB = kB;\n"
+   "   vec4 uC = kC;\n"
+   "   vec2 s = aP.xy;\n"
+   "   for (int i = 0; i < 5; i++) s = aP.xy / (1.0 + uC.x * s.yx * s.yx);\n"
+   "   vUv = aP.xy * 0.5 + 0.5;\n"
+   "   vYl = vUv.y * uC.z + uC.w;\n"
+   "   float r2 = dot(aP.xy, aP.xy);\n"
+   "   vK = aP.z * (1.0 - uC.y * r2 * r2);\n"               /* edge coverage x vignette */
+   "   gl_Position = vec4(s, 0.0, 1.0);\n"
    "}\n";
+static const char *FS_MESH =
+   FS_HEAD
+   "in highp vec2 vUv;\n"
+   "in highp float vYl;\n"
+   "in mediump float vK;\n"
+   "void main() {\n"
+   "   vec3 c = texture(uTex, vUv).rgb;\n"
+   "   highp float yl = vYl;\n"
+   "   float k = vK;\n"
+   FS_TAIL;
+
+/* mesh: cells per half width / height up to where the corner starts, lines across each
+ * corner (the arc's segments), plus the antialiasing ring */
+#ifndef MESH_NX
+#define MESH_NX 12
+#define MESH_NY 8
+#define MESH_NC 4
+#endif
+#define MESH_LX (2 * (MESH_NX + MESH_NC + 1) + 1)
+#define MESH_LY (2 * (MESH_NY + MESH_NC + 1) + 1)
 
 typedef void (*fbtex_ms_fn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
 typedef void (*rb_ms_fn)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
 
-static GLuint s_prog, s_vao, s_fbo, s_tex, s_depth, s_msfbo, s_mscol;
-static GLint  s_uTex, s_uA, s_uB, s_uE, s_uH;
+static GLuint s_prog, s_vao, s_vbo, s_ibo, s_fbo, s_tex, s_depth, s_msfbo, s_mscol;
+static GLint  s_uTex, s_uA, s_uB, s_uC, s_uE, s_uK;
+static int    s_mesh = -1;                     /* the program in s_prog: 0 per pixel, 1 mesh */
+static int    s_mesh_w, s_mesh_h, s_mesh_lv;   /* what the mesh was built for */
 static int    s_w, s_h, s_samples, s_mode;   /* mode: 0 plain, 1 on-chip MSAA, 2 MSAA + blit */
 static int    s_failed, s_on, s_level;
 
@@ -110,9 +179,9 @@ static GLuint compile(GLenum type, const char *src)
    return s;
 }
 
-static int program_init(void)
+static int program_init(int mesh)
 {
-   GLuint vs = compile(GL_VERTEX_SHADER, VS_CRT), fs = compile(GL_FRAGMENT_SHADER, FS_CRT);
+   GLuint vs = compile(GL_VERTEX_SHADER, mesh ? VS_MESH : VS_PIX), fs = compile(GL_FRAGMENT_SHADER, mesh ? FS_MESH : FS_PIX);
    GLint ok = 0;
    if (!vs || !fs) return -1;
    s_prog = glCreateProgram();
@@ -124,12 +193,80 @@ static int program_init(void)
    glGetProgramiv(s_prog, GL_LINK_STATUS, &ok);
    if (!ok) { logf_("crt: program link failed"); glDeleteProgram(s_prog); s_prog = 0; return -1; }
    s_uTex = glGetUniformLocation(s_prog, "uTex");
-   s_uA = glGetUniformLocation(s_prog, "uA");
-   s_uB = glGetUniformLocation(s_prog, "uB");
-   s_uE = glGetUniformLocation(s_prog, "uE");
-   s_uH = glGetUniformLocation(s_prog, "uH");
-   glGenVertexArrays(1, &s_vao);   /* no attributes: the vertex shader uses gl_VertexID */
+   s_uA = glGetUniformLocation(s_prog, "kA");
+   s_uB = glGetUniformLocation(s_prog, "kB");
+   s_uC = glGetUniformLocation(s_prog, "kC");
+   s_uE = glGetUniformLocation(s_prog, "kE");
+   s_uK = glGetUniformLocation(s_prog, "kK");
+   if (!s_vao)
+   {
+      glGenVertexArrays(1, &s_vao);
+      glGenBuffers(1, &s_vbo);
+      glGenBuffers(1, &s_ibo);
+   }
+   s_mesh = mesh;
+   s_mesh_w = s_mesh_h = 0;
    return 0;
+}
+
+/* one axis of the mesh, in pixels from the centre: n cells out to where the corner starts
+ * (e = half - rad), MESH_NC lines across the corner up to the edge's inner side
+ * (rad - 0.75), one more on its outer side (rad + 0.75); mirrored. Returns the count. */
+static int mesh_axis(float *a, int n, float half, float rad)
+{
+   const float e = half - rad;
+   const int h = n + MESH_NC + 1;   /* lines on one side, without the centre */
+   int i;
+   a[h] = 0.0f;
+   for (i = 1; i <= h; i++)
+   {
+      const float v = i <= n ? e * i / n
+                    : (i < h ? e + (rad - 0.75f) * (i - n) / MESH_NC : e + rad + 0.75f);
+      a[h + i] = v; a[h - i] = -v;
+   }
+   return 2 * h + 1;
+}
+
+/* The mesh for a w x h window and corner radius rad (px): a grid over the frame whose
+ * corner squares are squeezed onto quarter circles (a point at (dx, dy) from the corner's
+ * centre goes to the arc of radius max(dx, dy)), so its border is the rounded rectangle.
+ * The outer ring of vertices lies 1.5 px further out with coverage 0: the edge's
+ * antialiasing. Bound to s_vao; the caller restores the bindings. */
+static void mesh_build(int w, int h, float rad)
+{
+   static float xs[MESH_LX], ys[MESH_LY], v[MESH_LX * MESH_LY * 3];
+   static GLushort idx[(MESH_LX - 1) * (MESH_LY - 1) * 6];
+   const float hx = w * 0.5f, hy = h * 0.5f, ex = hx - rad, ey = hy - rad;
+   const int nx = mesh_axis(xs, MESH_NX, hx, rad), ny = mesh_axis(ys, MESH_NY, hy, rad);
+   int ix, iy, n = 0;
+   for (iy = 0; iy < ny; iy++)
+      for (ix = 0; ix < nx; ix++)
+      {
+         float x = xs[ix], y = ys[iy];
+         float dx = fabsf(x) - ex, dy = fabsf(y) - ey;
+         if (dx > 0.0f && dy > 0.0f)
+         {
+            const float k = (dx > dy ? dx : dy) / sqrtf(dx * dx + dy * dy);
+            x = (x < 0.0f ? -1.0f : 1.0f) * (ex + dx * k);
+            y = (y < 0.0f ? -1.0f : 1.0f) * (ey + dy * k);
+         }
+         v[n++] = x / hx; v[n++] = y / hy;
+         v[n++] = (ix == 0 || iy == 0 || ix == nx - 1 || iy == ny - 1) ? 0.0f : 1.0f;
+      }
+   n = 0;
+   for (iy = 0; iy < ny - 1; iy++)
+      for (ix = 0; ix < nx - 1; ix++)
+      {
+         const GLushort a = (GLushort)(iy * nx + ix), b = (GLushort)(a + 1), c = (GLushort)(a + nx), d = (GLushort)(c + 1);
+         idx[n++] = a; idx[n++] = b; idx[n++] = c;
+         idx[n++] = b; idx[n++] = d; idx[n++] = c;
+      }
+   glBindVertexArray(s_vao);
+   glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+   glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+   glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void *)0);
+   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_ibo);   /* kept by the VAO */
+   glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
 }
 
 static void target_free(void)
@@ -224,7 +361,9 @@ int crt_begin(int w, int h)
    s_level = crt_level();
    if (s_level != CRT_OFF && !s_failed)
    {
-      if (!s_prog && program_init() < 0) s_failed = 1;
+      const int mesh = !strcmp(settings_get("crt_pass", "pixel"), "mesh");
+      if (s_prog && mesh != s_mesh) { glDeleteProgram(s_prog); s_prog = 0; }   /* the setting changed */
+      if (!s_prog && program_init(mesh) < 0) s_failed = 1;
       if (!s_failed && (w != s_w || h != s_h) && target_init(w, h) < 0) s_failed = 1;
       if (s_failed) logf_("crt: filter unavailable, drawing without it");
       else s_on = 1;
@@ -246,9 +385,10 @@ void crt_prepare(int w, int h)
 void crt_end(void)
 {
    static const GLenum k_depth[1] = { GL_DEPTH_ATTACHMENT }, k_win[2] = { GL_COLOR, GL_DEPTH };
-   GLint prog = 0, tex = 0, vao = 0, unit = 0;
+   GLint prog = 0, tex = 0, vao = 0, unit = 0, abuf = 0;
    GLboolean blend, depth, scissor;
-   float gain, per, rad, hx, hy;
+   GLfloat cc[4];
+   float gain, per, rad;
    const int lv = s_level;
    if (!s_on) return;
    if (s_mode == 2)
@@ -260,33 +400,52 @@ void crt_end(void)
    }
    glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, k_depth);   /* the scene's depth is never stored */
    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-   glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, k_win);     /* every window pixel is drawn below */
+   glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, k_win);     /* nothing of the old window is kept */
 
    glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
    glGetIntegerv(GL_ACTIVE_TEXTURE, &unit);
    glActiveTexture(GL_TEXTURE0);
    glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+   glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &abuf);
+   glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
    blend = glIsEnabled(GL_BLEND); depth = glIsEnabled(GL_DEPTH_TEST); scissor = glIsEnabled(GL_SCISSOR_TEST);
    glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_SCISSOR_TEST);
    glViewport(0, 0, s_w, s_h);
-
    /* the mask and the scanlines take light away: win most of it back (bright parts clip) */
    gain = powf(1.0f / ((1.0f - 0.35f * k_lv[lv].scan) * (1.0f - 0.667f * k_lv[lv].mask)), 0.85f);
    per = (float)(s_h >= 1000 ? k_lv[lv].per1080 : k_lv[lv].per720);
+   rad = s_h * (0.012f + k_lv[lv].curv * 0.6f);   /* corner radius ~3% of the height (more with more curvature) */
    glUseProgram(s_prog);
    glUniform1i(s_uTex, 0);
-   /* corner radius ~3% of the height (more with more curvature) */
-   rad = s_h * (0.012f + k_lv[lv].curv * 0.6f);
-   hx = s_w * 0.5f; hy = s_h * 0.5f;
-   glUniform4f(s_uA, k_lv[lv].scan, k_lv[lv].curv, k_lv[lv].halo, k_lv[lv].vig);
-   glUniform4f(s_uB, s_h / per, 0.5f - 0.5f / per, gain, gain * k_lv[lv].mask);
-   glUniform4f(s_uE, hx, hy, hx - rad, hy - rad);
-   glUniform4f(s_uH, 0.0f, 0.0f, 0.5f + rad / 1.5f, 0.0f);
+   glUniform4f(s_uA, 1.0f - k_lv[lv].scan, k_lv[lv].scan, k_lv[lv].halo, 0.0f);
+   glUniform4f(s_uB, gain, gain * k_lv[lv].mask, 0.0f, 0.0f);
+   glUniform4f(s_uC, k_lv[lv].curv, k_lv[lv].vig * 0.25f, s_h / per, 0.5f - 0.5f / per);
    glBindTexture(GL_TEXTURE_2D, s_tex);
    glBindVertexArray(s_vao);
-   glDrawArrays(GL_TRIANGLES, 0, 3);
+   if (s_mesh)
+   {
+      if (s_mesh_w != s_w || s_mesh_h != s_h || s_mesh_lv != lv)
+      {
+         mesh_build(s_w, s_h, rad);
+         s_mesh_w = s_w; s_mesh_h = s_h; s_mesh_lv = lv;
+      }
+      glEnableVertexAttribArray(0);
+      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);               /* around the tube: black (the mesh stops at its edge) */
+      glClear(GL_COLOR_BUFFER_BIT);
+      glDrawElements(GL_TRIANGLES, (MESH_LX - 1) * (MESH_LY - 1) * 6, GL_UNSIGNED_SHORT, (void *)0);
+   }
+   else
+   {
+      const float hx = s_w * 0.5f, hy = s_h * 0.5f;
+      glUniform4f(s_uE, hx, hy, hx - rad, hy - rad);
+      glUniform4f(s_uK, 0.5f + rad / 1.5f, 0.0f, 0.0f, 0.0f);
+      glDisableVertexAttribArray(0);                      /* gl_VertexID only */
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+   }
 
+   glClearColor(cc[0], cc[1], cc[2], cc[3]);
+   glBindBuffer(GL_ARRAY_BUFFER, (GLuint)abuf);
    glBindVertexArray(vao);
    glBindTexture(GL_TEXTURE_2D, tex);
    glActiveTexture(unit);

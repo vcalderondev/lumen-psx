@@ -10,18 +10,23 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   set `scale_type`, so RetroArch draws the pass straight to the screen instead of into an
   extra viewport-sized FBO that a second pass then copies out; `crt-lumen.glsl` takes 1
   bilinear fetch per pixel instead of 5, works out its constants (line count, gain,
-  mask levels, corner radius) per vertex, approximates the gaussian beam without exp or
-  division and keeps its colour maths in mediump. Dashboard (`src/crt.c`): the same
-  maths, 1 fetch instead of 5. Measured with the new `tools/crt-bench` on psc-sim: the
-  filter costs about 5x less on a game frame and 2.5x less on the dashboard; the look
-  stays within 38-44 dB PSNR (README, "CRT filter cost").
+  mask levels, corner radius) per vertex and hands them over as flat varyings, draws the
+  gaussian beam without exp or division and keeps its colour maths in mediump.
+  Dashboard (`src/crt.c`): the same maths, 1 fetch instead of 5, constants as flat
+  varyings. Measured with the new `tools/crt-bench` on psc-sim: the filter costs about 7x
+  less on a game frame and 4.5x less on the dashboard; the look stays within 38-44 dB PSNR
+  (README, "CRT filter cost").
 
 ### Added
 - `crt_shader=quality` in `settings.ini`: the games' CRT filter with the previous maths
   (`crt-lumen-{soft,strong}-quality.glslp`, `crt-lumen-quality.glsl`); the launch request's
   `crt=` takes `soft-quality` / `strong-quality`.
-- `tools/crt-bench`: times the CRT shaders the way RetroArch and the dashboard draw them
-  and compares the pictures (psc-sim's Docker image).
+- `crt_pass=mesh` in `settings.ini`: the dashboard's CRT pass drawn as a curved mesh
+  (curvature, vignette and edge per vertex), to try on the console; the default stays the
+  per-pixel pass, the faster of the two on psc-sim.
+- `tools/crt-bench`: times the CRT shaders the way RetroArch draws them, and the
+  dashboard's pass through the real `src/crt.c`, and compares the pictures (psc-sim's
+  Docker image).
 
 ## [0.20.0] - 2026-11-17
 
