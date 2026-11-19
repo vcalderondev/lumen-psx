@@ -3,6 +3,37 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [0.22.0] - 2026-11-19
+
+A lighter dashboard: a frame costs 33 to 46 % less on psc-sim, with the same picture but
+for the covers' filtering. On the console the dashboard already held 60 fps at 1080p with
+vsync; without it (`bench`) 0.21.0 reads 110.8 fps and a run of this code that was
+disturbed (the selection was moved while it ran) 113.6: not yet measured cleanly there.
+
+### Changed
+- Generated backgrounds (games without a background image) are drawn straight into the
+  frame: the gradient, the two lights and the legibility scrim are worked out per vertex
+  of a 20 x 32 grid and the pixel only interpolates the colour and adds the dither. They
+  were worked out per pixel into a 640x360 target 20 times a second, in two passes, and
+  that target read back by a full-screen textured quad every frame. A crossfade between
+  two generated backgrounds is the same single pass; one to or from an image still goes
+  through the target, now rendered in one pass (the scrim is part of the palette pass).
+  Same picture to 2/255. `bg_mesh=0` in `settings.ini` draws them through the target.
+- Covers are sampled bilinear in the nearest mipmap level (4 texels a pixel) instead of
+  trilinear (8): a tile only has two sizes on screen. The one visible change: the fine
+  detail of a cover is filtered slightly differently. `cover_trilinear=1` in
+  `settings.ini` brings trilinear back.
+- The inside of every cover runs without the rounded mask's distance field: the unfocused
+  ones as plain textured quads, the focused one with only its sheen and top light. Same
+  pixels.
+- A stroked shape (the focus rings) is drawn as the four strips of its frame instead of
+  one blended quad over everything the ring surrounds. Same pixels.
+
+Measured on psc-sim (llvmpipe, one thread, 12 demo games, ms per frame, 0.21.0 -> now):
+1280x720 at rest 30.3 -> 20.1, moving through the row 35.4 -> 19.3; 1920x1080 at rest
+65.1 -> 41.9, moving 74.4 -> 40.1. llvmpipe is not the GE8300: check it on the console
+with the `bench` file.
+
 ## [0.21.0] - 2026-11-18
 
 A CRT filter light enough for the console: about 7x cheaper on the games and 4.5x on
