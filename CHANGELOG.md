@@ -3,7 +3,10 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.21.0] - 2026-11-18
+
+A CRT filter light enough for the console: about 7x cheaper on the games and 4.5x on
+the dashboard on psc-sim, with the same look. Not yet measured on the console.
 
 ### Changed
 - CRT filter, much lighter for the console's GPU, same look. Games: the presets no longer
