@@ -1,5 +1,7 @@
 # Lumen
 
+![LPSX]([https://site.com/image.png](https://lpsx.dev/brand/logo-front.svg))
+
 A lightweight game frontend for the PlayStation Classic.
 
 **Website, screenshots and library manager: [lpsx.dev](https://lpsx.dev/)** ·
