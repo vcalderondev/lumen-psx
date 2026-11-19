@@ -9,20 +9,34 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 
 - flat dashboard (OpenGL ES 3.0): full-screen game art, system tabs, a row of cover tiles
   moved by springs, ambient colour taken from the selected cover
-- platform pills with an animated platform switch (L1/R1)
+- systems: PlayStation, the console's built-in games, PlayStation Portable, Nintendo 64,
+  NES, Super Nintendo, Mega Drive / Genesis, Game Boy / Color, Game Boy Advance, Arcade
+  and homebrew apps, each declared by one file (docs/systems.md)
+- system tabs with an animated switch (L2/R2), pages of games (L1/R1)
 - "play" animation: a flat illustration of the system's machine, the game's disc or
   cartridge goes into it, and it fades out
 - per-game background image (`games/<n>/background.jpg|png`) at ~30 % opacity,
   crossfaded and decoded on a worker thread so browsing never stutters
 - launches games in RetroArch and comes back to the same game afterwards
-- tiny: a single ~75 KB binary; only covers near the selection stay in memory
-- translated UI: Spanish (default), English, Portuguese, French, German, Italian
+- tiny: a single <!-- lumen-size -->~75 KB<!-- /lumen-size --> binary; only covers near
+  the selection stay in memory
+- translated UI: English (default), Spanish, Portuguese, French, German, Italian
 - game menu on Start: favourites and folders (shown as their own rows), and "Save and exit"
   on OPEN with a "continue where you left off?" question on the next Play
-- homebrew apps (`layout = apps`, docs/systems.md) and themes (docs/themes.md)
+- profiles with their own memory cards and save states, and per-profile play statistics
+- settings panel: language, profiles, screensaver and game demos, sound (menu music,
+  interface sounds), display (720p / 1080p, theme, CRT filter), per-system graphics
+  presets, library, connections (Wi-Fi, Bluetooth controllers, USB Ethernet, clock) and
+  about (including Sony's stock kernel restore)
+- CRT filter for the dashboard and the games (Off, Soft, Strong)
+- USB transfer between the Lumen stick and a second USB drive, and a library check that
+  reports broken games
+- native ports (games recompiled to run on the console, `games/<id>-native/`), homebrew
+  apps (`layout = apps`, docs/systems.md) and themes (docs/themes.md)
 
-Target: SDL2 2.0.4, SDL2_image 2.0.1, SDL2_ttf 2.0.14, OpenGL ES 3.2 (PowerVR GE8300),
-Weston 1.11 / Wayland, glibc 2.24, Cortex-A35 (armhf), 1 GB RAM.
+Target: SDL2 2.0.4 (or SDL3 3.4 through sdl2-compat), SDL2_image 2.0.1, SDL2_ttf 2.0.14,
+OpenGL ES 3.0 on a PowerVR GE8300, Wayland (Weston 16 from Lumen's overlay, or the stock
+Weston 1.11), glibc 2.24, Cortex-A35 (armhf), 1 GB RAM.
 
 ## What Lumen PSX upgrades on the console
 
@@ -52,12 +66,15 @@ expects), SDL 2.0.4, ALSA, udev and libxkbcommon.
 
 ## Build
 
-Requires a cross toolchain for the console (GCC targeting armhf / glibc 2.24, linking
-against the console's own libraries) exposed as `psc-env` + `psc-check`:
+Requires psc-platform's toolchain for the console (GCC targeting armhf / glibc 2.24,
+linking against the console's own libraries, exposed as `psc-env` + `psc-check`). With
+this checkout as `lumen/`:
 
 ```sh
-./toolchain/psc lumen/build.sh      # -> lumen/out/lumen
+$PSC_TOOLCHAIN/psc sh lumen/build.sh      # -> lumen/out/lumen, lumen/out/lumen-buttons
 ```
+
+Each build also writes the binary's size into this README (the feature list).
 
 ## Install
 
@@ -87,6 +104,12 @@ USB layout:
 /lumen/boot.sh                boot entry: takes over the display, runs a session,
                               falls back to the stock Sony menu when it ends
 /lumen/run.sh                 session loop (frontend <-> RetroArch)
+/lumen/lumen-buttons          console buttons daemon, demo watcher, game watchdog
+/lumen/power.sh, net.sh,      power button, Connections (Wi-Fi, Bluetooth, Ethernet),
+  kernel.sh                   kernel check and stock kernel restore
+/lumen/compositor/            Wayland + Weston 16 (and SDL3, network) packages, unpacked
+                              to RAM at boot
+/lumen/retroarch/             RetroArch 1.22, its config and joypad profiles
 /lumen/lumen.conf             optional: RETROARCH=..., LUMEN_MAIN_SAVES/STATES,
                               LUMEN_CORE_OPT_DIR, run_retroarch() override
 /lumen/gamecontrollerdb.txt   controller mappings
@@ -97,6 +120,8 @@ USB layout:
                               installs that keep icons/, fonts/ and systems/<id>/ art
                               directly under /lumen still work (fallback)
 /lumen/cores/*.so             libretro cores (PlayStation: pcsx_rearmed_libretro.so)
+/lumen/shaders/               CRT filter presets for RetroArch
+/lumen/themes/<id>/           themes (docs/themes.md)
 /lumen/state.txt, logs/       last selection, logs (lumen.log and buttons.log are fsync'ed
                               at most once per second, at once for error lines, and at
                               exit, so they survive a power-off on the exFAT stick)
@@ -105,7 +130,7 @@ USB layout:
 /lumen/profiles/<id>/         one folder per extra profile: profile.ini, saves/, states/
 /lumen/systems/<id>.ini       one declaration per system (docs/systems.md)
 /lumen/systems/psxstock.games metadata of the console's built-in games (layout = stock)
-/games/<id>/...               one library per system, e.g.
+/games/<id>/...               one library per system (native ports: /games/<id>-native/), e.g.
 /games/psx/<n>/Game.ini, <disc>.cue, <disc>.png, disc.png, background.jpg
 /games/snes/<name>.sfc, <name>.png, <name>-cart.png, <name>-background.jpg
 ```
@@ -116,7 +141,8 @@ session from an already running system.
 
 ## Languages and settings
 
-The UI language comes from `language=` in `/lumen/settings.ini` (default `es`); any
+The UI language comes from `language=` in `/lumen/settings.ini` (default `en`; a new
+install asks for it on its first start); any
 `<code>.lang` in `/lumen/lang/` can be chosen. A `.lang` file is UTF-8, one
 `key = value` per line, `#` comments, `\n` for a line break, and named placeholders
 in braces (`{n}`, `{name}`, `{system}`, `{title}`) that a translation may reorder.
@@ -127,16 +153,18 @@ the Spanish key set and keeps its placeholders.
 
 `settings.ini` holds one `key=value` per line; unknown keys are kept. Keys:
 `language`, `profile`, `screensaver_minutes` (0 = off), `demo_enabled`, `demo_seconds`,
-`attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced`),
-`show_stock_games` (`0`/`1`), `crt` (`off` / `soft` / `strong`), `crt_shader` (`fast`,
-the default, / `quality`: which maths the games' CRT filter uses), `crt_pass` (`pixel`,
-the default, / `mesh`: how the dashboard draws its CRT pass), `version`.
+`attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced` / `native`),
+`show_stock_games` (`0`/`1`), `music`, `music_volume`, `ui_sounds`, `display`, `theme`,
+`crt` (`off` / `soft` / `strong`), `crt_shader` (`fast`, the default, / `quality`),
+`crt_pass` (`pixel`, the default, / `mesh`), `wifi`, `bluetooth`, `net_time`, `sdl`
+(`stock` turns SDL3 off), `welcome_hide`, `language_asked`, `version`.
 It is written atomically (temporary file + rename) and only when something changed.
 
 ## Enhanced graphics
 
 Settings → Graphics lists every system whose declaration has a `[graphics]` section
-(see `docs/systems.md`) and switches it between Original and Enhanced. PlayStation
+(see `docs/systems.md`) and switches it between Original, Enhanced and, where the system
+declares it, Native. PlayStation
 Enhanced turns on PCSX-ReARMed's high-resolution renderer (some games may run slower);
 the other shipped systems smooth the picture with RetroArch's bilinear filter. The
 choice is applied at every launch: `run.sh` merges the core options into RetroArch's
@@ -147,77 +175,20 @@ RetroArch overrides in the extra config.
 
 Settings → Display → CRT filter (`crt=` in `settings.ini`: Off, Soft, Strong) gives the
 dashboard and the games the look of a CRT: gaussian scanlines that widen on bright
-pixels, an aperture grille (R, G, B stripes one device pixel wide), a slight curvature
-with rounded edges, halation and a vignette. Soft keeps the picture bright and nearly
-flat; Strong is a curved consumer TV.
-
-- **Dashboard** (`src/crt.c`): the frame is drawn into an offscreen target the size of
-  the output and put on screen by one more full-screen pass (one triangle, 1 bilinear
-  fetch per pixel, the rest mediump ALU with no exp or division; the level's constants
-  reach the pixel as flat varyings, so it loads no uniform). `crt_pass=mesh` in
-  `settings.ini` draws the pass as a curved mesh instead (about 1800 triangles): the
-  curvature, the vignette and the rounded edge are then worked out per vertex and the
-  pixel fetches at an interpolated coordinate. Same picture (50 dB apart); on psc-sim's
-  software GPU the triangles cost more than they save, on the console's tile-based GPU
-  it should be the cheaper of the two: try it there with the `bench` file. MSAA is kept: on the console the target is
-  multisampled on chip (`GL_EXT_multisampled_render_to_texture`, resolved for free);
-  where that is missing a multisampled renderbuffer is resolved with one blit. The
-  target's depth and the window's old contents are invalidated, so neither costs memory
-  bandwidth. The splash, the launch animation and the in-game dialog go through it too.
-  Cost (`LUMEN_COST=1`, psc-sim): +0.92 Mpx/frame at 720p, +2.07 Mpx/frame at 1080p, one
-  draw call; check it on the console with the `bench` file.
-- **Games**: `lumen/shaders/crt-lumen-{soft,strong}.glslp` (one-pass GLSL,
-  `dist/shaders/crt-lumen.glsl`, same maths and values). The pass draws straight into
-  the screen (no `scale_type`, so RetroArch adds no FBO and no copy pass), with 1 bilinear
-  fetch per pixel, its constants worked out per vertex (flat varyings: the pixel loads no
-  uniform), a gaussian beam without exp or division and its colour maths in mediump.
-  `crt_shader=quality` in `settings.ini` switches the games to the older, heavier maths
-  (`crt-lumen-{soft,strong}-quality.glslp`: 5 fetches, all highp). When the setting is on, the
-  launch request carries `crt=soft|strong`; `run.sh` puts `video_shader_enable = "true"`
-  first in the extra config and hands the preset to RetroArch with `--set-shader`
-  (`LUMEN_RA_SHADER`; RetroArch 1.22 has no config key for the shader path). It works the
-  same for software cores and for the GLES 3 cores (Mupen64Plus-Next, PPSSPP), whose
-  image RetroArch passes through the shader too. Scanlines follow the core's lines:
-  224/240p are drawn line by line; above 300 lines (480i, enhanced resolutions) the
-  density is halved until it fits, so upscaled 3D keeps its detail. A custom
-  `run_retroarch()` in `lumen.conf` must pass `--set-shader "$LUMEN_RA_SHADER"` when it
-  is set (the shipped `lumen.conf` does). Without the presets the game runs unfiltered
-  (logged in `session.log`).
-
-### CRT filter cost
-
-`tools/crt-bench/crt-bench.sh` (needs psc-sim's Docker image) draws the shaders the way
-RetroArch's gl driver does, and the dashboard's pass through the real `src/crt.c`, times
-them on llvmpipe with one thread and compares the pictures. Synthetic frames, 1280x720
-screen, ms per whole frame (Soft / Strong):
-
-| | no filter | 0.20.0 | now |
-|---|---|---|---|
-| Game 320x240 (4:3 viewport) | 6.3 / 6.4 | 22.2 / 22.4 | 8.5 / 8.6 |
-| Game 640x480 (enhanced) | 6.4 / 6.3 | 22.8 / 23.2 | 8.7 / 8.8 |
-| Dashboard 1280x720 | 8.5 / 8.5 | 19.9 / 20.0 | 10.8 / 11.2 |
-
-So the filter itself costs about 2.2 ms instead of 15.9 ms on a game frame (about 7x
-less) and 2.5 ms instead of 11.4 ms on the dashboard (about 4.5x less). The look stays
-within 38-44 dB PSNR of the quality maths (`docs/images/crt-fast-vs-quality.png`); the
-visible difference is a little less glow around thin bright strokes.
-
-How it got there: every formulation of the pixel's maths was measured against its
-alternatives (`CRT_BENCH_PASS=1` times the pass alone, without the upload and the clear,
-which are 5.3 ms of a game frame here) and the fastest that kept the picture was kept:
-no FBO, 1 fetch, constants per vertex as flat varyings, the beam as (1 - x/8)^8 with its
-width a quadratic of r + g + b, the mask as `min(abs(...))`, one scalar for beam, vignette
-and edge. Each alternative left is 0.05-0.9 ms slower. llvmpipe is not the GE8300: on the
-console the removed FBO round trip (about 5.5 MB of memory traffic per frame) and the move
-from ~15 transcendental ops per pixel in highp to one sqrt in mostly FP16 should weigh at
-least as much; check it there with the `bench` file and RetroArch's frame-time counter.
+pixels, an aperture grille, a slight curvature with rounded edges, halation and a
+vignette. Soft keeps the picture bright and nearly flat; Strong is a curved consumer TV.
+The dashboard draws it as one extra pass (`src/crt.c`); the games use the RetroArch
+presets `lumen/shaders/crt-lumen-{soft,strong}.glslp`, which `run.sh` hands over with
+`--set-shader` (`LUMEN_RA_SHADER`), so a custom `run_retroarch()` in `lumen.conf` must pass
+`--set-shader "$LUMEN_RA_SHADER"` when it is set. Without the presets the game runs
+unfiltered (logged in `session.log`). Implementation details: `docs/crt-filter.md`.
 
 ## Profiles
 
 Each profile has its own memory cards and save states. `main` (shown as
 "Principal") always exists and keeps the save folders RetroArch already uses
 (`LUMEN_MAIN_SAVES` / `LUMEN_MAIN_STATES` in `lumen.conf`; when unset, RetroArch's own
-config decides), so existing saves are never lost. Up to 7 more profiles (`p1`…`p9`)
+config decides), so existing saves are never lost. Up to 7 more profiles (ids `p1`…`p9`, the lowest free one)
 are created in the settings panel; each gets `/lumen/profiles/<id>/profile.ini`
 (`name`, `color`, `created`), `saves/` and `states/`, and every game launched under it
 starts with an empty memory card. The active profile (`profile=` in `settings.ini`) is
@@ -258,11 +229,13 @@ Screensaver page starts the scene at once.
 | Input | Action |
 |---|---|
 | D-pad left/right (hold to scroll) | browse |
-| L2 / R2 | previous / next platform |
+| L1 / R1 | previous / next page of games |
+| L2 / R2 | previous / next system |
 | D-pad up / down | move the focus: games, system tabs (left / right change the system), profile (Cross opens its settings) |
-| Cross, Start | play |
+| Cross | play |
 | Triangle, or Select tapped alone | open the settings panel |
-| Select, then Start | leave Lumen (opens the stock Sony menu) |
+| Start | game menu (favourites, folders) |
+| Select + Start | leave Lumen (opens the stock Sony menu) |
 
 Inside the settings panel: D-pad moves and changes values (left/right), Cross
 selects, Circle or Square goes back (closes the panel on the first page), Triangle
@@ -273,28 +246,43 @@ Backspace (back), Escape (leave).
 ## Settings panel
 
 Pages: **Language** (applied live, no restart), **Profile** (switch, create, rename,
-colour, delete), **Display** (output and theme after a restart, CRT filter live), **Screensaver** (start
-after Never/1–30 min, game demos on/off, length of each demo, preview), **Graphics**
-(per-system presets; empty until a system declares them), **Library** (built-in games
-Hidden / Visible, rescanned live) and **About** (version,
-games, systems, profiles, free space on the USB). Changes are written to `settings.ini` when
-the panel closes.
+colour, avatar, delete), **Screensaver** (start after Never/1–30 min, game demos on/off,
+length of each demo, preview), **Sound** (menu music, its volume, interface sounds),
+**Display** (output and theme after a restart, CRT filter live), **Graphics** (per-system
+presets; empty until a system declares them), **Library** (built-in games Hidden /
+Visible, rescanned live; library check; USB transfer), **Connections** (Wi-Fi, Bluetooth
+controllers, USB Ethernet, clock) and **About** (version, games, systems, profiles, free
+space on the USB, kernel). Changes are written to `settings.ini` when the panel closes.
 
 ## Layout
 
 ```
 src/main.c, src/gl.h          frontend (src/lumen.h: shared data model and render services)
+src/ui.c, src/image.c         UI kit, image helpers
 src/i18n.c, src/settings.c    translation layer, settings store
-src/panel.c                   settings panel, on-screen keyboard, confirm dialog
-src/profiles.c                profiles (separate memory cards and save states)
+src/panel.c                   settings panel, on-screen keyboard, confirm dialog, toast
+src/profiles.c, src/stats.c   profiles (separate memory cards and save states), play statistics
 src/launch.c                  launch request v2 writer
 src/attract.c                 screensaver / attract scene, demo picker
+src/gamemenu.c                game menu and resume question
+src/collections.c             favourites, folders, resume marks
+src/welcome.c                 first-run presentation and language page
+src/music.c                   menu and per-game background music (stb_vorbis)
+src/theme.c                   themes
+src/crt.c                     dashboard CRT pass
+src/filepicker.c              file picker card
+src/transfer.c                USB transfer
+src/audit.c                   library check
+src/net.c, src/conn.c         Connections worker and cards
+src/kern.c                    kernel card
+src/status.c                  top-right clock and network status
 src/buttons.c                 lumen-buttons: console buttons daemon, demo watcher, game watchdog
-dist/lang/*.lang              UI translations
-scripts/boot.sh               boot entry
-scripts/run.sh                session loop
-dist/                         data files installed next to the binary
-third_party/include/SDL2      SDL_image 2.0.1 / SDL_ttf 2.0.14 headers (zlib licence)
+scripts/boot.sh, run.sh       boot entry, session loop
+scripts/power.sh, net.sh,     power button, connections, kernel restore,
+  kernel.sh, package.sh       release packaging
+dist/                         data files installed next to the binary (lang, systems,
+                              shaders, themes, controller mappings)
+third_party/                  SDL_image 2.0.1 / SDL_ttf 2.0.14 headers (zlib licence), stb_vorbis
 tools/install.sh              USB installer
 tools/check-lang.sh           checks the translation files against es.lang
 ```

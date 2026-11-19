@@ -18,3 +18,14 @@ $CC $PSC_FLAGS -O2 -std=gnu11 -Wall -Wno-format-truncation src/buttons.c -o out/
 $STRIP out/lumen-buttons
 ls -la out/lumen out/lumen-buttons
 psc-check out/lumen out/lumen-buttons
+# Keep the README's binary size current: the text between <!-- lumen-size --> and
+# <!-- /lumen-size --> becomes the stripped size of out/lumen, rounded to KB.
+kb=$(( ($(wc -c < out/lumen) + 512) / 1024 ))
+if grep -q '<!-- lumen-size -->' README.md 2>/dev/null; then
+   sed "s|<!-- lumen-size -->[^<]*<!-- /lumen-size -->|<!-- lumen-size -->~$kb KB<!-- /lumen-size -->|" \
+      README.md > out/README.md.tmp
+   # rewrite in place (keeps the file's owner and mode) and only when the size changed
+   cmp -s out/README.md.tmp README.md || cat out/README.md.tmp > README.md
+   rm -f out/README.md.tmp
+   echo "README: lumen binary ~$kb KB"
+fi
