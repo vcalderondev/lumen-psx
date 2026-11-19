@@ -1021,6 +1021,11 @@ static const char *FS_2D =
    "                 if (aux1.x > -1.0) { float s = v_uv.x + v_uv.y * 0.55 - aux1.x; c += vec3(0.22 * exp(-s * s * 55.0)); }\n"
    "                 c += vec3(aux1.y * 0.10 * (1.0 - v_uv.y));\n"
    "                 frag = vec4(c, color.a * m); return; }\n"
+   /* 12: the inside of that tile, where the mask is 1: mode 6 without its distance field */
+   "  if (mode==12) { vec3 c = texture(tex, aux0.xy + v_uv * aux0.zw).rgb * color.rgb;\n"
+   "                  if (aux1.x > -1.0) { float s = v_uv.x + v_uv.y * 0.55 - aux1.x; c += vec3(0.22 * exp(-s * s * 55.0)); }\n"
+   "                  c += vec3(aux1.y * 0.10 * (1.0 - v_uv.y));\n"
+   "                  frag = vec4(c, color.a); return; }\n"
    /* 7: generated background: diagonal gradient base(aux0) -> colour A(aux1), two soft
     *    light blobs (accent aux2, A) centred at rect.xy / rect.zw (moved by the CPU),
     *    dithered against banding */
@@ -1029,14 +1034,14 @@ static const char *FS_2D =
    "                 vec3 c = mix(aux0.rgb, aux1.rgb * 0.70, g * g);\n"
    "                 highp vec2 d1 = (p - rect.xy) * vec2(1.7778, 1.0), d2 = (p - rect.zw) * vec2(1.7778, 1.0);\n"
    "                 c += aux2.rgb * 0.55 * exp(-dot(d1, d1) * 2.6) + aux1.rgb * 0.35 * exp(-dot(d2, d2) * 3.5);\n"
+   /*    then the legibility scrim in the same pass (it was a second, blended pass over
+    *    the picture): a uniform dark layer (aux0.w opacity), plus the left 58 %, top and
+    *    bottom bands darkened further. The dither goes on after it, at full strength */
+   "                 float l = 1.0 - smoothstep(0.0, 0.64, p.x); l = 0.70 * l * (0.55 + 0.45 * l);\n"
+   "                 float b = 0.60 * smoothstep(0.62, 1.0, p.y), t = 0.45 * (1.0 - smoothstep(0.0, 0.24, p.y));\n"
+   "                 c *= (1.0 - l) * (1.0 - b) * (1.0 - t) * (1.0 - aux0.w);\n"
    "                 highp float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);\n"
    "                 frag = vec4(c + (n - 0.5) * (1.5 / 255.0), color.a); return; }\n"
-   /* 8: legibility overlay: a uniform dark layer (aux0.x opacity), plus the left 58 %,
-    *    top and bottom bands darkened further */
-   "  if (mode==8) { float l = 1.0 - smoothstep(0.0, 0.64, v_uv.x); l = 0.70 * l * (0.55 + 0.45 * l);\n"
-   "                 float b = 0.60 * smoothstep(0.62, 1.0, v_uv.y), t = 0.45 * (1.0 - smoothstep(0.0, 0.24, v_uv.y));\n"
-   "                 float a = 1.0 - (1.0 - l) * (1.0 - b) * (1.0 - t) * (1.0 - aux0.x);\n"
-   "                 frag = vec4(0.0, 0.0, 0.0, a * color.a); return; }\n"
    /* 9: flat rounded rectangle, filled (aux0.x <= 0) or stroked inside with width aux0.x */
    "  if (mode==9) { highp float d = rr_dist(); float m;\n"
    "                 if (aux0.x > 0.0) m = clamp(0.5 + aux0.x * 0.5 - abs(d + aux0.x * 0.5), 0.0, 1.0); else m = clamp(0.5 - d, 0.0, 1.0);\n"
@@ -1106,6 +1111,45 @@ static const char *FS_MIX =
 static GLuint g_prog_mix;
 static GLint  um_mvp, um_ma, um_mb, um_k;
 
+/* Generated backgrounds, drawn straight into the frame. The picture (FS_2D mode 7) is a
+ * gradient, two wide gaussian lights and the legibility scrim: nothing in it changes
+ * faster than over a quarter of the screen. It was worked out per pixel into a 640x360
+ * target 20 times a second (two exp, a sin and three smoothsteps each) and that target
+ * then read back by a full-screen textured quad every frame. Here the same formula runs
+ * per vertex of a GEN_NX x GEN_NY grid over the screen and the pixel only interpolates
+ * the colour and adds the dither (no sin: interleaved gradient noise, a dot and two
+ * fracts): no offscreen pass, no texture read, and the lights drift every frame instead
+ * of every third. Linear interpolation over a cell is within 1/255 of the formula. Two
+ * palettes are mixed by k, so a crossfade between two generated backgrounds is the same
+ * single pass. A layer that fades to or from an image still goes through its target
+ * (bg_gen_render) and FS_MIX. Setting bg_mesh=0 draws them all through the target. */
+#define GEN_NX 20   /* 1280 triangles: finer grids (48 x 48) give the same picture to 1/255 and */
+#define GEN_NY 32   /* cost more to set up than they save; the scrim's bands need the rows */
+static const char *VS_GEN =
+   "#version 300 es\n"
+   "layout(location=0) in vec2 p;\n"   /* 0..1, y down */
+   "uniform vec4 lights; uniform vec3 b0, a0, c0, b1, a1, c1; uniform float k, sd; out highp vec3 v_c;\n"
+   "vec3 layer(vec3 b, vec3 a, vec3 acc){\n"
+   "  float g = clamp(p.x * 0.55 + (1.0 - p.y) * 0.45, 0.0, 1.0);\n"
+   "  vec3 c = mix(b, a * 0.70, g * g);\n"
+   "  vec2 d1 = (p - lights.xy) * vec2(1.7778, 1.0), d2 = (p - lights.zw) * vec2(1.7778, 1.0);\n"
+   "  return c + acc * 0.55 * exp(-dot(d1, d1) * 2.6) + a * 0.35 * exp(-dot(d2, d2) * 3.5); }\n"
+   "void main(){\n"
+   "  vec3 c = layer(b0, a0, c0); if (k > 0.0) c = mix(c, layer(b1, a1, c1), k);\n"
+   "  float l = 1.0 - smoothstep(0.0, 0.64, p.x); l = 0.70 * l * (0.55 + 0.45 * l);\n"
+   "  float b = 0.60 * smoothstep(0.62, 1.0, p.y), t = 0.45 * (1.0 - smoothstep(0.0, 0.24, p.y));\n"
+   "  v_c = c * ((1.0 - l) * (1.0 - b) * (1.0 - t) * (1.0 - sd));\n"
+   "  gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0); }\n";
+static const char *FS_GEN =
+   "#version 300 es\n"
+   "precision mediump float;\n"
+   "in highp vec3 v_c; uniform vec4 dim; out vec4 frag;\n"
+   "void main(){ highp float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
+   "  frag = vec4(clamp(v_c + (n - 0.5) * (1.5 / 255.0), 0.0, 1.0) * dim.a + dim.rgb, 1.0); }\n";
+static GLuint g_prog_gen, g_vao_gen;
+static GLint  ug_lights, ug_b[2], ug_a[2], ug_c[2], ug_k, ug_sd;
+static int    g_bg_mesh = 1;
+
 /* A scrim folded into what is under it. A menu's scrim was a full-screen quad of colour c
  * at opacity a blended over the finished dashboard: 2.07 Mpx more on every frame a menu
  * was open (6.5 Mpx in all with the settings, 6.9 with the game menu: 30 fps on the
@@ -1113,13 +1157,14 @@ static GLint  um_mvp, um_ma, um_mb, um_k;
  * x * (1 - a) + c * a (the clear colour, the opaque background, and each blended draw's
  * own colour), the frame is what the quad would have left, to the rounding, and the quad
  * is not drawn. `dim` = (c * a, 1 - a) in the three 2D programs; (0, 0, 0, 1) is none. */
-static GLint u2_dim, ut_dim, um_dim;
+static GLint u2_dim, ut_dim, um_dim, ug_dim;
 static int   g_scrim_fold = 1;   /* setting scrim_fold=0: the scrims are drawn as quads again */
 static float g_dim[4] = { 0, 0, 0, 1 };
 static void dim_apply(const float d[4])
 {
    memcpy(g_dim, d, sizeof(g_dim));
    glUseProgram(g_prog_mix); glUniform4fv(um_dim, 1, d);
+   glUseProgram(g_prog_gen); glUniform4fv(ug_dim, 1, d);
    glUseProgram(g_prog_tex); glUniform4fv(ut_dim, 1, d);
    glUseProgram(g_prog_2d);  glUniform4fv(u2_dim, 1, d);
 }
@@ -1291,6 +1336,43 @@ static void gl_setup(void)
    glEnableVertexAttribArray(1);
    glEnableVertexAttribArray(2);
 
+   {  /* generated backgrounds: their program and the grid they are worked out on */
+      static float gv[(GEN_NX + 1) * (GEN_NY + 1) * 2];
+      static unsigned short gi[GEN_NX * GEN_NY * 6];
+      GLuint vb, ib;
+      int x, y, n = 0;
+      g_prog_gen = link_prog(VS_GEN, FS_GEN);
+      ug_lights = glGetUniformLocation(g_prog_gen, "lights");
+      ug_b[0] = glGetUniformLocation(g_prog_gen, "b0"); ug_b[1] = glGetUniformLocation(g_prog_gen, "b1");
+      ug_a[0] = glGetUniformLocation(g_prog_gen, "a0"); ug_a[1] = glGetUniformLocation(g_prog_gen, "a1");
+      ug_c[0] = glGetUniformLocation(g_prog_gen, "c0"); ug_c[1] = glGetUniformLocation(g_prog_gen, "c1");
+      ug_k = glGetUniformLocation(g_prog_gen, "k");
+      ug_sd = glGetUniformLocation(g_prog_gen, "sd");
+      ug_dim = glGetUniformLocation(g_prog_gen, "dim");
+      glUseProgram(g_prog_gen);
+      glUniform4f(ug_dim, 0.0f, 0.0f, 0.0f, 1.0f);
+      for (y = 0; y <= GEN_NY; y++)
+         for (x = 0; x <= GEN_NX; x++) { gv[n++] = (float)x / GEN_NX; gv[n++] = (float)y / GEN_NY; }
+      for (n = 0, y = 0; y < GEN_NY; y++)
+         for (x = 0; x < GEN_NX; x++)
+         {
+            const unsigned short v0 = (unsigned short)(y * (GEN_NX + 1) + x), v1 = v0 + 1, v2 = v0 + GEN_NX + 1, v3 = v2 + 1;
+            gi[n++] = v0; gi[n++] = v2; gi[n++] = v1; gi[n++] = v1; gi[n++] = v2; gi[n++] = v3;
+         }
+      glGenVertexArrays(1, &g_vao_gen);
+      glBindVertexArray(g_vao_gen);
+      glGenBuffers(1, &vb);
+      glBindBuffer(GL_ARRAY_BUFFER, vb);
+      glBufferData(GL_ARRAY_BUFFER, sizeof(gv), gv, GL_STATIC_DRAW);
+      glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, (void *)0);
+      glEnableVertexAttribArray(0);
+      glGenBuffers(1, &ib);
+      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib);   /* kept by the VAO */
+      glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(gi), gi, GL_STATIC_DRAW);
+      glBindVertexArray(g_vao_quad);
+      glBindBuffer(GL_ARRAY_BUFFER, g_vbo_quad);
+   }
+
    glGenTextures(1, &g_white);
    glBindTexture(GL_TEXTURE_2D, g_white);
    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
@@ -1329,6 +1411,7 @@ static void surface_avg(SDL_Surface *c, float *avg, float *acc)
 }
 
 /* Upload an SDL surface as RGBA (ABGR8888 == R,G,B,A bytes on little endian). */
+static int g_cover_mip = 2;   /* cover_trilinear=1 in settings.ini: 1, the covers sampled trilinear as before */
 static GLuint surface_to_tex(SDL_Surface *s, int mip, float *avg)
 {
    /* the workers hand over ABGR8888 already: no second copy of it on the render thread */
@@ -1350,7 +1433,10 @@ static GLuint surface_to_tex(SDL_Surface *s, int mip, float *avg)
    glBindTexture(GL_TEXTURE_2D, t);
    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c->w, c->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, c->pixels);
-   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mip ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+   /* mip 2 (the dashboard's covers): bilinear in the nearest level, 4 texels a pixel.
+    * Trilinear reads 8 (two levels) for every pixel of every cover, and a tile only has
+    * two sizes on screen; what is scaled continuously (launch art, icons) stays trilinear */
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mip == 2 ? GL_LINEAR_MIPMAP_NEAREST : mip ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -1466,7 +1552,7 @@ static GLuint card_tex(const game_t *g, int back)
       }
    }
 #undef LINE
-   t = surface_to_tex(card, 1, NULL);
+   t = surface_to_tex(card, g_cover_mip, NULL);
    SDL_FreeSurface(card);
    return t;
 }
@@ -1487,7 +1573,7 @@ static void game_finish_cover(game_t *g, SDL_Surface *s, const float avg[3], con
 {
    if (s)
    {
-      g->tex = surface_to_tex(s, 1, NULL);
+      g->tex = surface_to_tex(s, g_cover_mip, NULL);
       g->tex_w = s->w; g->tex_h = s->h;
       memcpy(g->col, avg, sizeof(g->col));
       memcpy(g->acc, acc, sizeof(g->acc));
@@ -1568,7 +1654,7 @@ static void cost_add(float w, float h, int mode)
    glGetIntegerv(GL_VIEWPORT, vp);
    if (vp[2] != g_dw) px *= (double)vp[2] * vp[3] / ((double)g_dw * g_dh);   /* offscreen FBO */
    if (glIsEnabled(GL_BLEND)) g_cost_px_blend += px; else g_cost_px_opaque += px;
-   if (mode == 7 || mode == 8 || mode == 10 || mode == 5) g_cost_px_heavy += px;
+   if (mode == 7 || mode == 10 || mode == 5) g_cost_px_heavy += px;
    g_cost_draws += 1;
 }
 
@@ -1654,11 +1740,30 @@ static void draw_disc(float cx, float cy, float r, const float rgba[4])
    glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
 }
 
+/* A stroked shape (a focus ring) is empty inside: past the stroke and the corners its
+ * alpha is exactly 0, but drawn as one quad every pixel of the inside still ran the
+ * distance field and was blended over what the ring surrounds (the focused tile's ring:
+ * 55 000 pixels for a line 3 px wide). It is drawn as the four strips of its frame
+ * instead; the same pixels come out. */
 static void draw_shape(float x, float y, float w, float h, float radius, float stroke, const float rgba[4])
 {
-   const float k = g_ui_scale;
+   const float k = g_ui_scale, p = 1.0f / k;
+   const float in = ceilf((fmaxf(radius, stroke) + 2.0f) * k) / k;   /* inside this inset: alpha 0 */
    glUniform4f(u2_rect, w * k, h * k, radius * k, 0.0f);
    glUniform4f(u2_aux0, stroke * k, 0.0f, 0.0f, 0.0f);
+   if (stroke > 0.0f && (w - 2 * in) * k >= 24.0f && (h - 2 * in) * k >= 24.0f)
+   {
+      int i;
+      for (i = 0; i < 4; i++)
+      {  /* top, bottom (full width, with the edge's 1 px of fade: draw_sdf()), left, right */
+         const float px = i == 3 ? w - in : -p, py = i == 0 ? -p : (i == 1 ? h - in : in);
+         const float pw = i < 2 ? w + 2 * p : in + p, ph = i < 2 ? in + p : h - 2 * in;
+         glUniform4f(u2_uvw, px / w, py / h, pw / w, ph / h);
+         draw_2d(0, x + px, y + py, pw, ph, rgba, 9);
+      }
+      glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+      return;
+   }
    draw_sdf(0, x, y, w, h, rgba, 9);
 }
 
@@ -1925,7 +2030,7 @@ static void tile_part(GLuint tex, float x, float y, float w, float h, float px, 
 {
    glUniform4f(u2_uvw, px / w, py / h, pw / w, ph / h);
    if (opaque) glDisable(GL_BLEND);
-   draw_2d(tex, x + px, y + py, pw, ph, rgba, 6);
+   draw_2d(tex, x + px, y + py, pw, ph, rgba, opaque ? 12 : 6);   /* the opaque part is the inside: no mask to work out */
    if (opaque) glEnable(GL_BLEND);
 }
 
@@ -1955,7 +2060,26 @@ static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, flo
    if (g_tile_split && rgba[3] >= 0.999f && w > 2.0f * radius + 12.0f && h > 12.0f)
    {
       const float ix = radius + 1.0f, iy = 1.0f, p = 1.0f / g_ui_scale;   /* p: the edge's fade, see draw_sdf() */
-      tile_part(tex, x, y, w, h, ix, iy, w - 2 * ix, h - 2 * iy, rgba, 1);
+      if (sheen <= -1.0f && light == 0.0f)
+      {  /* no sheen, no top light (every tile but the focused one): inside, mode 6 is the
+          * texture times the colour, so the inside goes through the plain program (no
+          * distance field, no branches) at the same texture coordinates. Not draw_2d():
+          * it would snap the quad to whole pixels, away from its edge strips */
+         const float pw = w - 2 * ix, ph = h - 2 * iy;
+         mat4 m = m4_mul(g_ortho, m4_mul(m4_translate(x + ix + pw * 0.5f, y + iy + ph * 0.5f, 0), m4_scale(pw, -ph, 1)));
+         glDisable(GL_BLEND);
+         if (g_cost_on) cost_add_at(x + ix, y + iy, pw, ph, 0);
+         glUseProgram(g_prog_tex);
+         glUniform4f(ut_uvw, u0 + ix / w * us, v0 + iy / h * vs, pw / w * us, ph / h * vs);
+         glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, m.m);
+         glUniform4fv(ut_color, 1, rgba);
+         glBindTexture(GL_TEXTURE_2D, tex ? tex : g_white);
+         glDrawArrays(GL_TRIANGLES, 0, 6);
+         glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
+         glUseProgram(g_prog_2d);
+         glEnable(GL_BLEND);
+      }
+      else tile_part(tex, x, y, w, h, ix, iy, w - 2 * ix, h - 2 * iy, rgba, 1);
       tile_part(tex, x, y, w, h, -p, -p, ix + p, h + 2 * p, rgba, 0);
       tile_part(tex, x, y, w, h, w - ix, -p, ix + p, h + 2 * p, rgba, 0);
       tile_part(tex, x, y, w, h, ix, -p, w - 2 * ix, iy + p, rgba, 0);
@@ -2079,7 +2203,7 @@ static char         bg_done_path[512];
 static int          bg_done_failed;   /* the request bg_done_path could not be decoded */
 static int          bg_quit;
 
-/* The legibility scrim (FS_2D mode 8) baked into a decoded background, so drawing it
+/* The legibility scrim (the one in FS_2D mode 7) baked into a decoded background, so drawing it
  * costs one opaque pass instead of two blended ones. The scrim is separable:
  * kept = (1 - left(u)) * (1 - bottom(v)) * (1 - top(v)) * (1 - dim). Backgrounds are
  * 16:9 and drawn cover-fit, so image space ~ screen space. */
@@ -2821,14 +2945,34 @@ static void bg_poll_upload(void)
    }
 }
 
+/* a generated layer's colours: A a bit more saturated around its mean, base = A darkened,
+ * the accent a bit more saturated too */
+static void bg_gen_palette(const bgtex_t *b, float a[3], float acc[3], float base[3])
+{
+   int k;
+   memcpy(a, b->a, 3 * sizeof(float)); memcpy(acc, b->acc, 3 * sizeof(float));
+   for (k = 0; k < 3; k++)
+   {
+      float m = (a[0] + a[1] + a[2]) / 3.0f;
+      a[k] = clampf(m + (a[k] - m) * 1.35f, 0.0f, 1.0f);
+      base[k] = a[k] * 0.22f + 0.015f;
+   }
+   for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
+}
+/* where its two lights are at t (they drift slowly) */
+static void bg_gen_lights(double t, float r[4])
+{
+   r[0] = (float)(0.80 + 0.06 * sin(t * 0.314)); r[1] = (float)(0.20 + 0.06 * cos(t * 0.271));
+   r[2] = (float)(0.22 + 0.06 * cos(t * 0.231)); r[3] = (float)(0.88 + 0.05 * sin(t * 0.293));
+}
+
 /* a generated layer's picture: its palette and the scrim rendered into its small FBO
  * (g_prog_2d bound on entry and on return, the frame's target and viewport restored) */
 static void bg_gen_render(bgtex_t *b, double t)
 {
    const float one[4] = { 1, 1, 1, 1 };
    float keep_dim[4];
-   float a[3], acc[3], base[3];
-   int k;
+   float a[3], acc[3], base[3], r[4];
    if (b->gfbo && t >= b->gen_t && t - b->gen_t < GEN_DT) return;   /* its picture is recent enough */
    b->gen_t = t;
    if (!b->gfbo)
@@ -2845,14 +2989,8 @@ static void bg_gen_render(bgtex_t *b, double t)
       glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, b->gtex, 0);
       if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) logf_("bg: generated FBO incomplete");
    }
-   memcpy(a, b->a, sizeof(a)); memcpy(acc, b->acc, sizeof(acc));
-   for (k = 0; k < 3; k++)
-   {  /* A a bit more saturated around its mean; base = A darkened */
-      float m = (a[0] + a[1] + a[2]) / 3.0f;
-      a[k] = clampf(m + (a[k] - m) * 1.35f, 0.0f, 1.0f);
-      base[k] = a[k] * 0.22f + 0.015f;
-   }
-   for (k = 0; k < 3; k++) { float m = (acc[0] + acc[1] + acc[2]) / 3.0f; acc[k] = clampf(m + (acc[k] - m) * 1.2f, 0.0f, 1.0f); }
+   bg_gen_palette(b, a, acc, base);
+   bg_gen_lights(t, r);
    {  /* the picture itself is not under a folded scrim: the quad that shows it is */
       static const float none[4] = { 0, 0, 0, 1 };
       memcpy(keep_dim, g_dim, sizeof(keep_dim));
@@ -2861,18 +2999,41 @@ static void bg_gen_render(bgtex_t *b, double t)
    glBindFramebuffer(GL_FRAMEBUFFER, b->gfbo);
    glViewport(0, 0, GEN_W, GEN_H);
    glDisable(GL_BLEND);
-   glUniform4f(u2_rect, (float)(0.80 + 0.06 * sin(t * 0.314)), (float)(0.20 + 0.06 * cos(t * 0.271)),
-                        (float)(0.22 + 0.06 * cos(t * 0.231)), (float)(0.88 + 0.05 * sin(t * 0.293)));
-   glUniform4f(u2_aux0, base[0], base[1], base[2], 0);
+   glUniform4fv(u2_rect, 1, r);
+   glUniform4f(u2_aux0, base[0], base[1], base[2], g_bg_dim);   /* .w: same scrim as the baked images */
    glUniform4f(u2_aux1, a[0], a[1], a[2], 0);
    glUniform4f(u2_aux2, acc[0], acc[1], acc[2], 0);
    draw_2d(0, 0, 0, W, H, one, 7);
    glEnable(GL_BLEND);
-   glUniform4f(u2_aux0, g_bg_dim, 0, 0, 0);
-   draw_2d(0, 0, 0, W, H, one, 8);        /* same scrim as the baked images */
    glBindFramebuffer(GL_FRAMEBUFFER, crt_target());   /* the window, or the CRT filter's target */
    glViewport(0, 0, g_dw, g_dh);
    glUniform4fv(u2_dim, 1, keep_dim);
+}
+
+/* one or two generated layers (b1 mixed over b0 by k) straight into the frame: VS_GEN.
+ * g_prog_2d bound on return, like the other background passes */
+static void bg_gen_direct(const bgtex_t *b0, const bgtex_t *b1, float k, double t)
+{
+   const bgtex_t *l[2] = { b0, b1 };
+   float a[3], acc[3], base[3], r[4];
+   int i;
+   glDisable(GL_BLEND);
+   if (g_cost_on) cost_add(W, H, 0);
+   glUseProgram(g_prog_gen);
+   bg_gen_lights(t, r);
+   glUniform4fv(ug_lights, 1, r);
+   for (i = 0; i < 2; i++)
+   {
+      bg_gen_palette(l[i], a, acc, base);
+      glUniform3fv(ug_b[i], 1, base); glUniform3fv(ug_a[i], 1, a); glUniform3fv(ug_c[i], 1, acc);
+   }
+   glUniform1f(ug_k, k);
+   glUniform1f(ug_sd, g_bg_dim);
+   glBindVertexArray(g_vao_gen);
+   glDrawElements(GL_TRIANGLES, GEN_NX * GEN_NY * 6, GL_UNSIGNED_SHORT, (void *)0);
+   glBindVertexArray(g_vao_quad);
+   glUseProgram(g_prog_2d);
+   glEnable(GL_BLEND);
 }
 
 /* draw a layer: images "cover"-fitted with a slow drift (scrim already baked in);
@@ -2922,6 +3083,13 @@ static void bg_draw_layers(float e, double t)
    GLuint ta, tb;
    mat4 m;
    if (!g_fx_bg) return;
+   if (g_bg_mesh && !g_fx_bgflat)
+   {  /* generated layers only: one pass over the grid, no target, no texture */
+      const int only_cur = bg_empty(&bg_next) || e <= 0.001f, only_next = !only_cur && e >= 0.999f;
+      if (only_cur && bg_cur.gen) { bg_gen_direct(&bg_cur, &bg_cur, 0.0f, t); return; }
+      if (only_next && bg_next.gen) { bg_gen_direct(&bg_next, &bg_next, 0.0f, t); return; }
+      if (!only_cur && !only_next && bg_cur.gen && bg_next.gen) { bg_gen_direct(&bg_cur, &bg_next, e, t); return; }
+   }
    if (bg_empty(&bg_next) || e <= 0.001f) { bg_draw(&bg_cur, 1.0f, t); return; }
    if (e >= 0.999f) { bg_draw(&bg_next, 1.0f, t); return; }   /* covers the current one */
    if (bg_empty(&bg_cur) || g_fx_bgflat)
@@ -4398,6 +4566,8 @@ int main(int argc, char **argv)
    if (g_perf_on) stuck_start();
    g_scrim_fold = settings_get_int("scrim_fold", 1, 0, 1);
    g_card_merge = settings_get_int("card_merge", 1, 0, 1);
+   g_cover_mip = settings_get_int("cover_trilinear", 0, 0, 1) ? 1 : 2;
+   g_bg_mesh = settings_get_int("bg_mesh", 1, 0, 1);
    rec_start();
 
    while (running)
