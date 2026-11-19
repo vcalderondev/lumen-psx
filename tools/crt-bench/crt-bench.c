@@ -12,9 +12,12 @@
  * InputSize, Texture, the parameters). Runs on EGL surfaceless (psc-sim's Mesa llvmpipe).
  *
  * usage: crt-bench MODE SHADER.glsl|- SRC.ppm OUT.ppm FRAMES "SCAN MASK CURV HALO VIG"
- *   dash   - the dashboard's pass (src/crt.c): SHADER is a prefix, PREFIX.vs / PREFIX.fs
- *            (extract-dash.py), SRC a 1280x720 frame; one triangle over the screen with
- *            crt_end()'s uniforms (either layout: before / after this change)
+ *   dash   - a full-screen-triangle pass over a 1280x720 frame (SRC): SHADER is a prefix,
+ *            PREFIX.vs / PREFIX.fs. The dashboard's CRT pass as it was in 0.20.0
+ *            (extract-dash.py pulls its shaders out of that src/crt.c) or dash-off (a copy)
+ *   live   - the dashboard's CRT pass as it is: this program links src/crt.c and calls
+ *            crt_begin() / crt_end() on a 1280x720 pbuffer; the level is soft, or strong
+ *            when SCAN > 0.5
  * prints: ms/frame (best of 3 runs of FRAMES frames each) */
 #define EGL_EGLEXT_PROTOTYPES
 #include <EGL/egl.h>
@@ -153,19 +156,22 @@ static void dash_uniforms(GLuint p, const float *par)
    const float rad = h * (0.012f + par[2] * 0.6f);
    glUseProgram(p);
    glUniform1i(glGetUniformLocation(p, "uTex"), 0);
-   if (glGetUniformLocation(p, "uE") < 0)
-   {  /* before: uRes, uA (scan mask curv halo), uB (vig lines gain phase) */
-      glUniform4f(glGetUniformLocation(p, "uRes"), w, h, rad, 2.6f / 1280.0f);
-      glUniform4f(glGetUniformLocation(p, "uA"), par[0], par[1], par[2], par[3]);
-      glUniform4f(glGetUniformLocation(p, "uB"), par[4], h / per, gain, 0.5f - 0.5f / per);
-   }
-   else
-   {
-      glUniform4f(glGetUniformLocation(p, "uA"), par[0], par[2], par[3], par[4]);
-      glUniform4f(glGetUniformLocation(p, "uB"), h / per, 0.5f - 0.5f / per, gain, gain * par[1]);
-      glUniform4f(glGetUniformLocation(p, "uE"), w * 0.5f, h * 0.5f, w * 0.5f - rad, h * 0.5f - rad);
-      glUniform4f(glGetUniformLocation(p, "uH"), 0.0f, 0.0f, 0.5f + rad / 1.5f, 0.0f);
-   }
+   /* 0.20.0: uRes, uA (scan mask curv halo), uB (vig lines gain phase) */
+   glUniform4f(glGetUniformLocation(p, "uRes"), w, h, rad, 2.6f / 1280.0f);
+   glUniform4f(glGetUniformLocation(p, "uA"), par[0], par[1], par[2], par[3]);
+   glUniform4f(glGetUniformLocation(p, "uB"), par[4], h / per, gain, 0.5f - 0.5f / per);
+}
+
+/* what src/crt.c needs from Lumen */
+#include <stdarg.h>
+#include "crt.h"
+static const char *g_level = "soft";
+void logf_(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap); fputc('\n', stderr); }
+const char *settings_get(const char *key, const char *def)
+{
+   if (!strcmp(key, "crt")) return g_level;
+   if (!strcmp(key, "crt_pass") && getenv("CRT_BENCH_MESH")) return "mesh";
+   return def;
 }
 
 static GLuint dash_program(const char *prefix)
@@ -206,14 +212,16 @@ int main(int argc, char **argv)
    EGLConfig cfg;
    EGLContext ctx;
    EGLint n;
-   static const EGLint cfg_attr[] = { EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_NONE };
+   static const EGLint cfg_attr[] = { EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+      EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE };
    static const EGLint ctx_attr[] = { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_NONE };
    const char *mode;
-   int frames, iw, ih, tw = 1024, th = 512, vpw, vpx, run, f;
+   int live, frames, iw, ih, tw = 1024, th = 512, vpw, vpx, run, f;
    float par[5], xamt, yamt;
    unsigned char *src;
    GLuint crt = 0, stock, vao, vbo, srctex, scr, scrtex, fbo = 0, fbotex = 0;
-   double best = 1e30;
+   double best = 1e30, pass_best = 1e30;
+   const int pass_only = getenv("CRT_BENCH_PASS") != NULL;
 
    if (argc != 7) die("usage: crt-bench fbo|direct|none SHADER.glsl|- SRC.ppm OUT.ppm FRAMES \"SCAN MASK CURV HALO VIG\"");
    mode = argv[1];
@@ -224,17 +232,25 @@ int main(int argc, char **argv)
    if (iw > 1024 || ih > 512) { tw = 2048; th = 1024; }
    xamt = (float)iw / tw; yamt = (float)ih / th;
    vpw = SCR_H * 4 / 3; vpx = (SCR_W - vpw) / 2;   /* 4:3 viewport, pillarboxed */
-   if (!strcmp(argv[1], "dash")) { vpw = SCR_W; vpx = 0; tw = SCR_W; th = SCR_H; }
+   if (!strcmp(argv[1], "dash") || !strcmp(argv[1], "live")) { vpw = SCR_W; vpx = 0; tw = SCR_W; th = SCR_H; }
 
    dpy = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
    if (!eglInitialize(dpy, NULL, NULL)) die("egl init");
    eglBindAPI(EGL_OPENGL_ES_API);
    if (!eglChooseConfig(dpy, cfg_attr, &cfg, 1, &n) || !n) die("egl config");
    ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
-   if (!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) die("egl current");
+   if (!strcmp(argv[1], "live"))
+   {  /* src/crt.c draws to the window: a pbuffer the screen's size */
+      const EGLint pb_attr[] = { EGL_WIDTH, SCR_W, EGL_HEIGHT, SCR_H, EGL_NONE };
+      EGLSurface pb = eglCreatePbufferSurface(dpy, cfg, pb_attr);
+      if (pb == EGL_NO_SURFACE || !eglMakeCurrent(dpy, pb, pb, ctx)) die("egl pbuffer");
+   }
+   else if (!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) die("egl current");
 
    stock = program(STOCK);
-   if (!strcmp(mode, "dash")) crt = dash_program(argv[2]);
+   live = !strcmp(mode, "live");
+   if (live) g_level = par[0] > 0.5f ? "strong" : "soft";
+   else if (!strcmp(mode, "dash")) crt = dash_program(argv[2]);
    else if (strcmp(mode, "none")) crt = program(slurp(argv[2]));
    glGenVertexArrays(1, &vao); glBindVertexArray(vao);
    glGenBuffers(1, &vbo);
@@ -275,43 +291,73 @@ int main(int argc, char **argv)
       {
          glActiveTexture(GL_TEXTURE0);
          glBindTexture(GL_TEXTURE_2D, srctex);
-         if (strcmp(mode, "dash") || (run == 0 && f == 0))   /* the dashboard draws its scene itself */
+         if ((strcmp(mode, "dash") && !live) || (run == 0 && f == 0))   /* the dashboard draws its scene itself */
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, iw, ih, GL_RGBA, GL_UNSIGNED_BYTE, src);
-         if (!strcmp(mode, "dash"))
+         if (live)
+         {
+            double t1;
+            if (run == 0 && f == 0)
+            {  /* the scene, once: SRC drawn into crt.c's target */
+               crt_begin(SCR_W, SCR_H);
+               glViewport(0, 0, SCR_W, SCR_H);
+               uniforms(stock, SCR_W, SCR_H, iw, ih, tw, th, par);
+               quad(vbo, 1, 1, 1);
+               glBindVertexArray(vao);
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, crt_target());
+            if (pass_only) { glFinish(); t1 = now(); }
+            crt_end();
+            if (pass_only) { glFinish(); if (run && now() - t1 < pass_best) pass_best = now() - t1; }
+            glBindVertexArray(vao);
+         }
+         else if (!strcmp(mode, "dash"))
          {  /* the scene's target is already drawn: one triangle over the window */
             glBindFramebuffer(GL_FRAMEBUFFER, scr);
             glViewport(0, 0, SCR_W, SCR_H);
+            double t1;
             dash_uniforms(crt, par);
+            if (pass_only) { glFinish(); t1 = now(); }
             glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (pass_only) { glFinish(); if (run && now() - t1 < pass_best) pass_best = now() - t1; }
          }
          else if (fbo)
          {
+            double t1, t2;
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glViewport(0, 0, vpw, SCR_H);
             uniforms(crt, vpw, SCR_H, iw, ih, tw, th, par);
+            if (pass_only) { glFinish(); t1 = now(); }
             quad(vbo, xamt, yamt, 0);
+            if (pass_only) { glFinish(); t2 = now() - t1; }
             glBindFramebuffer(GL_FRAMEBUFFER, scr);
             glClear(GL_COLOR_BUFFER_BIT);
             glViewport(vpx, 0, vpw, SCR_H);
             glBindTexture(GL_TEXTURE_2D, fbotex);
             uniforms(stock, vpw, SCR_H, vpw, SCR_H, vpw, SCR_H, par);
+            if (pass_only) { glFinish(); t1 = now(); }
             quad(vbo, 1, 1, 1);
+            if (pass_only) { glFinish(); t2 += now() - t1; if (run && t2 < pass_best) pass_best = t2; }
          }
          else
          {
+            double t1;
             glBindFramebuffer(GL_FRAMEBUFFER, scr);
             glClear(GL_COLOR_BUFFER_BIT);
             glViewport(vpx, 0, vpw, SCR_H);
             uniforms(crt ? crt : stock, vpw, SCR_H, iw, ih, tw, th, par);
+            if (pass_only) { glFinish(); t1 = now(); }
             quad(vbo, xamt, yamt, 0);
+            if (pass_only) { glFinish(); if (run && now() - t1 < pass_best) pass_best = now() - t1; }
          }
          glFlush();
       }
       glFinish();
       if (run && now() - t0 < best) best = now() - t0;
    }
-   printf("%.3f\n", best / frames);
-   glBindFramebuffer(GL_FRAMEBUFFER, scr);
+   /* CRT_BENCH_PASS=1: the fastest single pass alone (no upload, no clear): the number to
+    * compare shader variants with; the default is the whole frame, as RetroArch draws it */
+   printf("%.3f\n", pass_only ? pass_best : best / frames);
+   glBindFramebuffer(GL_FRAMEBUFFER, live ? 0 : scr);
    write_ppm(argv[4], vpx, 0, vpw, SCR_H);
    return 0;
 }
