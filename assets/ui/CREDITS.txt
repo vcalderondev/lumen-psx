@@ -1,0 +1,8 @@
+Illustrations in this folder
+
+pad.svg / pad*.png: based on "gamepad controller game" by Tuan Nguyen, from the collection
+"Duotone Technology Devices Line Vectors" on SVG Repo
+(https://www.svgrepo.com/svg/415323/gamepad-controller-game), licensed CC Attribution.
+Modified for LPSX: colours, d-pad, thumbsticks, stroke weights, crop.
+
+receiver.svg / receiver*.png: drawn for LPSX.

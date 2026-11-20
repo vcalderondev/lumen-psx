@@ -330,6 +330,53 @@ static int usb_bt_present(void)
    return found;
 }
 
+/* a Wi-Fi interface the kernel has (a dongle whose driver is bound) */
+static int wlan_present(void)
+{
+   DIR *d = opendir("/sys/class/net");
+   struct dirent *e;
+   int found = 0;
+   if (!d) return 0;
+   while (!found && (e = readdir(d)))
+   {
+      char p[300];
+      if (e->d_name[0] == '.') continue;
+      snprintf(p, sizeof(p), "/sys/class/net/%s/wireless", e->d_name);
+      if (access(p, F_OK) == 0) found = 1;
+      snprintf(p, sizeof(p), "/sys/class/net/%s/phy80211", e->d_name);
+      if (access(p, F_OK) == 0) found = 1;
+   }
+   closedir(d);
+   return found;
+}
+
+/* the USB devices plugged in, "vvvv:pppp product" each, for the log: which dongle a user has
+ * is the first question when one does not work */
+static void usb_list(char *out, size_t n)
+{
+   DIR *d = opendir("/sys/bus/usb/devices");
+   struct dirent *e;
+   size_t o = 0;
+   out[0] = 0;
+   if (!d) return;
+   while ((e = readdir(d)))
+   {
+      static const char *const f[3] = { "idVendor", "idProduct", "product" };
+      char v[3][64], p[300];
+      int k;
+      if (e->d_name[0] == '.' || strchr(e->d_name, ':') || !strncmp(e->d_name, "usb", 3)) continue;   /* devices, not interfaces or root hubs */
+      for (k = 0; k < 3; k++)
+      {
+         FILE *fp;
+         snprintf(p, sizeof(p), "/sys/bus/usb/devices/%s/%s", e->d_name, f[k]);
+         v[k][0] = 0;
+         if ((fp = fopen(p, "r"))) { if (fgets(v[k], sizeof(v[k]), fp)) v[k][strcspn(v[k], "\n")] = 0; else v[k][0] = 0; fclose(fp); }
+      }
+      if (o < n) o += (size_t)snprintf(out + o, n - o, "%s%s %s:%s %s", o ? "; " : "", e->d_name, v[0], v[1], v[2]);
+   }
+   closedir(d);
+}
+
 /* a game controller among the devices nearby, not paired yet */
 static int is_pad(const net_dev_t *d)
 {
@@ -350,13 +397,19 @@ static void ap_set(int st, const char *name)
 /* one round: search 5 s, pair the first controller in pairing mode */
 static void autopair_round(void)
 {
+   /* a controller that did not pair is left alone for a minute (it would be tried every
+    * round and keep the others waiting), and its "did not pair" stays on screen for the next
+    * search instead of being replaced at once */
+   static char fail_mac[18];
+   static double fail_until;
    char mac[18] = "", name[64] = "", out[200];
    int i, rc;
-   if (w_st.ap_state != NET_AP_DONE) ap_set(NET_AP_SEARCHING, NULL);
+   if (w_st.ap_state != NET_AP_DONE && w_st.ap_state != NET_AP_FAILED) ap_set(NET_AP_SEARCHING, NULL);
    list_bt(5);
+   if (w_st.ap_state == NET_AP_FAILED) ap_set(NET_AP_SEARCHING, NULL);
    SDL_LockMutex(s_mx);
    for (i = 0; i < w_st.ndev; i++)
-      if (!w_st.dev[i].paired && is_pad(&w_st.dev[i]))
+      if (!w_st.dev[i].paired && is_pad(&w_st.dev[i]) && !(now_s() < fail_until && !strcmp(w_st.dev[i].mac, fail_mac)))
       { snprintf(mac, sizeof(mac), "%s", w_st.dev[i].mac); snprintf(name, sizeof(name), "%s", w_st.dev[i].name); break; }
    SDL_UnlockMutex(s_mx);
    if (!mac[0]) return;
@@ -367,6 +420,7 @@ static void autopair_round(void)
       busy(1); rc = run(a, NULL, out, sizeof(out)); busy(0);
    }
    ap_set(rc == 0 ? NET_AP_DONE : NET_AP_FAILED, name);
+   if (rc != 0) { snprintf(fail_mac, sizeof(fail_mac), "%s", mac); fail_until = now_s() + 60.0; }
    logf_("net: %s %s", name, rc == 0 ? "paired" : "did not pair");
    list_bt(0);
 }
@@ -384,7 +438,9 @@ static void do_job(const job_t *j)
       int rc = run(a, NULL, out, sizeof(out));
       if (rc != 0) logf_("net: wifi on: %s", out);
       status_wifi();
-      if (rc != 0 && w_st.wifi == NET_NOADAPTER) toast("net.wifi_noadapter");
+      if (rc != 0 && strstr(out, "unsupported")) toast("net.wifi_unsupported");   /* an experimental driver, off */
+      else if (rc != 0 && strstr(out, "blocked")) toast("net.wifi_blocked");   /* net.sh's crash guard */
+      else if (rc != 0 && w_st.wifi == NET_NOADAPTER) toast("net.wifi_noadapter");
       break;
    }
    case J_WIFI_OFF: { const char *a[] = { "wifi", "off", NULL }; run(a, NULL, out, sizeof(out)); status_wifi(); break; }
@@ -445,7 +501,7 @@ static void do_job(const job_t *j)
 
 static int worker(void *unused)
 {
-   double next = 0, eth_retry = 0, next_present = 0;
+   double next = 0, eth_retry = 0, next_present = 0, bt_retry = 0, wifi_retry = 0;
    (void)unused;
    for (;;)
    {
@@ -458,11 +514,32 @@ static int worker(void *unused)
       pad = w_watch_pad; autopair = w_autopair;
       SDL_UnlockMutex(s_mx);
       if (have) { do_job(&j); continue; }
-      if (pad && now_s() >= next_present)
-      {  /* no controller: is there an adapter to pair one with? */
+      if (now_s() >= next_present)
+      {  /* hot-plug, every few seconds: the USB devices (logged when they change), a Bluetooth
+          * adapter, and a Wi-Fi or Bluetooth that was switched on before its dongle was
+          * plugged in (it failed then, "no adapter"): started again once one is there */
+         static char last_usb[1024];
+         char usb[1024];
          int p = usb_bt_present();
+         usb_list(usb, sizeof(usb));
+         int usb_changed = strcmp(usb, last_usb) != 0;
+         if (usb_changed) { logf_("net: USB devices: %s", usb[0] ? usb : "none"); snprintf(last_usb, sizeof(last_usb), "%s", usb); wifi_retry = 0; }
          if (p != w_st.bt_present) { SDL_LockMutex(s_mx); w_st.bt_present = p; bump(); SDL_UnlockMutex(s_mx); logf_("net: Bluetooth adapter %s", p ? "plugged in" : "gone"); }
-         next_present = now_s() + 3.0;
+         if (w_st.bt_on && w_st.bt == NET_NOADAPTER && p && now_s() >= bt_retry)
+         {
+            job_t r; memset(&r, 0, sizeof(r)); r.kind = J_BT_ON;
+            logf_("net: a Bluetooth adapter is there now: starting Bluetooth again");
+            do_job(&r); bt_retry = now_s() + 15.0;
+         }
+         /* Wi-Fi: its driver is only loaded for the adapter plugged in, so try again when the
+          * USB devices changed (once per change), or when an interface is already there */
+         if (w_st.wifi_on && w_st.wifi == NET_NOADAPTER && (usb_changed || wlan_present()) && now_s() >= wifi_retry)
+         {
+            job_t r; memset(&r, 0, sizeof(r)); r.kind = J_WIFI_ON;
+            logf_("net: the USB devices changed: starting Wi-Fi again");
+            do_job(&r); wifi_retry = now_s() + 15.0;
+         }
+         next_present = now_s() + (pad ? 3.0 : 5.0);
       }
       if (autopair)
       {

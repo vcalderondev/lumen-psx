@@ -39,6 +39,7 @@ else
   done
   for f in assets/launch/*/*; do [ -f "$f" ] || continue; t=${f#assets/launch/}; mkdir -p "$VOL/lumen/assets/launch/${t%/*}"; copy_file "$f" "$VOL/lumen/assets/launch/$t"; done
   for f in assets/brand/*.png; do copy_file "$f" "$VOL/lumen/assets/brand/$(basename "$f")"; done
+  for f in assets/ui/*.png; do copy_file "$f" "$VOL/lumen/assets/ui/$(basename "$f")"; done
   mkdir -p "$VOL/lumen/profiles"
   if [ "$1" = "--cores" ] && [ -d "$2" ]; then
     for f in "$2"/*.so; do copy_file "$f" "$VOL/lumen/cores/$(basename "$f")"; done

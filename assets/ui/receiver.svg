@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 360" width="240" height="360">
+  <!-- A USB Bluetooth receiver: flat planes in the console's greys, drawn for LPSX -->
+  <path d="M82,40 Q82,34 88,34 L152,34 Q158,34 158,40 L158,128 L82,128 Z" fill="#a09fa9"/>
+  <path d="M88,40 L152,40 L152,128 L88,128 Z" fill="#c0bfc7"/>
+  <path d="M88,40 L104,40 L104,128 L88,128 Z" fill="#d6d5db"/>
+  <rect x="100" y="62" width="16" height="16" rx="2" fill="#2c2b33"/><rect x="124" y="62" width="16" height="16" rx="2" fill="#2c2b33"/>
+  <rect x="52" y="124" width="136" height="212" rx="36" fill="#a09fa9"/>
+  <rect x="52" y="118" width="136" height="210" rx="36" fill="#f0f0f4"/>
+  <path d="M52,260 L188,260 L188,292 Q188,328 152,328 L88,328 Q52,328 52,292 Z" fill="#dcdbe1"/>
+  <path d="M97,192 L141,236 L120,256 L120,170 L141,190 L97,234" fill="none" stroke="#2c2b33" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="120" cy="296" r="7" fill="#5c8cff"/><circle cx="120" cy="296" r="12" fill="#5c8cff" opacity=".25"/>
+</svg>
