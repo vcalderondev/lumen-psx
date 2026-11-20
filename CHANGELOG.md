@@ -30,6 +30,13 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   (`ALSA_CONFIG_PATH`, `bluealsa:DEV=<mac>,PROFILE=a2dp`, a 128 ms RetroArch buffer) when the
   device is connected at launch, else to HDMI. Needs a psc-platform release whose
   `psc-bt.tar.gz` has bluez-alsa (the entry is hidden without it).
+- "No controller" card: whenever no controller is connected, a card asks for a USB
+  Bluetooth receiver in a free port (step 1) and, as soon as one is plugged in, switches
+  Bluetooth on and pairs the first controller put in pairing mode with no question (step 2:
+  how DualSense, DualShock 4, Switch Pro and 8BitDo enter it, live status); it closes once a
+  controller is connected, wired or not. For consoles whose two front ports are all they
+  have. Only game controllers are paired that way. The adapter is found by its USB class
+  (e0/01/01) even with Bluetooth off. `LUMEN_PADWAIT=0` turns it off (psc-sim).
 - `net.sh http <url> <out> [<from>-<to>]`.
 
 ### Changed

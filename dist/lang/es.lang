@@ -585,3 +585,25 @@ desc.page_language = El idioma de los menús.
 desc.page_update = Busca, descarga e instala versiones nuevas de LPSX.
 desc.page_datetime = La hora de la consola y su ajuste por internet.
 desc.page_about = Versión, juegos, sistemas, perfiles y espacio libre.
+
+# No controller: plug a Bluetooth receiver, then pair a controller unattended (padwait.c)
+hint.not_now = Ahora no
+padwait.title_plug = No hay ningún mando conectado
+padwait.sub_plug = Conecta un receptor Bluetooth USB en un puerto libre para usar mandos inalámbricos, o conecta un mando por cable.
+padwait.step1 = Conecta un receptor Bluetooth
+padwait.step2 = Pon tu mando en modo de emparejamiento
+padwait.status_plug = Esperando un receptor Bluetooth…
+padwait.title = Empareja tu mando
+padwait.title_done = Mando conectado
+padwait.sub = Pon el mando en modo de emparejamiento: se conecta solo, sin pulsar nada más.
+padwait.sub_paired = Pulsa el botón PS o Home de un mando ya emparejado, o pon uno nuevo en modo de emparejamiento.
+padwait.how_dualsense = mantén PS y Create
+padwait.how_ds4 = mantén PS y Share
+padwait.how_switch = mantén el botón de sincronizar
+padwait.how_8bitdo = mantén Start y Pair
+padwait.starting = Encendiendo el Bluetooth…
+padwait.searching = Buscando mandos cercanos…
+padwait.pairing = Emparejando {name}…
+padwait.done = ¡Listo! {name} está conectado
+padwait.failed = {name} no se pudo emparejar. Sigo buscando…
+padwait.noadapter = El receptor Bluetooth no responde. Prueba en el otro puerto.

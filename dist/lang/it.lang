@@ -585,3 +585,25 @@ desc.page_language = La lingua dei menu.
 desc.page_update = Cerca, scarica e installa le nuove versioni di LPSX.
 desc.page_datetime = L’ora della console e la sua impostazione via internet.
 desc.page_about = Versione, giochi, sistemi, profili e spazio libero.
+
+# No controller: plug a Bluetooth receiver, then pair a controller unattended (padwait.c)
+hint.not_now = Non ora
+padwait.title_plug = Nessun controller collegato
+padwait.sub_plug = Collega un ricevitore Bluetooth USB a una porta libera per usare controller senza fili, oppure collega un controller con il cavo.
+padwait.step1 = Collega un ricevitore Bluetooth
+padwait.step2 = Metti il controller in modalità associazione
+padwait.status_plug = In attesa di un ricevitore Bluetooth…
+padwait.title = Associa il controller
+padwait.title_done = Controller collegato
+padwait.sub = Metti il controller in modalità associazione: si collega da solo, senza premere altro.
+padwait.sub_paired = Premi PS o Home su un controller già associato, o mettine uno nuovo in modalità associazione.
+padwait.how_dualsense = tieni premuti PS e Create
+padwait.how_ds4 = tieni premuti PS e Share
+padwait.how_switch = tieni premuto il tasto sync
+padwait.how_8bitdo = tieni premuti Start e Pair
+padwait.starting = Accensione del Bluetooth…
+padwait.searching = Ricerca di controller vicini…
+padwait.pairing = Associazione di {name}…
+padwait.done = Fatto! {name} è collegato
+padwait.failed = {name} non si è associato. Continuo a cercare…
+padwait.noadapter = Il ricevitore Bluetooth non risponde. Prova l’altra porta.

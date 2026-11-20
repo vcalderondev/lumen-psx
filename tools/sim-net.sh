@@ -31,7 +31,7 @@ case "$1 $2" in
     grep -q 4C:B9:9B "$S/paired" || printf '4C:B9:9B:77:88:99\t0\t0\tWireless Controller\tinput-gaming\n'
     grep -q 00:1A:7D "$S/paired" || printf '00:1A:7D:12:34:56\t0\t0\tWH-1000XM4\taudio-headset\n'
     grep -q 34:88:5D "$S/paired" || printf '34:88:5D:AB:CD:EF\t0\t0\tK380 Keyboard\tinput-keyboard\n'
-    printf 'E4:17:D8:AA:BB:CC\t0\t0\t8BitDo SN30 Pro\tinput-gaming\n' ;;
+    grep -q E4:17:D8:AA "$S/paired" || printf 'E4:17:D8:AA:BB:CC\t0\t0\t8BitDo SN30 Pro\tinput-gaming\n' ;;
   "bt pair") sleep 2; echo "$3" >> "$S/paired"; echo paired ;;
   "bt remove") grep -v "$3" "$S/paired" > "$S/p2"; mv "$S/p2" "$S/paired"; echo removed ;;
   "time "*) date -u '+%F %T' ;;

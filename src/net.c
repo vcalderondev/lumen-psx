@@ -8,6 +8,7 @@
  * <home>/net.sh is the script; LUMEN_NET_SH overrides it (psc-sim uses a fake one). */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -32,6 +33,7 @@ static net_state_t  w_st;              /* the worker's, under s_mx */
 static net_state_t  s_ui;              /* the UI's copy */
 static const char  *w_toast;           /* under s_mx */
 static int          w_watch_page, w_watch_wifi, w_watch_bt;   /* under s_mx */
+static int          w_watch_pad, w_autopair;                  /* under s_mx: net_pad_watch */
 static char         s_script[300];
 static int          s_started;
 
@@ -290,6 +292,84 @@ static void list_bt(int scan_seconds)
 }
 
 static void toast(const char *key) { SDL_LockMutex(s_mx); w_toast = key; SDL_UnlockMutex(s_mx); }
+
+static void busy(int on);
+
+/* a USB Bluetooth adapter, plugged in: a USB interface of class e0/01/01 (Bluetooth HCI,
+ * whether or not its driver is loaded), or an hci device the kernel already has */
+static int usb_bt_present(void)
+{
+   DIR *d;
+   struct dirent *e;
+   const char *fake = getenv("LUMEN_FAKE_BT_ADAPTER");
+   int found = 0;
+   if (fake && *fake == '1') return 1;
+   if ((d = opendir("/sys/class/bluetooth")))
+   {
+      while ((e = readdir(d))) if (!strncmp(e->d_name, "hci", 3)) found = 1;
+      closedir(d);
+      if (found) return 1;
+   }
+   if (!(d = opendir("/sys/bus/usb/devices"))) return 0;
+   while (!found && (e = readdir(d)))
+   {
+      char p[300], v[3][8];
+      static const char *const f[3] = { "bInterfaceClass", "bInterfaceSubClass", "bInterfaceProtocol" };
+      int k;
+      if (!strchr(e->d_name, ':')) continue;   /* interfaces are "1-1:1.0" */
+      for (k = 0; k < 3; k++)
+      {
+         FILE *fp;
+         snprintf(p, sizeof(p), "/sys/bus/usb/devices/%s/%s", e->d_name, f[k]);
+         v[k][0] = 0;
+         if ((fp = fopen(p, "r"))) { if (!fgets(v[k], sizeof(v[k]), fp)) v[k][0] = 0; fclose(fp); }
+      }
+      found = !strncmp(v[0], "e0", 2) && !strncmp(v[1], "01", 2) && !strncmp(v[2], "01", 2);
+   }
+   closedir(d);
+   return found;
+}
+
+/* a game controller among the devices nearby, not paired yet */
+static int is_pad(const net_dev_t *d)
+{
+   static const char *const names[] = { "controller", "dualsense", "dualshock", "8bitdo", "gamepad", "joy-con" };
+   size_t i;
+   if (!strcmp(d->icon, "input-gaming")) return 1;
+   for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) if (strcasestr(d->name, names[i])) return 1;
+   return 0;
+}
+static void ap_set(int st, const char *name)
+{
+   SDL_LockMutex(s_mx);
+   w_st.ap_state = st;
+   if (name) snprintf(w_st.ap_name, sizeof(w_st.ap_name), "%s", name);
+   bump();
+   SDL_UnlockMutex(s_mx);
+}
+/* one round: search 5 s, pair the first controller in pairing mode */
+static void autopair_round(void)
+{
+   char mac[18] = "", name[64] = "", out[200];
+   int i, rc;
+   if (w_st.ap_state != NET_AP_DONE) ap_set(NET_AP_SEARCHING, NULL);
+   list_bt(5);
+   SDL_LockMutex(s_mx);
+   for (i = 0; i < w_st.ndev; i++)
+      if (!w_st.dev[i].paired && is_pad(&w_st.dev[i]))
+      { snprintf(mac, sizeof(mac), "%s", w_st.dev[i].mac); snprintf(name, sizeof(name), "%s", w_st.dev[i].name); break; }
+   SDL_UnlockMutex(s_mx);
+   if (!mac[0]) return;
+   ap_set(NET_AP_PAIRING, name);
+   logf_("net: pairing %s (%s) unattended", name, mac);
+   {
+      const char *a[] = { "bt", "pair", mac, NULL };
+      busy(1); rc = run(a, NULL, out, sizeof(out)); busy(0);
+   }
+   ap_set(rc == 0 ? NET_AP_DONE : NET_AP_FAILED, name);
+   logf_("net: %s %s", name, rc == 0 ? "paired" : "did not pair");
+   list_bt(0);
+}
 static void busy(int on) { SDL_LockMutex(s_mx); w_st.busy = on; bump(); SDL_UnlockMutex(s_mx); }
 
 static void do_job(const job_t *j)
@@ -365,18 +445,32 @@ static void do_job(const job_t *j)
 
 static int worker(void *unused)
 {
-   double next = 0, eth_retry = 0;
+   double next = 0, eth_retry = 0, next_present = 0;
    (void)unused;
    for (;;)
    {
       job_t j;
-      int have = 0, page, wifi_card, bt_card;
+      int have = 0, page, wifi_card, bt_card, pad, autopair;
       SDL_LockMutex(s_mx);
       if (!s_qn) SDL_CondWaitTimeout(s_cv, s_mx, 500);
       if (s_qn) { j = s_q[0]; memmove(s_q, s_q + 1, sizeof(s_q[0]) * (size_t)--s_qn); have = 1; }
       page = w_watch_page; wifi_card = w_watch_wifi; bt_card = w_watch_bt;
+      pad = w_watch_pad; autopair = w_autopair;
       SDL_UnlockMutex(s_mx);
       if (have) { do_job(&j); continue; }
+      if (pad && now_s() >= next_present)
+      {  /* no controller: is there an adapter to pair one with? */
+         int p = usb_bt_present();
+         if (p != w_st.bt_present) { SDL_LockMutex(s_mx); w_st.bt_present = p; bump(); SDL_UnlockMutex(s_mx); logf_("net: Bluetooth adapter %s", p ? "plugged in" : "gone"); }
+         next_present = now_s() + 3.0;
+      }
+      if (autopair)
+      {
+         /* one controller per card: after "Done" nothing else is paired until it opens again */
+         if (w_st.bt == NET_CONNECTED && w_st.ap_state != NET_AP_DONE) { autopair_round(); continue; }
+         if (w_st.bt == NET_NOADAPTER && w_st.ap_state != NET_AP_NOADAPTER) ap_set(NET_AP_NOADAPTER, NULL);
+      }
+      else if (w_st.ap_state != NET_AP_IDLE) ap_set(NET_AP_IDLE, "");
       if (now_s() >= next && (page || wifi_card || bt_card))
       {
          int was_online = w_st.wifi == NET_CONNECTED || w_st.eth == NET_CONNECTED;
@@ -443,6 +537,15 @@ void net_watch(int page, int wifi_card, int bt_card)
    SDL_LockMutex(s_mx);
    if ((wifi_card && !w_watch_wifi) || (bt_card && !w_watch_bt) || (page && !w_watch_page)) SDL_CondSignal(s_cv);
    w_watch_page = page; w_watch_wifi = wifi_card; w_watch_bt = bt_card;
+   SDL_UnlockMutex(s_mx);
+}
+
+void net_pad_watch(int no_pads, int autopair)
+{
+   if (!s_started) return;
+   SDL_LockMutex(s_mx);
+   if ((no_pads && !w_watch_pad) || (autopair && !w_autopair)) SDL_CondSignal(s_cv);
+   w_watch_pad = no_pads; w_autopair = autopair;
    SDL_UnlockMutex(s_mx);
 }
 

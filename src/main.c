@@ -55,6 +55,7 @@
 #include "conn.h"
 #include "kern.h"
 #include "update.h"
+#include "padwait.h"
 #include "ui.h"
 #include "theme.h"
 #include "crt.h"
@@ -2588,6 +2589,8 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "cross" },    "btn.cross",        "hint.select" },
       { { "circle" },   "btn.circle",       "hint.close" } },
    [HINTS_KERNEL_BUSY] = { { { NULL }, NULL, NULL } },   /* writing: nothing may interrupt it */
+   [HINTS_PADWAIT] = {        /* no controller: plug a receiver / pair one (padwait.h) */
+      { { "circle" },   "btn.circle",       "hint.not_now" } },
    [HINTS_BT] = {             /* Connections, Bluetooth controllers (conn.h) */
       { { "dpad" },     "btn.dpad",         "hint.move" },
       { { "cross" },    "btn.cross",        "hint.pair" },
@@ -4623,7 +4626,7 @@ int main(int argc, char **argv)
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
          if (in_last_activity != last_activity) { last_activity = in_last_activity; attract_note_input(t); }
-         attract_update(t, dt, !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !kern_active() && !welcome_active() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
+         attract_update(t, dt, !panel_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !kern_active() && !welcome_active() && !padwait_open_now() && play_t < 0 && fade < 0.02f && g_ngames > 0, &att);
          att_swallow = was || attract_active() || att.amount > 0.02f;
          if (att_swallow) g_want_settings = 0;
       }
@@ -4735,6 +4738,14 @@ int main(int argc, char **argv)
          if (!kn_open || att_swallow || fp_open) memset(&kn, 0, sizeof(kn));
          kern_update(&kn, t, dt);
          if (kn_open || kern_open_now())
+         { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
+      }
+      {  /* no controller: the receiver / pairing card, over everything; owns the input (padwait.h) */
+         ui_nav_t pn = fnav;
+         const int pw_open = padwait_open_now();
+         if (!pw_open) memset(&pn, 0, sizeof(pn));
+         padwait_update(&pn, t, dt, SDL_NumJoysticks(), welcome_active() || attract_active() || play_t >= 0 || kern_open_now());
+         if (pw_open || padwait_open_now())
          { g_want_settings = 0; move = plat_move = page = play = want_menu = 0; held_dir = 0; fp_open = 1; }
       }
       {  /* settings panel: owns the input while open or closing (6.3) */
@@ -5085,6 +5096,12 @@ int main(int argc, char **argv)
             {
                glUseProgram(g_prog_2d);
                hints_draw(kern_hint_set(), 672, kern_amount() * (1 - fade));
+            }
+            padwait_draw(t);
+            if (padwait_open_now())
+            {
+               glUseProgram(g_prog_2d);
+               hints_draw(HINTS_PADWAIT, 672, padwait_amount() * (1 - fade));
             }
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);
