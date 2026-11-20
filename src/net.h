@@ -13,7 +13,7 @@ enum { NET_CAP_UNKNOWN, NET_CAP_NO, NET_CAP_YES };
 enum { NET_OFF, NET_NOADAPTER, NET_DOWN, NET_CONNECTING, NET_CONNECTED, NET_NOCABLE };
 
 typedef struct { char ssid[64]; int signal, saved, connected; char sec[8]; } net_ap_t;
-typedef struct { char mac[18], name[64]; int paired, connected; } net_dev_t;
+typedef struct { char mac[18], name[64], icon[24]; int paired, connected; } net_dev_t;   /* icon: BlueZ's, "input-gaming" ... */
 
 typedef struct {
    int  wifi_cap, bt_cap, eth_cap, stock_kernel;
@@ -49,6 +49,7 @@ void net_wifi_connect(const char *ssid, const char *password);   /* "" = open ne
 void net_wifi_select(const char *ssid);   /* a saved network */
 void net_wifi_forget(const char *ssid);
 void net_bt_pair(const char *mac);        /* pair + trust + connect, or connect when paired */
+
 void net_bt_remove(const char *mac);
 
 #endif

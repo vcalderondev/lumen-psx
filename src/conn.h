@@ -6,7 +6,8 @@
 #include "lumen.h"
 
 void  conn_open_wifi(void);
-void  conn_open_bt(void);
+void  conn_open_bt(void);         /* the devices paired with the console */
+void  conn_open_bt_add(void);     /* the search: devices nearby, not paired yet */
 int   conn_active(void);          /* open, away for a keyboard / question, or fading out */
 int   conn_open_now(void);        /* open: owns the input */
 int   conn_wifi_shown(void);      /* which card is up (or about to come back) */

@@ -269,15 +269,16 @@ static void list_bt(int scan_seconds)
       run(a, NULL, out, sizeof(out));
    }
    for (line = strtok_r(out, "\n", &save); line && n < NET_MAX_DEVS; line = strtok_r(NULL, "\n", &save))
-   {  /* mac \t paired \t connected \t name */
-      char *f[4]; int k = 0; char *p = line;
+   {  /* mac \t paired \t connected \t name [\t icon] */
+      char *f[5]; int k = 0; char *p = line;
       f[k++] = p;
-      while (k < 4 && (p = strchr(p, '\t'))) { *p++ = 0; f[k++] = p; }
+      while (k < 5 && (p = strchr(p, '\t'))) { *p++ = 0; f[k++] = p; }
       if (k < 4 || strlen(f[0]) != 17) continue;
       memset(&dev[n], 0, sizeof(dev[n]));
       snprintf(dev[n].mac, sizeof(dev[n].mac), "%s", f[0]);
       dev[n].paired = atoi(f[1]); dev[n].connected = atoi(f[2]);
       snprintf(dev[n].name, sizeof(dev[n].name), "%s", f[3]);
+      if (k > 4) snprintf(dev[n].icon, sizeof(dev[n].icon), "%s", f[4]);
       paired += dev[n].paired; conn += dev[n].connected;
       n++;
    }

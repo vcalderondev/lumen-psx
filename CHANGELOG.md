@@ -3,6 +3,42 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+### Added
+- Software update over Wi-Fi or cable (Settings > System > System update), the way
+  lpsx.dev updates a stick: the latest release from `lpsx.dev/services/releases` (GitHub as
+  a fallback), its manifest checked against `SHA256SUMS` and compared with `lumen/MANIFEST`;
+  only the files that changed are downloaded, as byte ranges of the release zip, and each
+  one is checked (size + SHA-256) into `lumen/.update/`. "Restart and update" exits 13 and
+  `boot.sh` runs `update.sh` from RAM: files moved into place, what the release dropped
+  removed (only while unchanged), `MANIFEST` last, `.update/` deleted, console restarted.
+  An install cut by a power cut finishes at the next power-on; an unfinished download is
+  removed. `settings.ini`, `state.txt`, `profiles/`, `logs/`, `backup/` and the games are
+  never touched; an edited `lumen.conf` / `retroarch.cfg` gets the new copy as `.new`; a
+  replaced boot payload is backed up once to `lumen/backup/`, as the web does.
+- A daily check while online (`update_auto`, on by default; `update_last`), with a toast
+  when a new version is out. It never installs anything by itself.
+- Sound > Audio output: the ALSA cards (a USB headset or DAC), applied to Lumen (`AUDIODEV`)
+  and RetroArch (`audio_device`) by `run.sh` (`audio_out` in `settings.ini`).
+- Bluetooth > Add a device: the search shows what is nearby with its kind (controller,
+  keyboard, mouse, audio...); Devices lists the paired ones. `net.sh bt devices` adds BlueZ's
+  icon as a fifth field.
+- Bluetooth audio: paired headphones and speakers are listed in Sound > Audio output
+  (`audio_out=bt_<address>`). `net.sh` starts `bluealsad` with Bluetooth and writes the ALSA
+  description of the `bluealsa` device; `run.sh` routes the frontend and RetroArch to it
+  (`ALSA_CONFIG_PATH`, `bluealsa:DEV=<mac>,PROFILE=a2dp`, a 128 ms RetroArch buffer) when the
+  device is connected at launch, else to HDMI. Needs a psc-platform release whose
+  `psc-bt.tar.gz` has bluez-alsa (the entry is hidden without it).
+- `net.sh http <url> <out> [<from>-<to>]`.
+
+### Changed
+- Settings are laid out like a console's: seven categories on the rail (Profile, Display,
+  Sound, Network, Bluetooth, Library, System) and sub-pages inside the card (Display >
+  Theme / Graphics / Screensaver, Sound > Audio output, System > Language / System update /
+  Date and time / About), with the category as their kicker; Circle goes back to the row it
+  came from. System also has "Restart the console".
+
 ## [0.22.0] - 2026-11-19
 
 A lighter dashboard: a frame costs 33 to 46 % less on psc-sim, with the same picture but

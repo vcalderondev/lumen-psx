@@ -11,14 +11,20 @@
 #   net.sh eth on|off|status       USB Ethernet adapter (r8152, ax88179, asix, cdc_ether/ncm, smsc95xx): DHCP
 #   net.sh bt on|off|status
 #   net.sh bt scan [seconds]       lines: <mac>\t<name>   (devices seen, paired or not)
-#   net.sh bt devices              lines: <mac>\t<paired 0|1>\t<connected 0|1>\t<name>
+#   net.sh bt devices              lines: <mac>\t<paired 0|1>\t<connected 0|1>\t<name>\t<icon>
+#                                  (icon: BlueZ's class, input-gaming, input-keyboard, audio-headset...)
 #   net.sh bt pair <mac>           pair, trust, connect (controllers: no PIN)
 #   net.sh bt remove <mac>
+#   net.sh bt audio <mac>          exit 0 when that audio device is connected (connects it if
+#                                  it is only paired); run.sh asks before routing sound to it
 #   net.sh time                    set the clock over NTP (no RTC battery on the console)
+#   net.sh http <url> <out> [<from>-<to>]   HTTPS download to a file (software update,
+#                                  src/update.c): curl from RAM, redirects followed, a byte
+#                                  range when given; fails unless the whole answer arrived
 #
 # Pieces (psc-platform, in <home>/compositor/):
 #   psc-net.tar.gz          wpa_supplicant, iw, curl, OpenSSL, ntpd, firmware -> /tmp/lumen-net
-#   psc-bt.tar.gz           bluetoothd, bluetoothctl, GLib                    -> /tmp/lumen-bt
+#   psc-bt.tar.gz           bluetoothd, bluetoothctl, GLib, bluealsad (audio) -> /tmp/lumen-bt
 #   psc-netmod-stock.tar.gz mac80211 + Wi-Fi drivers, Bluetooth, USB Ethernet modules for
 #                           Sony's stock kernel; loaded only on that exact build and only
 #                           for what the running kernel lacks (any other kernel: what it has)
@@ -206,6 +212,24 @@ time_sync() {
     { log "time: $(date -u '+%F %T') UTC"; echo "$(date -u '+%F %T')"; }
 }
 
+# ---- HTTPS for the software update (src/update.c). A range must come back as a 206 of
+# exactly that length: a server that ignores Range would hand over the whole file.
+http_get() {  # url out [range]
+  unpack_pkg psc-net.tar.gz "${NET}" || die "psc-net.tar.gz missing"
+  rm -f "$2"
+  if [ -n "$3" ]; then
+    code=$(netenv "${NET}/bin/curl" -sSL -A lumen-psx --connect-timeout 20 --max-time 900 \
+           --retry 3 --retry-delay 2 -r "$3" -o "$2" -w '%{http_code}' "$1" 2>>"${LOGF}") || { rm -f "$2"; die "http: $1 ($3) failed"; }
+    [ "${code}" = 206 ] || { rm -f "$2"; die "http: $1 ($3) answered ${code}"; }
+    want=$(( ${3#*-} - ${3%-*} + 1 )); got=$(wc -c < "$2")
+    [ "${got}" -eq "${want}" ] || { rm -f "$2"; die "http: $1 ($3) short: ${got} of ${want}"; }
+  else
+    netenv "${NET}/bin/curl" -fsSL -A lumen-psx --connect-timeout 20 --max-time 900 \
+      --retry 3 --retry-delay 2 -o "$2" "$1" 2>>"${LOGF}" || { rm -f "$2"; die "http: $1 failed"; }
+  fi
+  echo ok
+}
+
 # ---- USB Ethernet: the adapter's interface (by driver: the console's own USB gadget
 # interface, if any, is not one of these), DHCP with the same script as Wi-Fi
 eth_if() {
@@ -263,9 +287,27 @@ bt_on() {
   i=0; while [ $i -lt 30 ]; do bt_ctl show 2>/dev/null | grep -q "Powered:" && break; sleep 0.2; i=$((i + 1)); done
   bt_ctl show | grep -q "Controller" || die "no Bluetooth adapter (plug in a USB Bluetooth dongle)"
   bt_ctl power on >/dev/null; bt_ctl pairable on >/dev/null
+  bt_audio_on
   log "bt on"; echo on
 }
-bt_off() { bt_ctl power off >/dev/null; bt_save; killall bluetoothd 2>/dev/null; log "bt off"; echo off; }
+# Bluetooth audio (psc-bt.tar.gz with bluez-alsa): bluealsa offers A2DP to headsets and
+# speakers; the ALSA device "bluealsa" is described in ${BT}/asound-bluealsa.conf, which
+# run.sh adds to ALSA_CONFIG_PATH for the frontend and RetroArch (the console's ALSA only
+# loads plugins from its own read-only folder)
+bt_audio_on() {
+  [ -x "${BT}/bin/bluealsad" ] || return 0   # a package without audio
+  sed "s|@LIB@|${BT}/lib|g" "${BT}/lib/psc-bt/asound-bluealsa.conf" > "${BT}/asound-bluealsa.conf"
+  pidof bluealsad >/dev/null || { btenv "${BT}/bin/bluealsad" -p a2dp-source >> "${LUMEN_HOME}/logs/bluealsad.log" 2>&1 & }
+  log "bt audio on"
+}
+bt_audio() {  # mac: connected (or connected now) and an audio device
+  echo "$1" | grep -qE '^([0-9A-F]{2}:){5}[0-9A-F]{2}$' || return 1
+  pidof bluealsad >/dev/null || return 1
+  bt_ctl info "$1" | grep -q "Connected: yes" && return 0
+  bt_ctl info "$1" | grep -q "Paired: yes" || return 1
+  bt_ctl --timeout 6 connect "$1" >/dev/null; bt_ctl info "$1" | grep -q "Connected: yes"
+}
+bt_off() { killall bluealsad 2>/dev/null; rm -f "${BT}/asound-bluealsa.conf"; bt_ctl power off >/dev/null; bt_save; killall bluetoothd 2>/dev/null; log "bt off"; echo off; }
 bt_status() {
   pidof bluetoothd >/dev/null || { echo "state=off"; return 0; }
   bt_ctl show | sed -n 's/^\s*Powered: \(.*\)/powered=\1/p; s/^Controller \([0-9A-F:]*\).*/adapter=\1/p'
@@ -279,10 +321,11 @@ bt_devices() {
     info=$(bt_ctl info "${mac}")
     p=$(echo "${info}" | grep -q "Paired: yes" && echo 1 || echo 0)
     c=$(echo "${info}" | grep -q "Connected: yes" && echo 1 || echo 0)
-    printf '%s\t%s\t%s\t%s\n' "${mac}" "$p" "$c" "${name}"
+    ic=$(echo "${info}" | sed -n 's/^[[:space:]]*Icon: \([a-z-]*\).*/\1/p' | head -1)
+    printf '%s\t%s\t%s\t%s\t%s\n' "${mac}" "$p" "$c" "${name}" "${ic}"
   done
 }
-bt_pair() {  # mac: controllers pair with no PIN (NoInputNoOutput agent)
+bt_pair() {  # mac: controllers, mice and most headsets pair with no PIN (NoInputNoOutput agent)
   mac=$1; echo "${mac}" | grep -qE '^([0-9A-F]{2}:){5}[0-9A-F]{2}$' || die "bad address ${mac}"
   bt_ctl --agent NoInputNoOutput --timeout 25 pair "${mac}" | grep -qiE "Pairing successful|Already|AlreadyExists" ||
     { bt_ctl info "${mac}" | grep -q "Paired: yes" || { log "bt: pair ${mac} failed"; echo failed; return 1; }; }
@@ -304,6 +347,8 @@ case "$1 $2" in
   "bt on") bt_on ;;           "bt off") bt_off ;;         "bt status") bt_status ;;
   "bt scan") bt_scan "$3" ;;  "bt devices") bt_devices ;;
   "bt pair") bt_pair "$3" ;;  "bt remove") bt_remove "$3" ;;
+  "bt audio") bt_audio "$3" ;;
   "time "*) time_sync ;;
-  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  "http "*) http_get "$2" "$3" "$4" ;;
+  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

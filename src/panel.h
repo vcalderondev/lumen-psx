@@ -35,5 +35,6 @@ void  ui_sound_changed(void);           /* "music" / "music_volume" changed: app
 void  ui_start_attract(void);           /* "Preview now" (step 5; a no-op before) */
 void  ui_request_reboot(void);          /* Display page: save and restart the console */
 void  ui_request_restart(void);         /* theme: restart Lumen only (run.sh starts it again) */
+void  ui_request_update(void);          /* Software update: save, exit 13, boot.sh installs and restarts */
 
 #endif

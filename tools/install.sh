@@ -25,6 +25,7 @@ else
   [ -f out/lumen-buttons ] && copy_file out/lumen-buttons "$VOL/lumen/lumen-buttons"
   copy_file scripts/run.sh "$VOL/lumen/run.sh"
   copy_file scripts/boot.sh "$VOL/lumen/boot.sh"
+  copy_file scripts/update.sh "$VOL/lumen/update.sh"
   for f in dist/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/$(basename "$f")"; done
   for f in dist/lang/*.lang; do copy_file "$f" "$VOL/lumen/lang/$(basename "$f")"; done
   for f in dist/shaders/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/shaders/$(basename "$f")"; done

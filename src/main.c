@@ -54,6 +54,7 @@
 #include "net.h"
 #include "conn.h"
 #include "kern.h"
+#include "update.h"
 #include "ui.h"
 #include "theme.h"
 #include "crt.h"
@@ -2738,6 +2739,9 @@ void ui_cards_changed(void)
 static int g_want_reboot;
 static int g_play_resume, g_play_asked;   /* Play came from the game menu / resume question */
 void ui_request_reboot(void) { g_want_reboot = 1; logf_("restart requested (display settings)"); }
+/* Settings > System > Software update: exit 13, boot.sh installs the staged update and restarts */
+static int g_want_update;
+void ui_request_update(void) { g_want_update = 1; logf_("restart requested (software update)"); }
 /* theme: quit with /tmp/lumen-restart, run.sh starts the frontend again at once */
 static int g_want_restart;
 void ui_request_restart(void)
@@ -4532,6 +4536,7 @@ int main(int argc, char **argv)
    boot_mark("resume");
    panel_init();
    net_init();   /* after settings: Wi-Fi / Bluetooth / USB Ethernet as they were left */
+   update_init(); /* after settings + net: a staged update, or the leftovers of a download */
    kern_init();  /* which kernel runs (Settings, About) */
    boot_mark("panel");
    transfer_init();
@@ -4613,6 +4618,7 @@ int main(int argc, char **argv)
       }
       if (g_ntin && !test_input(g_rec_on ? g_rec_frames / g_rec_fps : t - t0)) running = 0;   /* recording: from its first frame */
       if (g_want_reboot) { exit_code = 12; running = 0; }
+      if (g_want_update) { exit_code = 13; running = 0; }
       if (g_want_restart) { exit_code = 0; running = 0; }
       {  /* screensaver / attract scene: any input wakes it and is swallowed (10.2) */
          int was = attract_active();
@@ -4712,6 +4718,11 @@ int main(int argc, char **argv)
          const char *nt;
          net_poll();
          if ((nt = net_take_toast())) panel_toast(nt);
+         {  /* software update: the daily check runs while a connection is up (update.h) */
+            const net_state_t *us = net_state();
+            update_poll(t, us->wifi == NET_CONNECTED || us->eth == NET_CONNECTED, us->time_ok);
+            if ((nt = update_take_toast())) panel_toast(nt);
+         }
          net_watch(panel_connections_page(), conn_wifi_shown(), conn_bt_shown());
          if (!cn_open || att_swallow || fp_open) memset(&cn, 0, sizeof(cn));
          conn_update(&cn, t, dt);
