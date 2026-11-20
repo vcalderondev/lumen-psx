@@ -29,6 +29,8 @@
 
 enum { K_NONE, K_WIFI, K_BT };
 static int     s_kind, s_open, s_away, s_sel, s_top;
+static int     s_bt_add;                               /* Bluetooth: 1 the search (not paired), 0 the paired devices */
+static int     s_map[NET_MAX_DEVS], s_nmap;            /* the Bluetooth entries shown: indexes into net_state()->dev */
 static double  s_t0;
 static spring  s_fade, s_pill, s_scroll;
 static label_t s_kick, s_title, s_cap, s_foot, s_name, s_line, s_note, s_empty;
@@ -41,12 +43,24 @@ static char    s_target[64];                           /* ssid / mac of the pend
 static char    s_sel_key[64];                          /* the highlighted entry: kept across re-sorts */
 static int     s_sel_gen = -1;
 
+static const net_dev_t *dev_at(int i) { return &net_state()->dev[s_map[i < s_nmap ? i : 0]]; }
 static const char *entry_key(int i)
 {
    const net_state_t *ns = net_state();
    if (s_kind == K_WIFI) return i < ns->naps ? ns->aps[i].ssid : "";
-   return i < ns->ndev ? ns->dev[i].mac : "";
+   return i < s_nmap ? dev_at(i)->mac : "";
 }
+/* what kind of device, from BlueZ's icon: a tr key */
+static const char *dev_kind(const net_dev_t *d)
+{
+   if (!strcmp(d->icon, "input-gaming")) return "net.kind_pad";
+   if (!strcmp(d->icon, "input-keyboard")) return "net.kind_keyboard";
+   if (!strcmp(d->icon, "input-mouse") || !strcmp(d->icon, "input-tablet")) return "net.kind_mouse";
+   if (!strncmp(d->icon, "audio-", 6) || !strcmp(d->icon, "multimedia-player")) return "net.kind_audio";
+   if (!strcmp(d->icon, "phone")) return "net.kind_phone";
+   return "net.kind_other";
+}
+static int dev_audio(const net_dev_t *d) { return !strcmp(dev_kind(d), "net.kind_audio"); }
 
 static void col4(float o[4], int tc, float a) { theme_color(tc, o); o[3] = a; }
 static void draw_label(const label_t *l, float x, float y, const float c[4])
@@ -66,7 +80,14 @@ static void wrap_set(label_t *l, TTF_Font *f, const char *s, int wrap)
 static int count(void)
 {
    const net_state_t *ns = net_state();
-   return s_kind == K_WIFI ? ns->naps : s_kind == K_BT ? ns->ndev : 0;
+   if (s_kind == K_BT)
+   {  /* the paired devices, or (the search) the ones that are not */
+      int i;
+      s_nmap = 0;
+      for (i = 0; i < ns->ndev; i++) if ((ns->dev[i].paired == 0) == s_bt_add) s_map[s_nmap++] = i;
+      return s_nmap;
+   }
+   return s_kind == K_WIFI ? ns->naps : 0;
 }
 
 static void open_kind(int kind)
@@ -79,7 +100,8 @@ static void open_kind(int kind)
    music_sfx(SFX_OPEN);
 }
 void conn_open_wifi(void) { open_kind(K_WIFI); }
-void conn_open_bt(void) { open_kind(K_BT); }
+void conn_open_bt(void) { s_bt_add = 0; open_kind(K_BT); }
+void conn_open_bt_add(void) { s_bt_add = 1; open_kind(K_BT); }
 int   conn_active(void) { return s_open || s_away || s_fade.x > 0.01f; }
 int   conn_open_now(void) { return s_open; }
 int   conn_wifi_shown(void) { return (s_open || s_away) && s_kind == K_WIFI; }
@@ -165,7 +187,7 @@ void conn_update(const ui_nav_t *nav, double t, float dt)
             if (s_kind == K_WIFI) wifi_confirm();
             else
             {
-               const net_dev_t *d = &ns->dev[s_sel];
+               const net_dev_t *d = dev_at(s_sel);
                if (ns->busy) panel_toast("net.busy");
                else if (d->connected) panel_toast("net.bt_already");
                else net_bt_pair(d->mac);
@@ -180,11 +202,11 @@ void conn_update(const ui_nav_t *nav, double t, float dt)
                step_aside();
                panel_confirm(trf(m, sizeof(m), "net.forget_confirm", "name", s_target, NULL), "net.forget", forget_yes);
             }
-            else if (s_kind == K_BT && ns->dev[s_sel].paired)
+            else if (s_kind == K_BT && dev_at(s_sel)->paired)
             {
-               snprintf(s_target, sizeof(s_target), "%s", ns->dev[s_sel].mac);
+               snprintf(s_target, sizeof(s_target), "%s", dev_at(s_sel)->mac);
                step_aside();
-               panel_confirm(trf(m, sizeof(m), "net.forget_confirm", "name", ns->dev[s_sel].name, NULL), "net.forget", remove_yes);
+               panel_confirm(trf(m, sizeof(m), "net.forget_confirm", "name", dev_at(s_sel)->name, NULL), "net.forget", remove_yes);
             }
             else panel_toast(s_kind == K_WIFI ? "net.forget_none" : "net.bt_forget_none");
          }
@@ -237,7 +259,7 @@ void conn_draw(double t)
    ui_scrim(a * (1.0f - panel_amount()));
    ui_card(cx, cy, CW, CH, a);
    ui_kicker(&s_kick, tr(wifi ? "net.wifi" : "net.bt"), cx + PADX, cy + 24, a);
-   label_set(&s_title, g_font_title, tr(wifi ? "net.networks" : "net.bt_title"));
+   label_set(&s_title, g_font_title, tr(wifi ? "net.networks" : s_bt_add ? "net.bt_add" : "net.devices"));
    draw_label(&s_title, cx + PADX, cy + 42, txt);
    /* top right: what is going on */
    if (ns->busy) label_set(&s_cap, g_font_small, tr(wifi ? "net.connecting" : "net.pairing"));
@@ -250,9 +272,9 @@ void conn_draw(double t)
    {  /* nothing (yet): the search, or what to do */
       if (wifi ? (ns->scanning || (ns->naps == 0 && now_s() - ns->scan_age > 30)) : ns->bt_scanning)
          draw_dots(cx + CW * 0.5f, ly + lh * 0.5f - 30, t, dim);
-      wrap_set(&s_empty, g_font_small, tr(wifi ? (ns->scanning ? "net.searching_wifi" : "net.none_found") : "net.bt_none"), (int)(CW - 2 * PADX - 200));
+      wrap_set(&s_empty, g_font_small, tr(wifi ? (ns->scanning ? "net.searching_wifi" : "net.none_found") : s_bt_add ? "net.bt_none" : "net.bt_none_paired"), (int)(CW - 2 * PADX - 200));
       draw_label(&s_empty, cx + (CW - s_empty.w) * 0.5f, ly + lh * 0.5f, dim);
-      if (!wifi)
+      if (!wifi && s_bt_add)
       {
          wrap_set(&s_note, g_font_small, tr("net.bt_howto"), (int)(CW - 2 * PADX - 200));
          draw_label(&s_note, cx + (CW - s_note.w) * 0.5f, ly + lh * 0.5f + s_empty.h + 18, txt);
@@ -283,9 +305,9 @@ void conn_draw(double t)
       }
       else
       {
-         const net_dev_t *d = &ns->dev[i];
+         const net_dev_t *d = dev_at(i);
          on = d->connected;
-         row_texts(i, d->name, tr(on ? "net.bt_connected" : d->paired ? "net.bt_paired_s" : "net.bt_new"));
+         row_texts(i, d->name, tr(on ? "net.bt_connected" : d->paired ? "net.bt_paired_s" : dev_kind(d)));
       }
       memcpy(c, txt, sizeof(c));
       if (i != s_sel) c[3] *= 0.86f;
@@ -317,10 +339,10 @@ void conn_draw(double t)
       }
       else
       {
-         const net_dev_t *d = &ns->dev[s_sel < n ? s_sel : 0];
-         wrap_set(&s_name, g_font_medium, d->paired ? d->name : tr("net.bt_how_title"), (int)dw);
-         snprintf(buf, sizeof(buf), "%s", d->paired ? d->mac : "");
-         note = d->paired ? tr(d->connected ? "net.note_bt_connected" : "net.note_bt_paired") : tr("net.bt_howto");
+         const net_dev_t *d = dev_at(s_sel < n ? s_sel : 0);
+         wrap_set(&s_name, g_font_medium, d->name, (int)dw);
+         snprintf(buf, sizeof(buf), "%s  \xC2\xB7  %s", tr(dev_kind(d)), d->mac);
+         note = dev_audio(d) ? tr("net.note_bt_audio") : d->paired ? tr(d->connected ? "net.note_bt_connected" : "net.note_bt_paired") : tr("net.note_bt_new");
       }
       draw_label(&s_name, dx, y, txt);
       y += s_name.h + 12;
@@ -337,8 +359,8 @@ void conn_draw(double t)
    }
    else
    {
-      snprintf(n1, sizeof(n1), "%d", ns->paired); snprintf(n2, sizeof(n2), "%d", n - ns->paired);
-      label_set(&s_foot, g_font_small, trf(buf, sizeof(buf), "net.bt_count", "p", n1, "n", n2, NULL));
+      snprintf(n1, sizeof(n1), "%d", n); snprintf(n2, sizeof(n2), "%d", ns->connected);
+      label_set(&s_foot, g_font_small, trf(buf, sizeof(buf), s_bt_add ? "net.bt_found_n" : "net.paired_n", "n", n1, "c", n2, NULL));
    }
    draw_label(&s_foot, cx + PADX, cy + CH - 14 - s_foot.h, dim);
 }

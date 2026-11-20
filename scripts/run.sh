@@ -167,8 +167,35 @@ lumen_merge_opt() {
 # crt_shader=quality: the heavier maths): shaders on, before the ra.* lines so it wins, and
 # the preset in LUMEN_RA_SHADER for run_retroarch's --set-shader (RetroArch 1.22 has no
 # cfg key for the shader path: --set-shader acts as a global auto-shader preset).
+# Audio output (Settings > Sound > Audio output, settings.ini audio_out): "auto" or empty is
+# ALSA's default device (HDMI); "bt_<address without colons>" a Bluetooth headset or speaker
+# (bluez-alsa, net.sh: used when it is connected, else the default); otherwise the id of an
+# ALSA card (/proc/asound/cards, e.g. a USB headset or DAC). A device that is not there now
+# falls back to the default. Sets LUMEN_AUDIO_DEV ("plughw:CARD=<id>,DEV=0",
+# "bluealsa:DEV=<mac>,PROFILE=a2dp" or empty) for the frontend (AUDIODEV, SDL's ALSA backend)
+# and RetroArch (audio_device), and ALSA_CONFIG_PATH for Bluetooth.
+lumen_audio_dev() {
+  LUMEN_AUDIO_DEV=""; LUMEN_AUDIO_BT=""
+  unset ALSA_CONFIG_PATH
+  ao=$(sed -n 's/^[[:space:]]*audio_out[[:space:]]*=[[:space:]]*\([A-Za-z0-9_]*\).*/\1/p' "${LUMEN_HOME}/settings.ini" 2>/dev/null | tail -1)
+  case "${ao}" in
+    ""|auto) return 0 ;;
+    bt_*) mac=$(echo "${ao#bt_}" | sed 's/../&:/g; s/:$//')
+          if [ -f /tmp/lumen-bt/asound-bluealsa.conf ] && sh "${LUMEN_HOME}/net.sh" bt audio "${mac}" >/dev/null 2>&1; then
+            LUMEN_AUDIO_DEV="bluealsa:DEV=${mac},PROFILE=a2dp"; LUMEN_AUDIO_BT=1
+            export ALSA_CONFIG_PATH="/usr/share/alsa/alsa.conf:/tmp/lumen-bt/asound-bluealsa.conf"
+          else slog "audio: Bluetooth ${mac} not connected, default output"; fi
+          return 0 ;;
+  esac
+  if grep -q "\[${ao} *\]" /proc/asound/cards 2>/dev/null; then LUMEN_AUDIO_DEV="plughw:CARD=${ao},DEV=0"
+  else slog "audio: card ${ao} not present, default output"; fi
+}
 lumen_build_ra_extra() {
   : > "${LUMEN_RA_EXTRA}"
+  lumen_audio_dev
+  [ -n "${LUMEN_AUDIO_DEV}" ] && echo "audio_device = \"${LUMEN_AUDIO_DEV}\"" >> "${LUMEN_RA_EXTRA}"
+  # A2DP buffers more than HDMI: a larger RetroArch buffer avoids crackles
+  [ -n "${LUMEN_AUDIO_BT}" ] && echo 'audio_latency = "128"' >> "${LUMEN_RA_EXTRA}"
   LUMEN_RA_SHADER=""
   if [ -n "$L_CRT" ]; then
     if [ -f "${LUMEN_HOME}/shaders/crt-lumen-${L_CRT}.glslp" ]; then
@@ -354,6 +381,8 @@ while true; do
   # ARGS is a single word or empty (--attract / --focus-demo)
   # keep the previous frontend log (benchmarks run before a game would be lost)
   [ -s "${LOG}/lumen.log" ] && mv -f "${LOG}/lumen.log" "${LOG}/lumen-prev.log"
+  lumen_audio_dev
+  [ -n "${LUMEN_AUDIO_DEV}" ] && export AUDIODEV="${LUMEN_AUDIO_DEV}" || unset AUDIODEV
   SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland}" "${LUMEN_HOME}/lumen" \
     --home "${LUMEN_HOME}" --log "${LOG}/lumen.log" ${ARGS}
   rc=$?
@@ -404,5 +433,7 @@ done
 kill "${SYNCER}" 2>/dev/null
 sync
 # 12: the frontend asked for a restart (Display settings); boot.sh restarts the console
+# 13: "Restart and update" (Settings > System): boot.sh installs the staged update first
 [ "${rc}" = 12 ] && exit 12
+[ "${rc}" = 13 ] && exit 13
 exit 0

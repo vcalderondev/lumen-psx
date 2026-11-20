@@ -18,16 +18,21 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 - per-game background image (`games/<n>/background.jpg|png`) at ~30 % opacity,
   crossfaded and decoded on a worker thread so browsing never stutters
 - launches games in RetroArch and comes back to the same game afterwards
-- small: a single <!-- lumen-size -->~372 KB<!-- /lumen-size --> binary; only covers near
+- small: a single <!-- lumen-size -->~412 KB<!-- /lumen-size --> binary; only covers near
   the selection stay in memory
 - translated UI: English (default), Spanish, Portuguese, French, German, Italian
 - game menu on Start: favourites and folders (shown as their own rows), and "Save and exit"
   on OPEN with a "continue where you left off?" question on the next Play
 - profiles with their own memory cards and save states, and per-profile play statistics
-- settings panel: language, profiles, screensaver and game demos, sound (menu music,
-  interface sounds), display (720p / 1080p, theme, CRT filter), per-system graphics
-  presets, library, connections (Wi-Fi, Bluetooth controllers, USB Ethernet, clock) and
-  about (including Sony's stock kernel restore)
+- settings panel laid out like a console's: profile, display (720p / 1080p, CRT filter,
+  theme, per-system graphics presets, screensaver and game demos), sound (audio output:
+  HDMI, USB or Bluetooth; menu music, interface sounds), network (Wi-Fi, USB Ethernet),
+  Bluetooth (controllers, keyboards, headphones...), library and system (language, system
+  update, date and time, Sony's stock kernel restore, about)
+- system update over Wi-Fi or cable: only what changed is downloaded and verified, installed
+  at a restart, saves and settings untouched
+- with no controller connected, a card that pairs a Bluetooth controller by itself once a
+  USB Bluetooth receiver is plugged in
 - CRT filter for the dashboard and the games (Off, Soft, Strong)
 - USB transfer between the Lumen stick and a second USB drive, and a library check that
   reports broken games
@@ -156,7 +161,8 @@ the Spanish key set and keeps its placeholders.
 `attract_demo_delay`, `graphics.<system id>` (`original` / `enhanced` / `native`),
 `show_stock_games` (`0`/`1`), `music`, `music_volume`, `ui_sounds`, `display`, `theme`,
 `crt` (`off` / `soft` / `strong`), `crt_shader` (`fast`, the default, / `quality`),
-`crt_pass` (`pixel`, the default, / `mesh`), `wifi`, `bluetooth`, `net_time`, `sdl`
+`crt_pass` (`pixel`, the default, / `mesh`), `wifi`, `bluetooth`, `net_time`, `audio_out`
+(`auto`, an ALSA card id or `bt_<address>`), `update_auto` (`0`/`1`), `update_last`, `sdl`
 (`stock` turns SDL3 off), `welcome_hide`, `language_asked`, `version`.
 It is written atomically (temporary file + rename) and only when something changed.
 
@@ -245,14 +251,22 @@ Backspace (back), Escape (leave).
 
 ## Settings panel
 
-Pages: **Language** (applied live, no restart), **Profile** (switch, create, rename,
-colour, avatar, delete), **Screensaver** (start after Never/1–30 min, game demos on/off,
-length of each demo, preview), **Sound** (menu music, its volume, interface sounds),
-**Display** (output and theme after a restart, CRT filter live), **Graphics** (per-system
-presets; empty until a system declares them), **Library** (built-in games Hidden /
-Visible, rescanned live; library check; USB transfer), **Connections** (Wi-Fi, Bluetooth
-controllers, USB Ethernet, clock) and **About** (version, games, systems, profiles, free
-space on the USB, kernel). Changes are written to `settings.ini` when the panel closes.
+Seven categories on the left; a row with › opens a sub-page in the same card, and Circle
+goes back to the row it came from. A help line at the foot of the card describes the
+focused option.
+
+**Profile** (switch, create, rename, colour, avatar, delete), **Display** (output after a
+restart, CRT filter live; sub-pages **Theme**, **Graphics**: per-system presets, empty
+until a system declares them, and **Screensaver**: start after Never/1–30 min, game demos
+on/off, length of each demo, preview), **Sound** (menu music, its volume, interface
+sounds; sub-page **Audio output**: HDMI, a USB audio card or paired Bluetooth headphones),
+**Network** (Wi-Fi and its networks, USB Ethernet), **Bluetooth** (paired devices, add a
+device), **Library** (built-in games Hidden / Visible, rescanned live; library check; USB
+transfer) and **System** (sub-pages **Language**, applied live, **System update**, **Date
+and time** and **About**: version, games, systems, profiles, free space on the USB; the
+kernel card; restart the console). Wi-Fi and Bluetooth only offer networks and devices
+once switched on with a USB adapter plugged in. Changes are written to `settings.ini` when
+the panel closes.
 
 ## Layout
 
@@ -275,11 +289,14 @@ src/transfer.c                USB transfer
 src/audit.c                   library check
 src/net.c, src/conn.c         Connections worker and cards
 src/kern.c                    kernel card
+src/update.c                  system update: check, download, verify, stage
+src/padwait.c                 "no controller" card: Bluetooth receiver and unattended pairing
 src/status.c                  top-right clock and network status
 src/buttons.c                 lumen-buttons: console buttons daemon, demo watcher, game watchdog
 scripts/boot.sh, run.sh       boot entry, session loop
 scripts/power.sh, net.sh,     power button, connections, kernel restore,
   kernel.sh, package.sh       release packaging
+scripts/update.sh             installs a staged system update (run by boot.sh from RAM)
 dist/                         data files installed next to the binary (lang, systems,
                               shaders, themes, controller mappings)
 third_party/                  SDL_image 2.0.1 / SDL_ttf 2.0.14 headers (zlib licence), stb_vorbis

@@ -105,7 +105,7 @@ void theme_init(const char *home)
    snprintf(s_home, sizeof(s_home), "%s", home);
    s_n = 0;
    snprintf(s_list[s_n].id, sizeof(s_list[0].id), "default");
-   snprintf(s_list[s_n].name, sizeof(s_list[0].name), "Lumen");
+   snprintf(s_list[s_n].name, sizeof(s_list[0].name), "LPSX");
    s_n++;
    snprintf(dir, sizeof(dir), "%s/themes", home);
    if ((d = opendir(dir)))
@@ -137,7 +137,7 @@ void theme_init(const char *home)
 
 int         theme_count(void) { return s_n; }
 const char *theme_id(int i) { return i >= 0 && i < s_n ? s_list[i].id : "default"; }
-const char *theme_name(int i) { return i >= 0 && i < s_n ? s_list[i].name : "Lumen"; }
+const char *theme_name(int i) { return i >= 0 && i < s_n ? s_list[i].name : "LPSX"; }
 int         theme_active_index(void) { return s_active; }
 const char *theme_active_id(void) { return s_list[s_active].id; }
 float       theme_card_alpha(void) { return s_card_alpha; }

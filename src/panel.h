@@ -7,7 +7,7 @@
 enum { HINTS_CAROUSEL, HINTS_PANEL_ROOT, HINTS_PANEL_PAGE, HINTS_PANEL_LIST, HINTS_PANEL_INFO,
        HINTS_OSK, HINTS_CONFIRM, HINTS_ATTRACT, HINTS_WELCOME, HINTS_WELCOME_LAST, HINTS_WELCOME_LANG, HINTS_GAMEMENU,
        HINTS_GAMEMENU_FOLDERS, HINTS_FILEPICKER, HINTS_DASH_TABS, HINTS_DASH_PROFILE,
-       HINTS_TRANSFER, HINTS_TRANSFER_COPY, HINTS_AUDIT, HINTS_WIFI, HINTS_BT, HINTS_KERNEL, HINTS_KERNEL_BUSY, HINTS_KERNEL_DONE, HINTS_COUNT };
+       HINTS_TRANSFER, HINTS_TRANSFER_COPY, HINTS_AUDIT, HINTS_WIFI, HINTS_BT, HINTS_KERNEL, HINTS_KERNEL_BUSY, HINTS_KERNEL_DONE, HINTS_PADWAIT, HINTS_COUNT };
 
 void  panel_init(void);                 /* after fonts + i18n + settings */
 void  panel_open(void);
@@ -35,5 +35,6 @@ void  ui_sound_changed(void);           /* "music" / "music_volume" changed: app
 void  ui_start_attract(void);           /* "Preview now" (step 5; a no-op before) */
 void  ui_request_reboot(void);          /* Display page: save and restart the console */
 void  ui_request_restart(void);         /* theme: restart Lumen only (run.sh starts it again) */
+void  ui_request_update(void);          /* Software update: save, exit 13, boot.sh installs and restarts */
 
 #endif

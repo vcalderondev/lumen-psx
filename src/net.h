@@ -11,9 +11,12 @@
 enum { NET_CAP_UNKNOWN, NET_CAP_NO, NET_CAP_YES };
 /* Wi-Fi and Ethernet states */
 enum { NET_OFF, NET_NOADAPTER, NET_DOWN, NET_CONNECTING, NET_CONNECTED, NET_NOCABLE };
+/* unattended pairing (net_pad_watch): searching, pairing ap_name, paired ap_name, that one failed
+ * (the search goes on), the adapter does not answer */
+enum { NET_AP_IDLE, NET_AP_SEARCHING, NET_AP_PAIRING, NET_AP_DONE, NET_AP_FAILED, NET_AP_NOADAPTER };
 
 typedef struct { char ssid[64]; int signal, saved, connected; char sec[8]; } net_ap_t;
-typedef struct { char mac[18], name[64]; int paired, connected; } net_dev_t;
+typedef struct { char mac[18], name[64], icon[24]; int paired, connected; } net_dev_t;   /* icon: BlueZ's, "input-gaming" ... */
 
 typedef struct {
    int  wifi_cap, bt_cap, eth_cap, stock_kernel;
@@ -30,6 +33,9 @@ typedef struct {
    int  ndev, bt_scanning, paired, connected;
    net_dev_t dev[NET_MAX_DEVS];
    int  busy;                             /* a connect / pair is running */
+   int  bt_present;                       /* a USB Bluetooth adapter is plugged in (even with Bluetooth off) */
+   int  ap_state;                         /* NET_AP_*: pairing the first controller found, unattended */
+   char ap_name[64];                      /* the controller being paired / just paired */
    int  gen;                              /* changes whenever something above changed */
 } net_state_t;
 
@@ -49,6 +55,12 @@ void net_wifi_connect(const char *ssid, const char *password);   /* "" = open ne
 void net_wifi_select(const char *ssid);   /* a saved network */
 void net_wifi_forget(const char *ssid);
 void net_bt_pair(const char *mac);        /* pair + trust + connect, or connect when paired */
+
 void net_bt_remove(const char *mac);
+/* no controller is connected: look for a USB Bluetooth adapter every few seconds
+ * (bt_present); with autopair, also pair the first game controller found in pairing mode,
+ * with no question (only controllers: BlueZ's input-gaming class or a controller's name).
+ * LUMEN_FAKE_BT_ADAPTER=1 pretends an adapter is plugged in (psc-sim). */
+void net_pad_watch(int no_pads, int autopair);
 
 #endif
