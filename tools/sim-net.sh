@@ -4,6 +4,7 @@
 # Connections screens can be driven and screenshot.
 #   LUMEN_SIM_ENV="LUMEN_NET_SH=/src/tools/sim-net.sh" bin/psc-sim run lumen ...
 # LUMEN_SIM_REL=<dir> serves a release for the software update (release.json, the zip...).
+# SIM_BT_LATE=<s> makes "bt on" fail for the first <s> seconds (a dongle plugged in late).
 # State between calls lives in /tmp/sim-net (connected network, paired controllers).
 S=/tmp/sim-net; mkdir -p "$S"
 [ -f "$S/ssid" ] || printf 'CasaPérez' > "$S/ssid"
@@ -19,7 +20,12 @@ case "$1 $2" in
   "wifi forget") echo forgotten ;;
   "eth on") echo noadapter ;;
   "eth status") echo "state=noadapter" ;;
-  "bt on") echo on ;;
+  # SIM_BT_LATE=<s>: the Bluetooth dongle "is plugged in" only <s> seconds after the first call
+  # (bt on fails until then, like a console switched on before its dongle)
+  "bt on") [ -f "$S/t0" ] || date +%s > "$S/t0"
+           if [ -n "${SIM_BT_LATE}" ] && [ $(( $(date +%s) - $(cat "$S/t0") )) -lt "${SIM_BT_LATE}" ]; then
+             echo "error: no Bluetooth adapter (plug in a USB Bluetooth dongle)" >&2; exit 1; fi
+           echo on ;;
   "bt off") echo off ;;
   "bt scan") sleep 2 ;;
   "bt devices")

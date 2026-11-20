@@ -42,7 +42,10 @@ LOGF="${LUMEN_HOME}/logs/net.log"
 mkdir -p "${RUN}" "${CONF}" 2>/dev/null
 
 log() { echo "$(cut -d' ' -f1 /proc/uptime) $*" >> "${LOGF}" 2>/dev/null; }
-die() { log "error: $*"; echo "error: $*" >&2; exit 1; }
+die() { log "error: $*"; rm -f "${LUMEN_HOME}/network/loading-wifi" 2>/dev/null; echo "error: $*" >&2; exit 1; }
+# the kernel's last words, into the log, when an adapter does not come up: which driver took
+# the dongle, which firmware it asked for and whether it got it
+kmsg() { log "kernel messages ($1):"; dmesg 2>/dev/null | tail -n 40 | sed 's/^/  kernel: /' >> "${LOGF}" 2>/dev/null; }
 
 # ---- kernel modules (stock build only, and only what is missing)
 is_stock() { [ -f "${MOD}/netmod/KERNEL" ] && [ "$(uname -v)" = "$(cat "${MOD}/netmod/KERNEL")" ]; }
@@ -60,15 +63,73 @@ load_set() {  # module names...
     if insmod "${MOD}/netmod/$m.ko" 2>>"${LOGF}"; then log "module: $m loaded"; else log "module: $m FAILED"; fi
   done
 }
-WIFI_SET="arc4 ecb ccm gcm ghash-generic cmac crc-ccitt mac80211 mt7601u rt2x00lib rt2800lib rt2x00usb rt2800usb rtl8xxxu"
-ETH_SET="libphy usbnet asix ax88179_178a cdc_ether cdc_ncm cdc_subset r8152 smsc95xx"
-ETH_DRIVERS="r8152 ax88179_178a asix cdc_ether cdc_ncm cdc_subset smsc95xx"
-BT_SET="ecb cmac bluetooth btbcm btintel btrtl btusb hidp"
+# Wi-Fi drivers (psc-platform kernel/build-net-modules.sh): the kernel's (MediaTek MT7601U,
+# Ralink RT2800 / RT2500 / RT73, Realtek rtl8xxxu and r8188eu, Atheros carl9170 / ar5523) and
+# Realtek's own for the newer chips (8821CU/8811CU, 88x2BU, 8812AU, 8821AU). Only the driver
+# of the adapter that is plugged in is loaded (aliases.txt), with what it depends on; the
+# mac80211 ones also get the ciphers.
+WIFI_DRIVERS="mt7601u rt2800usb rt2500usb rt73usb rtl8xxxu r8188eu carl9170 ar5523"
+# Realtek's out-of-tree drivers are EXPERIMENTAL and off: 8821cu froze a console (a kernel
+# lock-up, then the watchdog powers it off; nothing can be logged). They load only with
+# <home>/debug/wifi-vendor-drivers; without it their adapters are reported as unsupported.
+WIFI_VENDOR="8821cu 88x2bu 8812au 8821au"
+WIFI_CRYPTO="arc4 ecb ccm gcm ghash-generic cmac crc-ccitt"
+# a package without aliases.txt (psc-platform 2.5.0): its whole set, as before
+WIFI_SET="${WIFI_CRYPTO} mac80211 mt7601u rt2x00lib rt2800lib rt2x00usb rt2800usb rtl8xxxu"
+BT_SET="ecb cmac bluetooth btbcm btintel btrtl btusb ath3k hidp"
 has_mod() { [ -d "/sys/module/$1" ]; }
 cap_of() {  # module: yes (in the kernel), load (in our stock set), no
   if has_mod "$1"; then echo yes
   elif unpack_mod && is_stock && [ -f "${MOD}/netmod/$1.ko" ]; then echo load
   else echo no; fi
+}
+
+# the drivers among "$@" that take a USB device plugged in now (modalias globs)
+match_mods() {
+  al="${MOD}/netmod/aliases.txt"; [ -f "$al" ] || return 1
+  for d in /sys/bus/usb/devices/*; do
+    [ -f "$d/modalias" ] || continue
+    ma=$(cat "$d/modalias")
+    while read -r m pat; do
+      case " $* " in *" $m "*) ;; *) continue ;; esac
+      case "$ma" in $pat) echo "$m" ;; esac
+    done < "$al"
+  done | sort -u
+}
+# modules and everything they depend on (depends.txt: "module: dep,dep"); no recursion:
+# sh has no local variables
+with_deps() {
+  wd_all=" $* "; wd_more=1
+  while [ -n "${wd_more}" ]; do
+    wd_more=""
+    for wd_m in ${wd_all}; do
+      for wd_d in $(sed -n "s/^${wd_m}: *//p" "${MOD}/netmod/depends.txt" 2>/dev/null | tr ',' ' '); do
+        case "${wd_all}" in *" ${wd_d} "*) ;; *) wd_all="${wd_all}${wd_d} "; wd_more=1 ;; esac
+      done
+    done
+  done
+  for wd_m in ${wd_all}; do echo "${wd_m}"; done
+}
+# CRASH GUARD. A driver that takes the console down (a kernel panic: nothing can be logged
+# then) must do it once at most. <network>/loading-wifi names the drivers being started; it
+# goes 20 s after Wi-Fi is up. Found at the next start, those drivers crashed the console:
+# they go to <network>/blocked-modules and are never loaded again (delete that file to retry).
+BLOCKED="${CONF}/blocked-modules"; MARK="${CONF}/loading-wifi"
+# stdin -> file, on the stick for good. sync(2) does not reach a FUSE filesystem on this
+# kernel (the stick's exFAT): only an fsync of the file does, which dd conv=fsync makes.
+fsw() { dd of="$1" conv=fsync 2>/dev/null; }
+guard_check() {
+  [ -f "${MARK}" ] || return 0
+  { cat "${BLOCKED}" 2>/dev/null; cat "${MARK}"; } | sort -u > "${RUN}/blocked.new"
+  fsw "${BLOCKED}" < "${RUN}/blocked.new"
+  log "crash guard: the console went down while starting $(tr '\n' ' ' < "${MARK}"): blocked from now on"
+  rm -f "${MARK}"; sync
+}
+is_blocked() { grep -qx "$1" "${BLOCKED}" 2>/dev/null; }
+# the kernel's messages onto the stick while a driver starts (4 a second, 20 s): what is
+# left to read if the console dies
+kwatch() {
+  ( i=0; while [ $i -lt 80 ]; do dmesg 2>/dev/null | tail -n 120 | fsw "${LUMEN_HOME}/logs/wifi-kmsg.log"; sleep 0.25; i=$((i + 1)); done ) >/dev/null 2>&1 &
 }
 
 # ---- packages
@@ -80,6 +141,15 @@ unpack_pkg() {  # name dir
 netenv() { LD_LIBRARY_PATH="${NET}/lib" SSL_CERT_FILE="${NET}/lib/psc-net/ssl/cert.pem" \
            CURL_CA_BUNDLE="${NET}/lib/psc-net/ssl/cert.pem" "$@"; }
 btenv() { LD_LIBRARY_PATH="${BT}/lib" "$@"; }
+
+# where the kernel looks for firmware: the package in RAM. Set BEFORE any driver is loaded:
+# a driver asks for its firmware the moment it finds its dongle (btusb/btrtl at insmod).
+fw_path() {
+  unpack_pkg psc-net.tar.gz "${NET}" || return 1
+  [ -w /sys/module/firmware_class/parameters/path ] && [ -d "${NET}/lib/firmware" ] &&
+    printf '%s' "${NET}/lib/firmware" > /sys/module/firmware_class/parameters/path
+  return 0
+}
 
 # ---- Wi-Fi
 wlan_if() { for d in /sys/class/net/*; do [ -d "$d/wireless" ] || [ -e "$d/phy80211" ] && { basename "$d"; return 0; }; done; return 1; }
@@ -106,12 +176,38 @@ SH
 }
 wifi_on() {
   unpack_pkg psc-net.tar.gz "${NET}" || die "psc-net.tar.gz missing"
-  unpack_mod; load_set ${WIFI_SET}
-  has_mod mac80211 || has_mod cfg80211 || die "this kernel has no Wi-Fi stack"
-  # firmware from RAM (the drivers ask when a dongle is plugged in or the interface comes up)
-  [ -w /sys/module/firmware_class/parameters/path ] && printf '%s' "${NET}/lib/firmware" > /sys/module/firmware_class/parameters/path
+  fw_path; unpack_mod
+  if is_stock && [ -f "${MOD}/netmod/aliases.txt" ]; then
+    guard_check
+    want=""; skipped=""
+    vendor=""
+    [ -f "${LUMEN_HOME}/debug/wifi-vendor-drivers" ] && vendor="${WIFI_VENDOR}"
+    for m in $(match_mods ${WIFI_DRIVERS} ${vendor}); do
+      if is_blocked "$m"; then skipped="${skipped} $m"; else want="${want} $m"; fi
+    done
+    if [ -z "${want}" ] && [ -z "${skipped}" ] && [ -z "${vendor}" ] && [ -n "$(match_mods ${WIFI_VENDOR})" ]; then
+      log "wifi: this adapter needs an experimental driver ($(match_mods ${WIFI_VENDOR} | tr '\n' ' ')): not loaded"
+      echo unsupported; exit 1
+    fi
+    if [ -n "${want}" ]; then
+      mods=$(with_deps ${want} | sort -u | tr '\n' ' ')
+      case " ${mods} " in *" mac80211 "*) mods="${WIFI_CRYPTO} ${mods}" ;; esac
+      log "wifi: adapter driver:${want} (loading: ${mods})"
+      echo ${want} | tr ' ' '\n' | fsw "${MARK}"
+      { echo "$(cut -d' ' -f1 /proc/uptime) about to load: ${mods}"; cat /sys/bus/usb/devices/*/modalias 2>/dev/null; } | fsw "${LUMEN_HOME}/logs/wifi-trace.log"
+      kwatch
+      load_set ${mods}
+      echo "$(cut -d' ' -f1 /proc/uptime) loaded: ${mods}" | fsw "${LUMEN_HOME}/logs/wifi-trace.log"
+      ( sleep 20; rm -f "${MARK}"; sync ) >/dev/null 2>&1 &
+    elif [ -n "${skipped}" ]; then
+      log "wifi: the adapter's driver (${skipped} ) is blocked: it crashed the console before"
+      echo blocked; exit 1
+    fi
+  else
+    load_set ${WIFI_SET}
+  fi
   i=0; while ! wlan_if >/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-  IF=$(wlan_if) || die "no Wi-Fi adapter (plug in a USB Wi-Fi dongle)"
+  IF=$(wlan_if) || { kmsg "wifi on"; die "no Wi-Fi adapter (plug in a USB Wi-Fi dongle)"; }
   [ -f "${CONF}/wpa_supplicant.conf" ] || printf 'update_config=1\n' > "${CONF}/wpa_supplicant.conf"
   # the stick copy holds the networks; wpa_supplicant runs on a RAM copy with its control socket
   { echo "ctrl_interface=${RUN}/wpa"; grep -v '^ctrl_interface=' "${CONF}/wpa_supplicant.conf"; } > "${RUN}/wpa.conf"
@@ -270,11 +366,9 @@ bt_save() { [ -d "${BTSTORE}" ] && tar cf "${CONF}/bluetooth.tar.tmp" -C "$(dirn
             mv -f "${CONF}/bluetooth.tar.tmp" "${CONF}/bluetooth.tar" && sync; }
 bt_on() {
   unpack_pkg psc-bt.tar.gz "${BT}" || die "psc-bt.tar.gz missing"
-  unpack_pkg psc-net.tar.gz "${NET}"   # firmware of Bluetooth dongles (rtl_bt/, intel/, ath3k)
+  fw_path   # firmware of Bluetooth dongles (rtl_bt/, ath3k), before the drivers load
   unpack_mod; load_set ${BT_SET}
   has_mod bluetooth || die "this kernel has no Bluetooth stack"
-  [ -w /sys/module/firmware_class/parameters/path ] && [ -d "${NET}/lib/firmware" ] &&
-    printf '%s' "${NET}/lib/firmware" > /sys/module/firmware_class/parameters/path
   # pairings back from the stick
   mkdir -p "${BTSTORE}"; [ -f "${CONF}/bluetooth.tar" ] && tar xf "${CONF}/bluetooth.tar" -C "$(dirname "${BTSTORE}")"
   chmod 700 "${BTSTORE}"
@@ -285,7 +379,7 @@ bt_on() {
   pidof bluetoothd >/dev/null || { btenv "${BT}/libexec/bluetooth/bluetoothd" -n -f "${BT}/lib/psc-bt/main.conf" \
       >> "${LUMEN_HOME}/logs/bluetoothd.log" 2>&1 & }
   i=0; while [ $i -lt 30 ]; do bt_ctl show 2>/dev/null | grep -q "Powered:" && break; sleep 0.2; i=$((i + 1)); done
-  bt_ctl show | grep -q "Controller" || die "no Bluetooth adapter (plug in a USB Bluetooth dongle)"
+  bt_ctl show | grep -q "Controller" || { kmsg "bt on"; die "no Bluetooth adapter (plug in a USB Bluetooth dongle)"; }
   bt_ctl power on >/dev/null; bt_ctl pairable on >/dev/null
   bt_audio_on
   log "bt on"; echo on

@@ -50,6 +50,7 @@ mkdir -p "$L/themes"; cp -R dist/themes/. "$L/themes/"   # example themes (docs/
 cp assets/splash.png assets/splash-1080.png "$L/assets/"
 for d in glyphs fonts boot; do mkdir -p "$L/assets/$d"; cp assets/$d/* "$L/assets/$d/"; done
 mkdir -p "$L/assets/brand"; cp assets/brand/*.png "$L/assets/brand/"   # the SVGs stay in the repo
+mkdir -p "$L/assets/ui"; cp assets/ui/*.png "$L/assets/ui/"   # illustrations (tools/make-illustrations.sh)
 mkdir -p "$L/assets/launch"; cp -R assets/launch/. "$L/assets/launch/"   # flat launch illustrations (lumen-design tools/export-launch.sh)
 # platform: compositor packages, RetroArch, cores
 cp "$PF/psc-weston-16.tar.gz" "$L/compositor/"

@@ -3,12 +3,20 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
-## [Unreleased]
+## [0.23.0] - 2026-11-20
+
+System update over the network, settings laid out like a console's, Bluetooth audio, and a
+card that pairs a Bluetooth controller by itself. psc-platform 2.6.0. Verified: the console
+build (zero warnings, psc-check), the updater against the real releases v0.21.0 to v0.22.0
+(249 KB of 41 MB downloaded; edited config kept, dropped files removed, an install cut
+halfway finished, a cancelled or corrupted download leaves nothing), every screen on
+psc-sim. On the console: the settings, the "no controller" card and Bluetooth controllers
+through a Realtek RTL8821C receiver. Not yet on the console: a real update, Bluetooth audio.
 
 ### Added
-- Software update over Wi-Fi or cable (Settings > System > System update), the way
-  lpsx.dev updates a stick: the latest release from `lpsx.dev/services/releases` (GitHub as
-  a fallback), its manifest checked against `SHA256SUMS` and compared with `lumen/MANIFEST`;
+- System update over Wi-Fi or cable (Settings > System > System update), the way lpsx.dev
+  updates a stick: the latest release from `lpsx.dev/services/releases` (GitHub as a
+  fallback), its manifest checked against `SHA256SUMS` and compared with `lumen/MANIFEST`;
   only the files that changed are downloaded, as byte ranges of the release zip, and each
   one is checked (size + SHA-256) into `lumen/.update/`. "Restart and update" exits 13 and
   `boot.sh` runs `update.sh` from RAM: files moved into place, what the release dropped
@@ -16,28 +24,40 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   An install cut by a power cut finishes at the next power-on; an unfinished download is
   removed. `settings.ini`, `state.txt`, `profiles/`, `logs/`, `backup/` and the games are
   never touched; an edited `lumen.conf` / `retroarch.cfg` gets the new copy as `.new`; a
-  replaced boot payload is backed up once to `lumen/backup/`, as the web does.
+  replaced boot payload is backed up once to `lumen/backup/`, as the web does. Checking and
+  downloading need a connection (the rows say so without one).
 - A daily check while online (`update_auto`, on by default; `update_last`), with a toast
   when a new version is out. It never installs anything by itself.
-- Sound > Audio output: the ALSA cards (a USB headset or DAC), applied to Lumen (`AUDIODEV`)
-  and RetroArch (`audio_device`) by `run.sh` (`audio_out` in `settings.ini`).
-- Bluetooth > Add a device: the search shows what is nearby with its kind (controller,
-  keyboard, mouse, audio...); Devices lists the paired ones. `net.sh bt devices` adds BlueZ's
-  icon as a fifth field.
-- Bluetooth audio: paired headphones and speakers are listed in Sound > Audio output
-  (`audio_out=bt_<address>`). `net.sh` starts `bluealsad` with Bluetooth and writes the ALSA
-  description of the `bluealsa` device; `run.sh` routes the frontend and RetroArch to it
-  (`ALSA_CONFIG_PATH`, `bluealsa:DEV=<mac>,PROFILE=a2dp`, a 128 ms RetroArch buffer) when the
-  device is connected at launch, else to HDMI. Needs a psc-platform release whose
-  `psc-bt.tar.gz` has bluez-alsa (the entry is hidden without it).
+- Sound > Audio output (`audio_out`): HDMI, the ALSA cards (a USB headset or DAC) and paired
+  Bluetooth headphones and speakers (`bt_<address>`, bluez-alsa from psc-platform 2.6.0),
+  applied by `run.sh` to the frontend (`AUDIODEV`) and RetroArch (`audio_device`,
+  `ALSA_CONFIG_PATH`, a 128 ms buffer over Bluetooth); a Bluetooth device that is not
+  connected at launch falls back to HDMI.
 - "No controller" card: whenever no controller is connected, a card asks for a USB
   Bluetooth receiver in a free port (step 1) and, as soon as one is plugged in, switches
   Bluetooth on and pairs the first controller put in pairing mode with no question (step 2:
   how DualSense, DualShock 4, Switch Pro and 8BitDo enter it, live status); it closes once a
   controller is connected, wired or not. For consoles whose two front ports are all they
-  have. Only game controllers are paired that way. The adapter is found by its USB class
-  (e0/01/01) even with Bluetooth off. `LUMEN_PADWAIT=0` turns it off (psc-sim).
-- `net.sh http <url> <out> [<from>-<to>]`.
+  have. Only game controllers are paired that way, one per card; one that does not pair is
+  left alone for a minute. The receiver is found by its USB class even with Bluetooth off.
+  `LUMEN_PADWAIT=0` turns the card off (psc-sim).
+- Bluetooth > Add a device: the search shows what is nearby with its kind (controller,
+  keyboard, mouse, audio...); Devices lists the paired ones.
+- More USB adapters, with psc-platform 2.6.0: Realtek Bluetooth chips RTL8723D, RTL8821C,
+  RTL8822B/C and RTL8761B, and the Wi-Fi drivers r8188eu, rt2500usb, rt73usb, carl9170 and
+  ar5523 besides MT7601U, RT2800 and rtl8xxxu. `net.sh` loads only the driver of the adapter
+  that is plugged in (`aliases.txt`), sets the firmware folder before any driver loads, and
+  writes the kernel's last messages to `logs/net.log` when an adapter does not come up.
+  Realtek's own Wi-Fi drivers (8821CU, 88x2BU, 8812AU, 8821AU) are in the package but not
+  enabled yet: their adapters are reported as not supported.
+- A Wi-Fi or Bluetooth switched on before its dongle was plugged in starts by itself once
+  the dongle is there; the USB devices plugged in are logged (vendor, product) whenever they
+  change.
+- Illustrations (`assets/ui/`, `tools/make-illustrations.sh`): a game controller (based on
+  an icon by Tuan Nguyen, CC Attribution) and a USB Bluetooth
+  receiver.
+- `net.sh http <url> <out> [<from>-<to>]`, `net.sh bt audio <mac>`; `net.sh bt devices`
+  adds BlueZ's icon as a fifth field.
 
 ### Changed
 - Settings are laid out like a console's: seven categories on the rail (Profile, Display,
@@ -45,6 +65,14 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
   Theme / Graphics / Screensaver, Sound > Audio output, System > Language / System update /
   Date and time / About), with the category as their kicker; Circle goes back to the row it
   came from. System also has "Restart the console".
+- A help line at the foot of the card describes the focused option, or the category while
+  the focus is on the rail; texts fade from one to the next.
+- A value that does not fit its row is cut with an ellipsis and scrolls as a marquee on the
+  focused row; it no longer runs over the label.
+- Wi-Fi and Bluetooth only offer networks and devices once switched on with an adapter that
+  answers.
+- User-visible text says LPSX instead of Lumen, in the six languages and the default
+  theme's name.
 
 ## [0.22.0] - 2026-11-19
 

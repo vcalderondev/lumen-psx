@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <SDL2/SDL_image.h>
 #include "lumen.h"
 #include "padwait.h"
 #include "i18n.h"
@@ -18,7 +19,7 @@
 
 #define CW 960.0f
 #define CH 520.0f
-#define DISC_R 112.0f
+#define DISC_R 124.0f
 #define TEXT_X 452.0f      /* the right column, from the card's left edge */
 #define TEXT_W 468.0f
 #define NBRAND 4
@@ -27,6 +28,30 @@ static int     s_open, s_dismissed;
 static double  s_nopad_since = -1, s_cooldown, s_t0, s_done_t = -1;
 static spring  s_fade, s_ok;   /* card in/out; 0..1 once paired */
 static spring  s_step;         /* 0 = step 1 (plug in an adapter), 1 = step 2 (pair a controller) */
+static spring  s_txt;          /* 0..1: the texts of the right column fading in after a change of step */
+/* what the card shows: taken from the network state while the card is open and frozen when it
+ * closes, so nothing changes under the fade-out (the worker resets its state at once) */
+static int     v_step2, v_ap, v_paired, v_btup, v_key = -1;
+static char    v_name[64];
+static int     s_armed;        /* a "done" left over from the previous card is not this card's */
+/* the illustrations (tools/make-illustrations.py, assets/ui/): white, tinted when drawn */
+typedef struct { GLuint tex; float w, h; int tried; } ill_t;
+static ill_t s_pad, s_recv;
+static void ill_load(ill_t *il, const char *name)
+{
+   char p[400];
+   SDL_Surface *sf;
+   const int hd = g_ui_scale > 1.2f;
+   if (il->tried) return;
+   il->tried = 1;
+   snprintf(p, sizeof(p), "%s/assets/ui/%s%s.png", g_home, name, hd ? "-1080" : "");
+   if (!(sf = IMG_Load(p))) { logf_("padwait: no %s (shapes instead)", p); return; }
+   il->tex = tex_from_surface(sf);
+   il->w = sf->w / (hd ? 1.5f : 1.0f); il->h = sf->h / (hd ? 1.5f : 1.0f);
+   SDL_FreeSurface(sf);
+}
+static void ill_free(ill_t *il) { if (il->tex) glDeleteTextures(1, &il->tex); memset(il, 0, sizeof(*il)); }
+
 static label_t s_kick, s_title, s_sub, s_status, s_bname[NBRAND], s_bhow[NBRAND], s_stepl[2], s_stepn[2];
 
 /* the controllers people pair most (names are product names, kept as they are) */
@@ -54,7 +79,7 @@ float padwait_amount(void) { return clampf(s_fade.x, 0.0f, 1.0f); }
 static void close_card(double t, int dismissed)
 {
    if (!s_open) return;
-   s_open = 0; s_cooldown = t + 20.0; s_done_t = -1;
+   s_open = 0; s_cooldown = t + 20.0;   /* s_done_t stays: the card fades out as it was */
    if (dismissed) s_dismissed = 1;   /* "not now": not again this session */
    music_sfx(dismissed ? SFX_BACK : SFX_CONFIRM);
    logf_("padwait: closed (%s)", dismissed ? "not now" : "controller connected");
@@ -73,6 +98,7 @@ void padwait_update(const ui_nav_t *nav, double t, float dt, int njoy, int block
    {
       s_open = 1; s_t0 = t; s_done_t = -1; s_ok.x = s_ok.v = 0;
       s_step.x = ns->bt_present ? 1.0f : 0.0f; s_step.v = 0;
+      s_armed = ns->ap_state != NET_AP_DONE; v_key = -1;
       if (s_fade.x < 0.02f) { s_fade.x = 0; s_fade.v = 0; }
       music_sfx(SFX_OPEN);
       logf_("padwait: no controller (Bluetooth adapter %s)", ns->bt_present ? "present" : "absent");
@@ -81,14 +107,22 @@ void padwait_update(const ui_nav_t *nav, double t, float dt, int njoy, int block
    {
       /* step 2 as soon as an adapter is plugged in: Bluetooth on, the search starts */
       if (ns->bt_present && !ns->bt_on) net_bt_set(1);
-      if (ns->ap_state == NET_AP_DONE && s_done_t < 0) { s_done_t = t; music_sfx(SFX_CONFIRM); }
+      int key;
+      if (!s_armed && ns->ap_state != NET_AP_DONE) s_armed = 1;
+      v_step2 = ns->bt_present; v_paired = ns->paired; v_btup = ns->bt == NET_CONNECTED;
+      v_ap = !s_armed && ns->ap_state == NET_AP_DONE ? NET_AP_IDLE : ns->ap_state;
+      if (v_ap == NET_AP_PAIRING || v_ap == NET_AP_DONE || v_ap == NET_AP_FAILED) snprintf(v_name, sizeof(v_name), "%s", ns->ap_name);
+      if (v_ap == NET_AP_DONE && s_done_t < 0) { s_done_t = t; music_sfx(SFX_CONFIRM); }
+      key = v_step2 * 2 + (s_done_t >= 0);
+      if (key != v_key) { if (v_key >= 0) { s_txt.x = 0; s_txt.v = 0; } else s_txt.x = 1; v_key = key; }
       if (s_done_t >= 0 && (t - s_done_t >= 2.4 || (njoy > 0 && t - s_done_t >= 1.2))) close_card(t, 0);
       else if (njoy > 0 && s_done_t < 0) close_card(t, 0);         /* a wired one was plugged in */
       else if (nav && nav->back && t - s_t0 > 0.4) close_card(t, 1);
    }
    spring_step(&s_fade, s_open ? 1.0f : 0.0f, 120, 18, dt);
    spring_step(&s_ok, s_done_t >= 0 ? 1.0f : 0.0f, 140, 16, dt);
-   spring_step(&s_step, ns->bt_present ? 1.0f : 0.0f, 120, 18, dt);
+   spring_step(&s_step, v_step2 ? 1.0f : 0.0f, 120, 18, dt);
+   spring_step(&s_txt, 1.0f, 150, 20, dt);
    if (!s_open && s_fade.x < 0.003f && s_title.tex)
    {
       label_t *all[] = { &s_kick, &s_title, &s_sub, &s_status };
@@ -96,6 +130,7 @@ void padwait_update(const ui_nav_t *nav, double t, float dt, int njoy, int block
       for (i = 0; i < 4; i++) label_free(all[i]);
       for (i = 0; i < NBRAND; i++) { label_free(&s_bname[i]); label_free(&s_bhow[i]); }
       for (i = 0; i < 2; i++) { label_free(&s_stepl[i]); label_free(&s_stepn[i]); }
+      ill_free(&s_pad); ill_free(&s_recv);
    }
 }
 
@@ -146,7 +181,6 @@ static void draw_dots(float x, float y, double t, const float c[4])
 
 void padwait_draw(double t)
 {
-   const net_state_t *ns = net_state();
    const float a = padwait_amount(), ok = clampf(s_ok.x, 0.0f, 1.0f);
    const float cx = (W - CW) * 0.5f, cy = (H - CH) * 0.5f - 8.0f + (1.0f - a) * 18.0f;
    const float dx = cx + 232.0f, dy = cy + CH * 0.5f - 18.0f;   /* the disc's centre */
@@ -165,8 +199,8 @@ void padwait_draw(double t)
    /* the disc, its ripples and the controller (step 2), or the receiver to plug in (step 1) */
    {
       const float st = clampf(s_step.x, 0.0f, 1.0f);
-      const int searching = st > 0.5f && ok < 0.5f && ns->ap_state != NET_AP_NOADAPTER;
-      const float speed = ns->ap_state == NET_AP_PAIRING ? 1.9f : 1.0f;
+      const int searching = st > 0.5f && ok < 0.5f && v_ap != NET_AP_NOADAPTER;
+      const float speed = v_ap == NET_AP_PAIRING ? 1.9f : 1.0f;
       if (searching)
          for (i = 0; i < 3; i++)
          {  /* rings leave the disc and fade 60 px out, one every 0.8 s */
@@ -174,35 +208,53 @@ void padwait_draw(double t)
             ui_ring(dx - rr, dy - rr, rr * 2, rr * 2, rr, 0.0f, a * 0.55f * (1.0f - ph) * (1.0f - ph));
          }
       ui_rest(dx - DISC_R, dy - DISC_R, DISC_R * 2, DISC_R * 2, DISC_R, a);
-      if (ok > 0.01f) ui_fill(dx - DISC_R, dy - DISC_R, DISC_R * 2, DISC_R * 2, DISC_R, acc, a * 0.22f * ok);
+      if (ok > 0.01f) ui_fill(dx - DISC_R, dy - DISC_R, DISC_R * 2, DISC_R * 2, DISC_R, acc, a * 0.38f * ok);
       for (i = 0; i < 3; i++) body[i] = txt[i] + (acc[i] - txt[i]) * ok;
       body[3] = a * 0.94f;
       ink[0] = 0.10f; ink[1] = 0.11f; ink[2] = 0.14f; ink[3] = a * 0.90f * st;
       body[3] = a * 0.94f * st;
-      if (st > 0.01f) draw_pad(dx, dy - 4.0f + (1.0f - st) * 14.0f, 150.0f, body, ink);
+      ill_load(&s_pad, "pad"); ill_load(&s_recv, "receiver");
+      if (st > 0.01f)
+      {
+         const float py = dy - 4.0f + (1.0f - st) * 14.0f;
+         if (s_pad.tex)
+         {  /* in colour, as drawn: the disc behind turns the accent once paired */
+            const float w4[4] = { 1, 1, 1, a * st };
+            const float pw = s_pad.w * 0.86f, ph = s_pad.h * 0.86f;   /* air between the drawing and the disc's edge */
+            draw_2d(s_pad.tex, dx - pw * 0.5f, py - ph * 0.5f, pw, ph, w4, 0);
+         }
+         else draw_pad(dx, py, 150.0f, body, ink);
+      }
       if (st < 0.99f)
       {  /* the receiver, bobbing gently, as if going into a port */
          const float k = 1.0f - st, bob = (float)sin((t - s_t0) * 2.2) * 5.0f;
          float b[4], m[4], n[4];
          col4(b, TC_TEXT, a * 0.94f * k); col4(m, TC_DIM, a * 0.9f * k);
          n[0] = 0.10f; n[1] = 0.11f; n[2] = 0.14f; n[3] = a * 0.9f * k;
-         draw_dongle(dx, dy + bob - st * 14.0f, b, m, n);
+         if (s_recv.tex)
+         {
+            const float w4[4] = { 1, 1, 1, a * k };
+            draw_2d(s_recv.tex, dx - s_recv.w * 0.5f, dy + bob - st * 14.0f - s_recv.h * 0.5f, s_recv.w, s_recv.h, w4, 0);
+         }
+         else draw_dongle(dx, dy + bob - st * 14.0f, b, m, n);
       }
    }
    draw_2d(0, cx + TEXT_X - 34.0f, cy + 40.0f, 1, CH - 132.0f, sep, 0);
 
    /* the right column */
    {
-      const float x = cx + TEXT_X;
-      const int step2 = ns->bt_present;
+      const float x = cx + TEXT_X, ta = clampf(s_txt.x, 0.0f, 1.0f), rise = (1.0f - ta) * 8.0f;
+      const int step2 = v_step2;
       float y = cy + 40.0f;
+      float ttxt[4], tdim[4];
+      col4(ttxt, TC_TEXT, a * ta); col4(tdim, TC_DIM, a * ta);
       ui_kicker(&s_kick, tr("net.bt"), x, y, a);
       y += 22.0f;
       wrap_set(&s_title, g_font_title, tr(ok > 0.5f ? "padwait.title_done" : step2 ? "padwait.title" : "padwait.title_plug"), (int)TEXT_W);
-      draw_label(&s_title, x, y, txt);
+      draw_label(&s_title, x, y + rise, ttxt);
       y += s_title.h + 10.0f;
-      wrap_set(&s_sub, g_font_small, tr(!step2 ? "padwait.sub_plug" : ns->paired > 0 ? "padwait.sub_paired" : "padwait.sub"), (int)TEXT_W);
-      draw_label(&s_sub, x, y, dim);
+      wrap_set(&s_sub, g_font_small, tr(!step2 ? "padwait.sub_plug" : v_paired > 0 ? "padwait.sub_paired" : "padwait.sub"), (int)TEXT_W);
+      draw_label(&s_sub, x, y + rise, tdim);
       y += s_sub.h + 22.0f;
       for (i = 0; i < 2; i++)
       {  /* the steps: done (accent, filled), current (ring), next (dim) */
@@ -237,8 +289,8 @@ void padwait_draw(double t)
          {  /* each controller on one line: its name, then how it enters pairing mode */
             float rh;
             wrap_set(&s_bhow[i], g_font_small, tr(k_how[i]), (int)(TEXT_W - nx));
-            draw_label(&s_bname[i], x, y, txt);
-            draw_label(&s_bhow[i], x + nx, y, dim);
+            draw_label(&s_bname[i], x, y + rise, ttxt);
+            draw_label(&s_bhow[i], x + nx, y + rise, tdim);
             rh = s_bhow[i].h > s_bname[i].h ? s_bhow[i].h : s_bname[i].h;
             y += rh + 8.0f;
          }
@@ -251,19 +303,19 @@ void padwait_draw(double t)
       const char *st;
       const float *sc = dim;
       draw_2d(0, cx + 32.0f, fy - 18.0f, CW - 64.0f, 1, sep, 0);
-      if (!ns->bt_present) { st = tr("padwait.status_plug"); }
-      else switch (ns->ap_state)
+      if (!v_step2) { st = tr("padwait.status_plug"); }
+      else switch (v_ap)
       {
-      case NET_AP_PAIRING:   st = trf(buf, sizeof(buf), "padwait.pairing", "name", ns->ap_name, NULL); sc = txt; break;
-      case NET_AP_DONE:      st = trf(buf, sizeof(buf), "padwait.done", "name", ns->ap_name, NULL); sc = acc; break;
-      case NET_AP_FAILED:    st = trf(buf, sizeof(buf), "padwait.failed", "name", ns->ap_name, NULL); break;
+      case NET_AP_PAIRING:   st = trf(buf, sizeof(buf), "padwait.pairing", "name", v_name, NULL); sc = txt; break;
+      case NET_AP_DONE:      st = trf(buf, sizeof(buf), "padwait.done", "name", v_name, NULL); sc = acc; break;
+      case NET_AP_FAILED:    st = trf(buf, sizeof(buf), "padwait.failed", "name", v_name, NULL); break;
       case NET_AP_NOADAPTER: st = tr("padwait.noadapter"); break;
       case NET_AP_SEARCHING: st = tr("padwait.searching"); break;
-      default:               st = tr(ns->bt == NET_CONNECTED ? "padwait.searching" : "padwait.starting"); break;
+      default:               st = tr(v_btup ? "padwait.searching" : "padwait.starting"); break;
       }
       wrap_set(&s_status, g_font_sub, st, (int)(CW - 140.0f));
-      if (ns->bt_present && ns->ap_state == NET_AP_DONE) draw_round_rect(cx + 40.0f, fy + s_status.h * 0.5f - 6.0f, 12, 12, 6, acc, 0.0f);
-      else if (ns->ap_state != NET_AP_NOADAPTER) draw_dots(cx + 36.0f, fy + s_status.h * 0.5f, t, sc);
+      if (v_step2 && v_ap == NET_AP_DONE) draw_round_rect(cx + 40.0f, fy + s_status.h * 0.5f - 6.0f, 12, 12, 6, acc, 0.0f);
+      else if (v_ap != NET_AP_NOADAPTER) draw_dots(cx + 36.0f, fy + s_status.h * 0.5f, t, sc);
       draw_label(&s_status, cx + 90.0f, fy, sc);
    }
 }
