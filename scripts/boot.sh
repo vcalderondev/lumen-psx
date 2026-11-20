@@ -62,6 +62,22 @@ else
   exec >> "${LOG}/boot.log" 2>&1
 fi
 echo "=== lumen boot $(date) ($(cut -d' ' -f1 /proc/uptime) s since power-on)"
+
+# SOFTWARE UPDATE (src/update.c, update.sh). The installer runs from a RAM copy, never from
+# the stick it rewrites. An install cut short by a power cut is finished here, before
+# anything of Lumen starts, and the console restarts on the new files; when it cannot
+# finish, the boot goes on with what is there (update.sh gives up after three tries).
+update_install() {
+  cp "${LUMEN_HOME}/update.sh" /tmp/lumen-update.sh 2>/dev/null || { echo "update: no update.sh"; return 1; }
+  LUMEN_HOME="${LUMEN_HOME}" sh /tmp/lumen-update.sh apply; r=$?
+  rm -f /tmp/lumen-update.sh; sync
+  return $r
+}
+if [ -f "${LUMEN_HOME}/.update/READY" ]; then
+  echo "update: an install was left unfinished, finishing it"
+  if update_install; then echo "update: done, restarting the console"; sync; reboot; sleep 30; fi
+fi
+
 # CPU / GPU frequency policy, for the record (read only): governor, current and
 # available frequencies of cpu0, and of every devfreq device (the GPU's, if any)
 for f in scaling_governor scaling_cur_freq scaling_min_freq scaling_max_freq scaling_available_governors scaling_available_frequencies; do
@@ -395,6 +411,12 @@ if [ -f /tmp/lumen-resume-failed ]; then
   # the stick did not come back after a suspend: nothing of Lumen can start (it lives on
   # the stick). A restart finds it again, or ends in the stock menu when it is gone
   echo "resume failed (no stick): restarting the console"
+  sync; reboot; sleep 30
+fi
+if [ "${SESSION_RC}" = 13 ]; then   # "Restart and update": install what the frontend staged
+  echo "update requested by the frontend"
+  [ -n "${BUTTONS_PID}" ] && kill "${BUTTONS_PID}" 2>/dev/null
+  update_install
   sync; reboot; sleep 30
 fi
 if [ "${SESSION_RC}" = 12 ]; then   # Display settings changed: start over with the new setup

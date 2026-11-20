@@ -25,6 +25,7 @@ else
   [ -f out/lumen-buttons ] && copy_file out/lumen-buttons "$VOL/lumen/lumen-buttons"
   copy_file scripts/run.sh "$VOL/lumen/run.sh"
   copy_file scripts/boot.sh "$VOL/lumen/boot.sh"
+  copy_file scripts/update.sh "$VOL/lumen/update.sh"
   for f in dist/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/$(basename "$f")"; done
   for f in dist/lang/*.lang; do copy_file "$f" "$VOL/lumen/lang/$(basename "$f")"; done
   for f in dist/shaders/*; do [ -f "$f" ] || continue; copy_file "$f" "$VOL/lumen/shaders/$(basename "$f")"; done
@@ -38,6 +39,7 @@ else
   done
   for f in assets/launch/*/*; do [ -f "$f" ] || continue; t=${f#assets/launch/}; mkdir -p "$VOL/lumen/assets/launch/${t%/*}"; copy_file "$f" "$VOL/lumen/assets/launch/$t"; done
   for f in assets/brand/*.png; do copy_file "$f" "$VOL/lumen/assets/brand/$(basename "$f")"; done
+  for f in assets/ui/*.png; do copy_file "$f" "$VOL/lumen/assets/ui/$(basename "$f")"; done
   mkdir -p "$VOL/lumen/profiles"
   if [ "$1" = "--cores" ] && [ -d "$2" ]; then
     for f in "$2"/*.so; do copy_file "$f" "$VOL/lumen/cores/$(basename "$f")"; done

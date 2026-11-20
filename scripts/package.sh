@@ -40,7 +40,7 @@ fi
 ST="$(mktemp -d)"; L="$ST/lumen"
 mkdir -p "$L/retroarch/autoconfig" "$L/cores" "$L/compositor" "$L/systems" "$L/lang" "$L/profiles" \
          "$L/assets" "$L/logs"
-cp out/lumen out/lumen-buttons scripts/run.sh scripts/boot.sh scripts/power.sh scripts/net.sh scripts/kernel.sh psc/lumen.conf "$L/"
+cp out/lumen out/lumen-buttons scripts/run.sh scripts/boot.sh scripts/power.sh scripts/net.sh scripts/kernel.sh scripts/update.sh psc/lumen.conf "$L/"
 chmod 755 "$L/lumen" "$L/lumen-buttons"
 for f in dist/*; do [ -f "$f" ] && cp "$f" "$L/"; done
 cp dist/systems/* "$L/systems/"
@@ -50,6 +50,7 @@ mkdir -p "$L/themes"; cp -R dist/themes/. "$L/themes/"   # example themes (docs/
 cp assets/splash.png assets/splash-1080.png "$L/assets/"
 for d in glyphs fonts boot; do mkdir -p "$L/assets/$d"; cp assets/$d/* "$L/assets/$d/"; done
 mkdir -p "$L/assets/brand"; cp assets/brand/*.png "$L/assets/brand/"   # the SVGs stay in the repo
+mkdir -p "$L/assets/ui"; cp assets/ui/*.png "$L/assets/ui/"   # illustrations (tools/make-illustrations.sh)
 mkdir -p "$L/assets/launch"; cp -R assets/launch/. "$L/assets/launch/"   # flat launch illustrations (lumen-design tools/export-launch.sh)
 # platform: compositor packages, RetroArch, cores
 cp "$PF/psc-weston-16.tar.gz" "$L/compositor/"
