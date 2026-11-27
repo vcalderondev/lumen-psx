@@ -42,6 +42,9 @@ LOGF="${LUMEN_HOME}/logs/net.log"
 mkdir -p "${RUN}" "${CONF}" 2>/dev/null
 
 log() { echo "$(cut -d' ' -f1 /proc/uptime) $*" >> "${LOGF}" 2>/dev/null; }
+# <home>/debug/bt-trace: more detail in net.log (Bluetooth firmware and searches, the
+# steps of the cable's bring-up); nothing without it
+trace() { [ -f "${LUMEN_HOME}/debug/bt-trace" ] && log "trace: $*"; return 0; }
 die() { log "error: $*"; rm -f "${LUMEN_HOME}/network/loading-wifi" 2>/dev/null; echo "error: $*" >&2; exit 1; }
 # the kernel's last words, into the log, when an adapter does not come up: which driver took
 # the dongle, which firmware it asked for and whether it got it
@@ -64,11 +67,11 @@ load_set() {  # module names...
   done
 }
 # Wi-Fi drivers (psc-platform kernel/build-net-modules.sh): the kernel's (MediaTek MT7601U,
-# Ralink RT2800 / RT2500 / RT73, Realtek rtl8xxxu and r8188eu, Atheros carl9170 / ar5523) and
+# Ralink RT2800 / RT2500 / RT73, Realtek rtl8xxxu, Atheros carl9170 / ar5523) and
 # Realtek's own for the newer chips (8821CU/8811CU, 88x2BU, 8812AU, 8821AU). Only the driver
 # of the adapter that is plugged in is loaded (aliases.txt), with what it depends on; the
 # mac80211 ones also get the ciphers.
-WIFI_DRIVERS="mt7601u rt2800usb rt2500usb rt73usb rtl8xxxu r8188eu carl9170 ar5523"
+WIFI_DRIVERS="mt7601u rt2800usb rt2500usb rt73usb rtl8xxxu carl9170 ar5523"
 # Realtek's out-of-tree drivers are EXPERIMENTAL and off: 8821cu froze a console (a kernel
 # lock-up, then the watchdog powers it off; nothing can be logged). They load only with
 # <home>/debug/wifi-vendor-drivers; without it their adapters are reported as unsupported.
@@ -120,6 +123,10 @@ BLOCKED="${CONF}/blocked-modules"; MARK="${CONF}/loading-wifi"
 fsw() { dd of="$1" conv=fsync 2>/dev/null; }
 guard_check() {
   [ -f "${MARK}" ] || return 0
+  # a mark of THIS boot is not a crash: Wi-Fi was switched off and on again within the 20 s
+  # the mark lives (that blocked a working driver for good). /tmp is RAM: the flag below is
+  # gone after a real crash, which is what tells the two apart.
+  if [ -f /tmp/lumen-wifi-mark.boot ]; then rm -f "${MARK}"; return 0; fi
   { cat "${BLOCKED}" 2>/dev/null; cat "${MARK}"; } | sort -u > "${RUN}/blocked.new"
   fsw "${BLOCKED}" < "${RUN}/blocked.new"
   log "crash guard: the console went down while starting $(tr '\n' ' ' < "${MARK}"): blocked from now on"
@@ -158,6 +165,10 @@ resolv_on() {
   [ -f "${RUN}/resolv.conf" ] || : > "${RUN}/resolv.conf"
   grep -q " /etc/resolv.conf " /proc/mounts || mount --bind "${RUN}/resolv.conf" /etc/resolv.conf
 }
+# busybox udhcpc is started in the background by the shell (&) and keeps asking for ever
+# (-t 0): the address arrives whenever the link is up (a Wi-Fi network joined, a cable
+# plugged in). In the foreground it held net.sh, and with it Lumen's worker: for ever with
+# -b -t 0, 9 s with -t 3, which is how long switching Wi-Fi on seemed to hang.
 dhcp_script() {  # busybox udhcpc: address, route, DNS into the bind-mounted resolv.conf
   cat > "${RUN}/udhcpc.sh" <<'SH'
 #!/bin/sh
@@ -194,6 +205,7 @@ wifi_on() {
       case " ${mods} " in *" mac80211 "*) mods="${WIFI_CRYPTO} ${mods}" ;; esac
       log "wifi: adapter driver:${want} (loading: ${mods})"
       echo ${want} | tr ' ' '\n' | fsw "${MARK}"
+      : > /tmp/lumen-wifi-mark.boot
       { echo "$(cut -d' ' -f1 /proc/uptime) about to load: ${mods}"; cat /sys/bus/usb/devices/*/modalias 2>/dev/null; } | fsw "${LUMEN_HOME}/logs/wifi-trace.log"
       kwatch
       load_set ${mods}
@@ -210,19 +222,47 @@ wifi_on() {
   IF=$(wlan_if) || { kmsg "wifi on"; die "no Wi-Fi adapter (plug in a USB Wi-Fi dongle)"; }
   [ -f "${CONF}/wpa_supplicant.conf" ] || printf 'update_config=1\n' > "${CONF}/wpa_supplicant.conf"
   # the stick copy holds the networks; wpa_supplicant runs on a RAM copy with its control socket
-  { echo "ctrl_interface=${RUN}/wpa"; grep -v '^ctrl_interface=' "${CONF}/wpa_supplicant.conf"; } > "${RUN}/wpa.conf"
+  # 2.4 GHz only, unless <home>/debug/wifi-5ghz: on the console a dual-band USB adapter falls
+  # off the bus the moment it associates on 5 GHz (seen with an RTL8821CU behind a hub on a
+  # controller port: thousands of USB errors, then a disconnect, again and again, taking
+  # the adapter's Bluetooth with it). On 2.4 GHz the same adapter joins and stays.
+  WIFI_FREQS="freq_list=2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472"
+  [ -f "${LUMEN_HOME}/debug/wifi-5ghz" ] && WIFI_FREQS=""
+  { echo "ctrl_interface=${RUN}/wpa"; [ -n "${WIFI_FREQS}" ] && echo "${WIFI_FREQS}"
+    grep -v '^ctrl_interface=\|^freq_list=' "${CONF}/wpa_supplicant.conf"; } > "${RUN}/wpa.conf"
   ip link set "${IF}" up
+  # no -f <log file>: psc-platform's wpa_supplicant is built without CONFIG_DEBUG_FILE, and an
+  # option it does not know makes it print its usage and leave (with status 0: the networks
+  # list then stayed empty for ever). Its being there is checked, not its exit status.
   pidof wpa_supplicant >/dev/null || netenv "${NET}/sbin/wpa_supplicant" -B -D nl80211,wext -i "${IF}" \
-      -c "${RUN}/wpa.conf" -P "${RUN}/wpa.pid" -f "${RUN}/wpa.log" || die "wpa_supplicant did not start"
+      -c "${RUN}/wpa.conf" -P "${RUN}/wpa.pid" > "${RUN}/wpa.log" 2>&1
+  i=0; while ! pidof wpa_supplicant >/dev/null && [ $i -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+  pidof wpa_supplicant >/dev/null || { log "wpa_supplicant: $(tail -n 3 "${RUN}/wpa.log" 2>/dev/null | tr '\n' ' ')"; die "wpa_supplicant did not start"; }
   resolv_on; dhcp_script
   [ -f "${RUN}/udhcpc.pid" ] && kill -0 "$(cat "${RUN}/udhcpc.pid")" 2>/dev/null ||
-    udhcpc -b -i "${IF}" -s "${RUN}/udhcpc.sh" -p "${RUN}/udhcpc.pid" -t 0 -T 3 -A 5 >/dev/null 2>&1
+    udhcpc -i "${IF}" -s "${RUN}/udhcpc.sh" -p "${RUN}/udhcpc.pid" -t 0 -T 3 -A 5 >/dev/null 2>&1 &
   log "wifi on (${IF})"; echo "on ${IF}"
 }
 wifi_off() {
   [ -f "${RUN}/udhcpc.pid" ] && kill "$(cat "${RUN}/udhcpc.pid")" 2>/dev/null
   [ -f "${RUN}/wpa.pid" ] && kill "$(cat "${RUN}/wpa.pid")" 2>/dev/null
-  IF=$(wlan_if) && { ip addr flush dev "${IF}"; ip link set "${IF}" down; }
+  IF=$(wlan_if)
+  # ... and whoever the pid files missed (one written late, an earlier run): a
+  # wpa_supplicant left behind on an interface that is down answers INTERFACE_DISABLED to
+  # every connection from then on, and "Wi-Fi on" does not start a second one
+  killall wpa_supplicant 2>/dev/null
+  # udhcpc on the Wi-Fi interface: asked to leave, then made to (it does not always answer
+  # a plain kill while the interface goes down under it)
+  if [ -n "${IF}" ]; then
+    for sig in TERM KILL; do
+      for p in $(ps | awk -v i="${IF}" '/udhcpc/ && $0 ~ ("-i " i) { print $1 }'); do kill -${sig} "$p" 2>/dev/null; done
+      [ "${sig}" = TERM ] && sleep 0.3
+    done
+  fi
+  i=0; while pidof wpa_supplicant >/dev/null && [ $i -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+  pidof wpa_supplicant >/dev/null && killall -9 wpa_supplicant 2>/dev/null
+  rm -rf "${RUN}/wpa"
+  [ -n "${IF}" ] && { ip addr flush dev "${IF}"; ip link set "${IF}" down; }
   rm -f "${RUN}/ip" "${RUN}/udhcpc.pid" "${RUN}/wpa.pid"; log "wifi off"; echo off
 }
 wifi_status() {
@@ -233,18 +273,22 @@ wifi_status() {
   wpa_cli signal_poll 2>/dev/null | sed -n 's/^RSSI=/signal=/p'
 }
 wifi_scan() {  # signal \t security \t ssid, strongest first, one line per name
+  # a scan of both bands takes 4 to 10 s (the first one after the driver starts the longest):
+  # wait for results instead of a fixed 4 s, which listed nothing on a dual-band adapter
   wpa_cli scan >/dev/null 2>&1; sleep 4
+  i=0; while [ $i -lt 8 ] && [ "$(wpa_cli scan_results 2>/dev/null | wc -l)" -le 1 ]; do sleep 1; i=$((i + 1)); done
   wpa_cli scan_results 2>/dev/null | awk -F'\t' 'NR > 1 && $5 != "" {
       sec = ($4 ~ /SAE/) ? "wpa3" : ($4 ~ /WPA/) ? "wpa" : ($4 ~ /WEP/) ? "wep" : "open"
       if (!($5 in best) || $3 > best[$5]) { best[$5] = $3; s[$5] = sec } }
     END { for (n in best) printf "%s\t%s\t%s\n", best[n], s[n], n }' | sort -t"$(printf '\t')" -k1,1nr
 }
 # keep the stick copy in step with wpa_supplicant's (save_config writes the RAM copy)
-wifi_save() { grep -v '^ctrl_interface=' "${RUN}/wpa.conf" > "${CONF}/wpa_supplicant.conf.tmp" &&
+wifi_save() { grep -v '^ctrl_interface=\|^freq_list=' "${RUN}/wpa.conf" > "${CONF}/wpa_supplicant.conf.tmp" &&
               mv -f "${CONF}/wpa_supplicant.conf.tmp" "${CONF}/wpa_supplicant.conf"; sync; }
 wifi_connect() {  # ssid; password on stdin
   ssid=$1; [ -n "${ssid}" ] || die "no network name"
   IFS= read -r pass || true
+  IF=$(wlan_if) && ip link set "${IF}" up 2>/dev/null   # never try on an interface that is down
   wifi_forget_ids "${ssid}"
   id=$(wpa_cli add_network | tail -1)
   hex=$(printf '%s' "${ssid}" | od -An -tx1 | tr -d ' \n')
@@ -328,22 +372,31 @@ http_get() {  # url out [range]
 
 # ---- USB Ethernet: the adapter's interface (by driver: the console's own USB gadget
 # interface, if any, is not one of these), DHCP with the same script as Wi-Fi
+# USB Ethernet adapters: the modules that bring them up, and the drivers whose interface is
+# one (lost in 0.23.0, which made eth_if take any interface, ifb0 included)
+ETH_SET="libphy usbnet asix ax88179_178a cdc_ether cdc_ncm cdc_subset r8152 smsc95xx"
+ETH_DRIVERS="r8152 ax88179_178a asix cdc_ether cdc_ncm cdc_subset smsc95xx"
 eth_if() {
   for d in /sys/class/net/*; do
     drv=$(basename "$(readlink "$d/device/driver" 2>/dev/null)" 2>/dev/null)
+    [ -n "${drv}" ] || continue   # virtual interfaces (lo, ifb0, ...) have no driver
     case " ${ETH_DRIVERS} " in *" ${drv} "*) basename "$d"; return 0 ;; esac
   done; return 1
 }
 eth_on() {
+  trace "eth on: unpacking"
   unpack_pkg psc-net.tar.gz "${NET}"   # udhcpc script dir, ntpd
+  trace "eth on: modules"
   unpack_mod; load_set ${ETH_SET}
   : > "${RUN}/eth.on"
+  trace "eth on: looking for the adapter"
   i=0; while ! eth_if >/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
-  IF=$(eth_if) || { echo "noadapter"; return 0; }
+  IF=$(eth_if) || { trace "eth on: no adapter"; echo "noadapter"; return 0; }
+  trace "eth on: ${IF} up, DHCP"
   ip link set "${IF}" up
   resolv_on; dhcp_script
   [ -f "${RUN}/eth-udhcpc.pid" ] && kill -0 "$(cat "${RUN}/eth-udhcpc.pid")" 2>/dev/null ||
-    udhcpc -b -i "${IF}" -s "${RUN}/udhcpc.sh" -p "${RUN}/eth-udhcpc.pid" -t 0 -T 3 -A 5 >/dev/null 2>&1
+    udhcpc -i "${IF}" -s "${RUN}/udhcpc.sh" -p "${RUN}/eth-udhcpc.pid" -t 0 -T 3 -A 5 >/dev/null 2>&1 &
   log "eth on (${IF})"; echo "on ${IF}"
 }
 eth_off() {
@@ -364,10 +417,19 @@ eth_status() {
 bt_ctl() { btenv "${BT}/bin/bluetoothctl" "$@" 2>/dev/null; }
 bt_save() { [ -d "${BTSTORE}" ] && tar cf "${CONF}/bluetooth.tar.tmp" -C "$(dirname "${BTSTORE}")" bluetooth &&
             mv -f "${CONF}/bluetooth.tar.tmp" "${CONF}/bluetooth.tar" && sync; }
+# Controller drivers the stock kernel lacks (psc-platform kernel/backport/hid): the DualSense
+# with the standard gamepad layout, on Bluetooth or on a cable. Loaded at every start (caps)
+# and before Bluetooth comes up; a pad already connected is taken over by the driver.
+pad_drivers() {
+  is_stock || return 0
+  [ -d /sys/module/hid_dualsense ] && return 0
+  unpack_mod || return 0
+  [ -f "${MOD}/netmod/hid-dualsense.ko" ] && load_set hid-dualsense
+}
 bt_on() {
   unpack_pkg psc-bt.tar.gz "${BT}" || die "psc-bt.tar.gz missing"
   fw_path   # firmware of Bluetooth dongles (rtl_bt/, ath3k), before the drivers load
-  unpack_mod; load_set ${BT_SET}
+  unpack_mod; load_set ${BT_SET}; pad_drivers
   has_mod bluetooth || die "this kernel has no Bluetooth stack"
   # pairings back from the stick
   mkdir -p "${BTSTORE}"; [ -f "${CONF}/bluetooth.tar" ] && tar xf "${CONF}/bluetooth.tar" -C "$(dirname "${BTSTORE}")"
@@ -381,6 +443,20 @@ bt_on() {
   i=0; while [ $i -lt 30 ]; do bt_ctl show 2>/dev/null | grep -q "Powered:" && break; sleep 0.2; i=$((i + 1)); done
   bt_ctl show | grep -q "Controller" || { kmsg "bt on"; die "no Bluetooth adapter (plug in a USB Bluetooth dongle)"; }
   bt_ctl power on >/dev/null; bt_ctl pairable on >/dev/null
+  if [ -f "${LUMEN_HOME}/debug/bt-trace" ]; then
+    trace "firmware path: $(cat /sys/module/firmware_class/parameters/path 2>/dev/null)"
+    dmesg 2>/dev/null | grep -iE "RTL:|firmware|hci0" | tail -n 12 | sed 's/^/  kernel: /' >> "${LOGF}" 2>/dev/null
+    # could a Bluetooth device wake the console from its suspend? What the kernel offers:
+    # the remote wakeup of each USB device and of the host controllers behind them
+    trace "wake: sleep states: $(cat /sys/power/state 2>/dev/null)"
+    for d in /sys/bus/usb/devices/*; do
+      [ -f "$d/power/wakeup" ] || continue
+      trace "wake: usb $(basename "$d") $(cat "$d/idVendor" 2>/dev/null):$(cat "$d/idProduct" 2>/dev/null) wakeup=$(cat "$d/power/wakeup") persist=$(cat "$d/power/persist" 2>/dev/null)"
+    done
+    for w in /sys/devices/platform/*usb*/power/wakeup /sys/devices/platform/soc/*usb*/power/wakeup /sys/devices/platform/*musb*/power/wakeup; do
+      [ -f "$w" ] && trace "wake: host ${w%/power/wakeup} wakeup=$(cat "$w")"
+    done
+  fi
   bt_audio_on
   log "bt on"; echo on
 }
@@ -391,6 +467,7 @@ bt_on() {
 bt_audio_on() {
   [ -x "${BT}/bin/bluealsad" ] || return 0   # a package without audio
   sed "s|@LIB@|${BT}/lib|g" "${BT}/lib/psc-bt/asound-bluealsa.conf" > "${BT}/asound-bluealsa.conf"
+  mkdir -p /usr/var/lib/bluealsa 2>/dev/null   # bluealsad keeps each headset's volume there (RAM overlay)
   pidof bluealsad >/dev/null || { btenv "${BT}/bin/bluealsad" -p a2dp-source >> "${LUMEN_HOME}/logs/bluealsad.log" 2>&1 & }
   log "bt audio on"
 }
@@ -407,10 +484,19 @@ bt_status() {
   bt_ctl show | sed -n 's/^\s*Powered: \(.*\)/powered=\1/p; s/^Controller \([0-9A-F:]*\).*/adapter=\1/p'
 }
 bt_scan() {  # seconds
+  trace "bt scan ${1:-10} s"
   bt_ctl --timeout "${1:-10}" scan on >/dev/null
+  trace "bt scan done, BlueZ knows: $(bt_ctl devices | sed -n 's/^Device //p' | tr '\n' ';')"
   bt_ctl devices | sed -n 's/^Device \([0-9A-F:]\{17\}\) \(.*\)$/\1\t\2/p'
 }
 bt_devices() {
+  # <home>/debug/bt-trace: what bluetoothctl answers, raw, into net.log (a paired device
+  # that Lumen does not list)
+  if [ -f "${LUMEN_HOME}/debug/bt-trace" ]; then
+    log "bt-trace: bluetoothctl devices:"; bt_ctl devices 2>&1 | sed 's/^/  /' >> "${LOGF}" 2>/dev/null
+    log "bt-trace: bluetoothctl show:"; bt_ctl show 2>&1 | sed 's/^/  /' >> "${LOGF}" 2>/dev/null
+    log "bt-trace: done"
+  fi
   bt_ctl devices | sed -n 's/^Device \([0-9A-F:]\{17\}\) \(.*\)$/\1 \2/p' | while read -r mac name; do
     info=$(bt_ctl info "${mac}")
     p=$(echo "${info}" | grep -q "Paired: yes" && echo 1 || echo 0)
@@ -419,20 +505,145 @@ bt_devices() {
     printf '%s\t%s\t%s\t%s\t%s\n' "${mac}" "$p" "$c" "${name}" "${ic}"
   done
 }
+# Run a bluetoothctl action on ${mac} and stop waiting the moment `info` shows the state
+# asked for: bluetoothctl itself only returns when its --timeout runs out, which made every
+# pairing take the full 35 s. $1 = Paired | Connected, $2 = seconds at most, then the
+# arguments. What bluetoothctl said stays in ${RUN}/btctl.out (bt_why reads it).
+bt_wait() {
+  bw_want=$1; bw_secs=$2; shift 2
+  : > "${RUN}/btctl.out"
+  btenv "${BT}/bin/bluetoothctl" --timeout "${bw_secs}" "$@" > "${RUN}/btctl.out" 2>&1 &
+  bw_pid=$!; bw_i=0; bw_ok=1
+  while [ ${bw_i} -lt $((bw_secs * 2)) ]; do
+    if bt_ctl info "${mac}" | grep -q "${bw_want}: yes"; then bw_ok=0; break; fi
+    kill -0 "${bw_pid}" 2>/dev/null || break
+    grep -qiE "Failed to|not available" "${RUN}/btctl.out" 2>/dev/null && break   # it said no: no point waiting
+    sleep 0.5; bw_i=$((bw_i + 1))
+  done
+  [ ${bw_ok} -ne 0 ] && bt_ctl info "${mac}" | grep -q "${bw_want}: yes" && bw_ok=0
+  kill "${bw_pid}" 2>/dev/null; wait "${bw_pid}" 2>/dev/null
+  return ${bw_ok}
+}
+# the reason bluetoothctl gave for a failure, one line without colour codes
+bt_why() { tr -d '\033' < "${RUN}/btctl.out" 2>/dev/null | sed 's/\[[0-9;]*m//g' | grep -iE "fail|error|not available" | tail -n 1; }
 bt_pair() {  # mac: controllers, mice and most headsets pair with no PIN (NoInputNoOutput agent)
   mac=$1; echo "${mac}" | grep -qE '^([0-9A-F]{2}:){5}[0-9A-F]{2}$' || die "bad address ${mac}"
-  bt_ctl --agent NoInputNoOutput --timeout 25 pair "${mac}" | grep -qiE "Pairing successful|Already|AlreadyExists" ||
-    { bt_ctl info "${mac}" | grep -q "Paired: yes" || { log "bt: pair ${mac} failed"; echo failed; return 1; }; }
-  bt_ctl trust "${mac}" >/dev/null; bt_ctl --timeout 10 connect "${mac}" >/dev/null
-  bt_save; log "bt: paired ${mac}"; echo paired
+  # BlueZ forgets a device it has not paired 30 s after a search: look for it again
+  bt_ctl info "${mac}" | grep -q "Name:\|Alias:" || { trace "bt pair: ${mac} gone, searching again"; bt_ctl --timeout 5 scan on >/dev/null; }
+  if ! bt_ctl info "${mac}" | grep -q "Paired: yes"; then
+    bt_wait Paired 25 --agent NoInputNoOutput pair "${mac}" ||
+      { log "bt: pair ${mac} failed: $(bt_why)"; echo failed; return 1; }
+  fi
+  bt_ctl trust "${mac}" >/dev/null
+  # connect: twice at most, a headset often refuses the first try right after pairing
+  if bt_wait Connected 10 connect "${mac}" || { log "bt: connect ${mac}: $(bt_why)"; sleep 2; bt_wait Connected 10 connect "${mac}"; }; then
+    bt_save; log "bt: paired ${mac}, connected"; echo connected
+  else
+    bt_save; log "bt: paired ${mac}, not connected: $(bt_why)"; echo paired
+  fi
 }
 bt_remove() { bt_ctl remove "$1" >/dev/null; bt_save; log "bt: removed $1"; echo removed; }
+
+# ---- development console over the USB cable: <home>/debug/usb-serial. The console's
+# micro-USB port (the one it is powered from) is a USB device port too; with this switch it
+# shows up on the computer it is plugged into as a serial port (CDC ACM: no driver needed
+# on macOS or Linux, /dev/cu.usbmodem* / /dev/ttyACM*), with a root shell on it. Needs a
+# cable with data wires and a computer port that can power the console. Nothing is written
+# to the eMMC; without the file the port is left as Sony set it. Every step is logged
+# before it is tried.
+usb_serial_on() {
+  [ -f "${LUMEN_HOME}/debug/usb-serial" ] || return 0
+  [ -f /tmp/lumen-usb-serial.on ] && return 0
+  G=/sys/class/android_usb/android0
+  [ -d "$G" ] || { log "usb-serial: no android_usb gadget in this kernel"; return 0; }
+  : > /tmp/lumen-usb-serial.on
+  log "usb-serial: gadget was: enable=$(cat $G/enable 2>/dev/null) functions=$(cat $G/functions 2>/dev/null) state=$(cat $G/state 2>/dev/null)"
+  (
+    log "usb-serial: disabling the gadget"; echo 0 > $G/enable 2>/dev/null
+    log "usb-serial: functions=acm"; echo acm > $G/functions 2>/dev/null
+    [ -f $G/f_acm/instances ] && { log "usb-serial: one acm port"; echo 1 > $G/f_acm/instances 2>/dev/null; }
+    log "usb-serial: enabling the gadget"; echo 1 > $G/enable 2>/dev/null
+    i=0; while [ ! -c /dev/ttyGS0 ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+    log "usb-serial: gadget now: enable=$(cat $G/enable 2>/dev/null) functions=$(cat $G/functions 2>/dev/null) state=$(cat $G/state 2>/dev/null); ports: $(ls /dev/ttyGS* 2>/dev/null | tr '\n' ' ') sysfs: $(ls /sys/class/tty 2>/dev/null | grep ttyGS | tr '\n' ' ')"
+    # no device manager made the node: make it from what the kernel says
+    if [ ! -c /dev/ttyGS0 ] && [ -f /sys/class/tty/ttyGS0/dev ]; then
+      mm=$(cat /sys/class/tty/ttyGS0/dev); mknod /dev/ttyGS0 c "${mm%%:*}" "${mm##*:}" 2>/dev/null
+      log "usb-serial: made /dev/ttyGS0 (${mm})"
+    fi
+    [ -c /dev/ttyGS0 ] || { log "usb-serial: no /dev/ttyGS0: no console"; exit 0; }
+    log "usb-serial: tools: getty=$(command -v getty) setsid=$(command -v setsid) stty=$(command -v stty)"
+    stty -F /dev/ttyGS0 115200 sane -echo 2>/dev/null
+    # a root shell on the port, started again when it ends. Plain sh on the port: getty and
+    # setsid are not needed for a line-by-line console (no job control, which is fine)
+    n=0
+    while [ -f /tmp/lumen-usb-serial.on ]; do
+      n=$((n + 1)); [ $n -le 3 ] && log "usb-serial: shell ${n} on /dev/ttyGS0"
+      /bin/sh -i < /dev/ttyGS0 > /dev/ttyGS0 2>&1
+      rc=$?; [ $n -le 3 ] && log "usb-serial: shell ${n} ended (${rc})"
+      sleep 1
+    done
+  ) > /dev/null 2>&1 &
+}
+
+# ---- development access: <home>/debug/ssh holds the public keys allowed in (the format of
+# authorized_keys). With it, the console's own sshd (OpenSSH 7.9) runs for this session on
+# port 2222 (Sony's system already listens on 22): root, keys only, no passwords; everything it needs is made in RAM, nothing on the eMMC
+# changes. Without the file nothing listens. Its log: <home>/logs/sshd.log.
+ssh_on() {
+  SK="${LUMEN_HOME}/debug/ssh"; SD=/tmp/lumen-ssh
+  [ -s "${SK}" ] || return 0
+  [ -x /usr/sbin/sshd ] || { log "ssh: no /usr/sbin/sshd on this console"; return 0; }
+  [ -f "${SD}/sshd.pid" ] && kill -0 "$(cat "${SD}/sshd.pid")" 2>/dev/null && return 0
+  mkdir -p "${SD}" && chmod 700 "${SD}"
+  tr -d '\r' < "${SK}" > "${SD}/authorized_keys"; chmod 600 "${SD}/authorized_keys"
+  # the host key is kept on the stick, so the console is the same host at every boot
+  if [ -s "${CONF}/ssh_host_ed25519" ]; then cp "${CONF}/ssh_host_ed25519" "${SD}/host_ed25519"
+  else rm -f "${SD}/host_ed25519"; ssh-keygen -q -t ed25519 -N "" -f "${SD}/host_ed25519" >/dev/null 2>&1 &&
+       cp "${SD}/host_ed25519" "${CONF}/ssh_host_ed25519"; fi
+  chmod 600 "${SD}/host_ed25519" 2>/dev/null
+  [ -s "${SD}/host_ed25519" ] || { log "ssh: no host key (ssh-keygen failed)"; return 0; }
+  # sshd wants its unprivileged user and an empty folder; /etc is read-only: a copy from RAM
+  # is bind-mounted over the file, as for resolv.conf
+  if ! grep -q '^sshd:' /etc/passwd 2>/dev/null; then
+    cp /etc/passwd "${SD}/passwd" && echo 'sshd:x:74:74:sshd:/var/empty:/bin/false' >> "${SD}/passwd" &&
+      mount --bind "${SD}/passwd" /etc/passwd && log "ssh: user sshd added (RAM copy of /etc/passwd)"
+  fi
+  # a root account marked locked ("!" in the shadow file) is refused even with a key
+  if grep -q '^root:!' /etc/shadow 2>/dev/null; then
+    sed 's/^root:![^:]*:/root:*:/' /etc/shadow > "${SD}/shadow" && chmod 600 "${SD}/shadow" &&
+      mount --bind "${SD}/shadow" /etc/shadow && log "ssh: root unlocked for keys (RAM copy of /etc/shadow)"
+  fi
+  # the empty folder sshd drops its privileges into: /var/empty on the console (its build),
+  # /run/sshd on other builds
+  for d in /var/empty /run/sshd; do [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || log "ssh: cannot make $d"; done
+  cat > "${SD}/sshd_config" <<SSHD
+Port 2222
+HostKey ${SD}/host_ed25519
+PidFile ${SD}/sshd.pid
+AuthorizedKeysFile ${SD}/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin yes
+StrictModes no
+UseDNS no
+Subsystem sftp internal-sftp
+SSHD
+  if /usr/sbin/sshd -f "${SD}/sshd_config" -E "${LUMEN_HOME}/logs/sshd.log" 2>> "${LOGF}"; then
+    log "ssh on (port 2222, keys of debug/ssh): $(ip -4 addr 2>/dev/null | sed -n 's/^ *inet \([0-9.]*\).* \([a-z0-9]*\)$/\2=\1/p' | grep -v '^lo=' | tr '\n' ' ')"
+  else log "ssh: sshd did not start (see sshd.log)"; fi
+}
 
 case "$1 $2" in
   "caps "*) unpack_mod
             k=other; is_stock && k=stock
             e=$(cap_of usbnet); [ "$e" = no ] && [ -d /sys/module/r8152 ] && e=yes
-            echo "wifi=$(cap_of mac80211) bt=$(cap_of bluetooth) eth=$e kernel=$k" ;;
+            echo "wifi=$(cap_of mac80211) bt=$(cap_of bluetooth) eth=$e kernel=$k"
+            ssh_on >/dev/null 2>&1      # development access, only with <home>/debug/ssh
+            usb_serial_on               # ... and the serial console, only with <home>/debug/usb-serial
+            # controller drivers the stock kernel lacks: last and on their own, so a driver
+            # that does not load cannot hold the start (or the development access) back
+            ( pad_drivers >/dev/null 2>&1 & ) ;;
   "wifi on") wifi_on ;;       "wifi off") wifi_off ;;
   "wifi status") wifi_status ;; "wifi scan") wifi_scan ;;
   "wifi connect") wifi_connect "$3" ;; "wifi forget") wifi_forget "$3" ;;

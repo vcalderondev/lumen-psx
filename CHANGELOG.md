@@ -3,6 +3,138 @@
 Format: [Keep a Changelog](https://keepachangelog.com/); versions: [SemVer](https://semver.org/).
 Each release zip also lists the psc-platform components it ships (`lumen/VERSION`).
 
+## [Unreleased]
+
+## [0.24.0] - 2026-11-27
+
+Modules, Bluetooth headphones that play, a DualSense that works in games, game boxes with
+each system's proportions and a Retro theme. psc-platform 2.7.0. Verified on a console over
+its USB serial console: the dashboard and RetroArch games play through Bluetooth earbuds,
+a DualSense on Bluetooth plays PlayStation games with RetroArch's stock profile and its PS
+button opens the pause dialog, the RTL8821CU's Wi-Fi driver loads and scans, the Retro
+theme and the new launch of a native port. In psc-sim: Settings > Modules, the tile shapes
+of five systems, both themes. Known limits: homebrew apps and native ports still play
+through HDMI when a Bluetooth output is chosen; Wi-Fi with the RTL8821CU scans and
+authenticates but does not hold a connection yet (the adapter resets under radio load).
+
+### Added
+- Each system's tiles have the proportions of its game boxes: tall for NES, Mega Drive or
+  PSP, wide for Super Nintendo and Nintendo 64, square for PlayStation. Lumen knows the
+  box of some 80 systems by their id; `[media] cover = W:H` in a system's declaration sets
+  it (docs/systems.md). The page of L1 / R1 follows what the row shows.
+- Theme **Retro** (`themes/retro`, Settings > Display > Theme): a 1990s console look with
+  the grey of the original console's shell, square corners, the four colours of its logo
+  and a plain engineering typeface (Barlow, OFL).
+- Themes: `radius` in `theme.ini` scales the corner rounding of every card, row, tile, pill
+  and shadow (1 = Lumen's, 0 = square corners). docs/themes.md.
+- Modules (docs/modules.md, API 1): features the user switches on and off in the new
+  **Settings > Modules** page, each with its name, state and a one-line description. A
+  module's detail page has its switch, state, version and origin.
+- Built-in modules `wifi`, `ethernet` (network cable) and `bluetooth`, all on by default.
+  A module that is off keeps its radio off without changing the switch on the Network or
+  Bluetooth page. Network and Bluetooth leave the rail while their modules are off.
+- Extension points for modules: `status` (items in the status bar: the Wi-Fi signal in
+  four levels, the cable, Bluetooth, dim with no device connected), `menu.game` (entries in
+  the game menu) and events (`MEV_STARTED`, `MEV_ONLINE` / `MEV_OFFLINE`, `MEV_LANGUAGE`,
+  `MEV_LAUNCH`, `MEV_EXIT`).
+- Glyphs `wifi-0` to `wifi-3`, `bluetooth` and `ethernet` (`tools/make-glyphs.py`).
+- `/lumen/modules/state.ini`: which modules are on.
+
+### Changed
+- A native port's launch: the flickering arcs, the shake, the shockwave and the six
+  screen-sized circles of the end are gone (the circles alone slowed the console to a
+  crawl). Light runs along the machine's edges, a glow settles behind it, it hops like any
+  other launch, and the glow swells until its light takes the frame before the fade. 2.9 s
+  instead of 3.4; `bolt.png` / `bolt2.png` are no longer loaded.
+- Sound > Audio output applies at once, with no restart: Lumen moves its sound to the
+  chosen output while running. A Bluetooth headset chosen as the output is used from the
+  moment it connects (at power-on Bluetooth comes up after Lumen, so the choice was
+  silently dropped for the whole session) and the sound goes back to the TV when it leaves.
+  Choosing a paired headset that is not connected connects it.
+- Wi-Fi uses the 2.4 GHz band only (`<home>/debug/wifi-5ghz` lifts it): a dual-band USB
+  adapter on the console falls off the USB bus when it associates on 5 GHz.
+
+### Fixed
+- "Wi-Fi off" stops every `wpa_supplicant` and DHCP client of the interface, not only the
+  ones in its pid files; a connection brings the interface up first.
+- The Wi-Fi crash guard blocked a working driver when Wi-Fi was switched off and on again
+  within 20 s: it took its own mark of the same boot for a crash. A mark only counts when
+  it survived a reboot.
+- Switching Wi-Fi on seemed to hang: `net.sh` waited for DHCP in the foreground (9 s with no
+  network joined yet; for ever before this release's `-t 3`). `udhcpc` now runs in the
+  background for Wi-Fi and the cable, and "Wi-Fi on" takes under 3 s on the console.
+- Wi-Fi never listed a network: `net.sh` started `wpa_supplicant` with `-f <log file>`, which
+  psc-platform's build does not have (it printed its usage and left with status 0). It is
+  started without it and its presence is checked. A scan now waits for results (up to 12 s)
+  instead of a fixed 4 s, too short for a dual-band adapter's first scan.
+- A named audio output (a Bluetooth headset, a USB card) is played by a child process
+  (`lumen --audio-sink`) that owns the ALSA device and is fed through a pipe; the TV keeps
+  playing until the output is ready. Opening a Bluetooth output through SDL gave no sound on
+  the console and froze the dashboard; an output that hangs now costs a killed child and a
+  toast. When the headset is switched off the sound goes back to the TV by itself.
+- DualSense in games: the controller did nothing in RetroArch, or had its face buttons
+  swapped and a dead right stick. SDL switched it to "enhanced reports", which the console's
+  kernel cannot read (now off: `SDL_JOYSTICK_ENHANCED_REPORTS=0` in Lumen and `run.sh`), and
+  the kernel has no DualSense driver, so the pad was numbered in the order of its HID report.
+  `net.sh` loads psc-platform's `hid-dualsense` module (standard gamepad layout, Bluetooth
+  and cable) at start and with Bluetooth; RetroArch's stock profile then fits as it is.
+- PlayStation games: ports 1 and 2 are DualShocks, so the sticks of a pad that has them are
+  analog in the games that read them (they were digital pads: the sticks did nothing). On
+  the other systems the left stick moves like the D-pad.
+- RetroArch's controller profiles no longer open its menu with the Home / PS button
+  (`package.sh` drops `input_menu_toggle_btn`): that button is Lumen's.
+- The PS / Home button of a controller (DualShock 4, DualSense and any pad with a Home
+  button) does what the console's OPEN button does: in a game it pauses and asks (continue,
+  change disc, save and exit, exit), in a homebrew app it quits it; in the dashboard it
+  closes whatever is open and goes back to the games.
+- Bluetooth audio never opened: bluez-alsa's ALSA plugin needs GLib from the Bluetooth
+  package, and neither Lumen nor RetroArch could find it (the plugin's RUNPATH does not
+  reach its libraries' own dependencies). Lumen loads those libraries before it opens the
+  output, and `run.sh` puts the package's `lib/` on `LD_LIBRARY_PATH` for RetroArch and
+  native ports when the Bluetooth output is in use.
+- Bluetooth pairing no longer takes a fixed 35 s: `net.sh` stops waiting the moment the
+  device is paired and connected, tries the connection twice, and logs BlueZ's reason when
+  it fails. Lumen tells "connected" from "paired, but it did not connect".
+- Add device: the row shows "Pairing…" with moving dots from the press on; a press no longer
+  waits for the running search to end (the search is given up); devices found stay listed
+  45 s after BlueZ drops them, so the list does not empty between searches or during a
+  pairing; the device just paired stays in the list; devices without a name (beacons) are
+  hidden; no search for 12 s after a pairing, so the new connection can settle.
+- The cable adapter is looked for again only when the USB devices change, not every 10 s
+  (each try kept the network worker busy for several seconds on the console).
+- The help line of Settings shows one description at a time: the old one fades out, and
+  the new one comes in once the focus has rested, instead of two texts over each other.
+- `net.sh` lost its list of USB Ethernet drivers in 0.23.0, so the cable's bring-up took any
+  network interface (the kernel's virtual `ifb0`) and ran DHCP on it for ever, every 10 s;
+  the list is back, and an interface without a driver is never taken. `udhcpc` gives up the
+  foreground after three tries (`-t 3`, about 9 s) and keeps trying in the background, for
+  the cable and Wi-Fi, instead of holding the command when no DHCP server answers.
+- A `net.sh` command that never returns (on the console it was the cable's DHCP above) no
+  longer stops every later one: connection commands are killed after 90 s,
+  status and device lists after 20 s, and the log says so. Before, the Bluetooth device
+  list stayed empty and a Wi-Fi switched on stayed at "No adapter" for the whole session.
+- The Bluetooth status item counts a controller SDL has on the Bluetooth bus as
+  connected, so it is bright as soon as a Bluetooth controller is in use.
+- A connections page or card refreshes the moment it opens, without waiting for the
+  status bar's 10 s round.
+- The network modules no longer ask the USB stick whether `net.sh` exists every second (and
+  every frame on the Modules page): once per session. A busy stick made the dashboard stall.
+
+### Diagnostics
+- `tools/psc-run.py` and `tools/psc-put.py`: run a command on the console and copy a file to
+  it (MD5-checked) over the USB serial console of `debug/usb-serial`.
+- `<home>/debug/usb-serial` (development): the console's micro-USB port becomes a serial
+  port (CDC ACM) with a root shell on the computer that powers it. No driver, no network.
+- `<home>/debug/ssh` (development): with public keys in it (the format of `authorized_keys`),
+  the console's own sshd runs for the session on port 2222: root, keys only, no passwords, everything in
+  RAM. Without the file nothing listens.
+- `<home>/debug/bt-wake` (experiment): before the suspend, `power.sh` allows the USB
+  Bluetooth adapter and the hubs and host controller above it to wake the console, and logs it.
+- `net: bt devices: N listed, N paired, N connected` in `lumen.log` whenever BlueZ's list
+  changes; `<home>/debug/bt-trace` adds to `net.log` `bluetoothctl`'s raw answer, the Bluetooth
+  firmware path and the kernel's `RTL:` lines, what each search found, and the steps of the
+  cable's bring-up.
+
 ## [0.23.0] - 2026-11-20
 
 System update over the network, settings laid out like a console's, Bluetooth audio, and a

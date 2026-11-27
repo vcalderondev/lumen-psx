@@ -28,6 +28,7 @@ int         theme_active_index(void);
 const char *theme_active_id(void);
 void        theme_color(int which, float rgb[3]);
 float       theme_card_alpha(void);
+float       theme_radius(void);                  /* scale of every corner radius: 1 = Lumen's, 0 = square corners */
 /* <home>/themes/<active>/<rel> when it exists: 1 and out set; else 0 (out untouched) */
 int         theme_asset(char *out, size_t n, const char *rel);
 

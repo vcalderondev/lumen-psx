@@ -32,6 +32,10 @@ core = pcsx_rearmed_libretro.so ; <home>/cores/<core>
 
 [media]
 kind   = disc                   ; disc | cartridge | arcade | card: the badge on the tile
+cover  = 5:7                    ; the game box, width:height (or a number): the shape of this
+                                ; system's tiles. Default: the box Lumen knows for the id
+                                ; (nes 5:7, snes and n64 7:5, megadrive 5:7, psp 10:17 ...,
+                                ; a square for an id it does not know); kept within 0.55 .. 1.5
 
 [animation]
 flat   = psx                    ; the launch's illustration, <home>/assets/launch/<flat>/ (default: the id)
@@ -184,11 +188,10 @@ the frame.
 
 **A native port** (above) runs on its system's machine, energized:
 `<home>/assets/launch/<flat>-native/` (shipped: `psx-native`), an illustration with
-`fx = energy` and four more layers (`aura`, `trace`, `bolt`, `bolt2`). The medium goes in as
-always; then the machine charges up: energy runs along its edges and seams, an aura builds
-behind it, arcs flicker off it in turn, it shakes harder and harder, crouches and rises on
-a shockwave, and the energy floods the frame from the lid in flat rings of cyan. 3.4 s
-instead of 2.7. The kicker reads "<system> · Native port". A system without a `-native`
+`fx = energy` and two more layers (`aura`, `trace`). The medium goes in as always; then
+light runs along the machine's edges and seams and a glow settles behind it. It hops like
+any other launch, the glow swells, and its light takes the frame before the fade to black.
+2.9 s instead of 2.7. The kicker reads "<system> · Native port". A system without a `-native`
 illustration shows its ports as the cover, a card that switches itself on (a white edge,
 two rings, the chip) and grows into the frame.
 

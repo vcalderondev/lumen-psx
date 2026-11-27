@@ -26,6 +26,7 @@ accent     = #FF9F45          ; kickers, checks, highlights
 pill       = #E8603C          ; selection pill of the game menu and the pause dialog
 card       = #2A1A1E          ; menu / dialog card
 card_alpha = 0.94             ; 0.2 .. 1
+radius     = 1                ; corner rounding of every shape: 1 = Lumen's, 0 = square corners
 text       = #FFF6EE          ; primary text
 dim        = #E2C3B4          ; secondary text
 backdrop   = #120A0C          ; dialog backdrop and scrims
@@ -34,4 +35,12 @@ danger     = #FF7070          ; destructive rows (Exit the game)
 ```
 
 Colours are `#RRGGBB` or `r, g, b` (0..255, or 0..1). Missing keys keep Lumen's colours.
-`dist/themes/sunset` is a complete example.
+`radius` scales the corners of every card, row, tile, pill and shadow at once (avatars and
+discs stay round): `0.5` halves them, `0` gives the hard edges of a 1990s console menu.
+
+Two themes ship with Lumen:
+
+- `dist/themes/sunset`: colours only, a complete `theme.ini`.
+- `dist/themes/retro`: a 1990s console look. The grey of the original console's shell,
+  square corners (`radius = 0`), the four colours of its logo and its own typeface in
+  `fonts/` (Barlow, SIL Open Font License: `fonts/OFL.txt`).
