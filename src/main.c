@@ -2074,6 +2074,36 @@ static void make_tile_shadow(void)
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
+/* The focused tile's glow (the game's light), baked once like its shadow: the tile's shape
+ * with a wide, soft falloff (GLOW_BLUR px around a 220 px tile), tinted when drawn. One
+ * small texture and one blended quad; nothing is blurred per frame. */
+#define GLOW_BLUR 56.0f
+static GLuint g_tile_glow;
+static void make_tile_glow(void)
+{
+   enum { N = 96 };
+   static unsigned char px[N * N * 4];
+   const float full = 220.0f + 2.0f * GLOW_BLUR, hs = 110.0f, r = 14.0f;
+   int x, y;
+   for (y = 0; y < N; y++)
+      for (x = 0; x < N; x++)
+      {
+         float qx = fabsf((x + 0.5f) / N * full - full * 0.5f) - (hs - r), qy = fabsf((y + 0.5f) / N * full - full * 0.5f) - (hs - r);
+         float ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0, in = qx > qy ? qx : qy;
+         float d = sqrtf(ox * ox + oy * oy) + (in < 0 ? in : 0) - r;
+         float k = 1.0f - smooth01(-6.0f, GLOW_BLUR, d);
+         unsigned char *p = px + (y * N + x) * 4;
+         p[0] = p[1] = p[2] = 255; p[3] = (unsigned char)(255.0f * k * k + 0.5f);
+      }
+   glGenTextures(1, &g_tile_glow);
+   glBindTexture(GL_TEXTURE_2D, g_tile_glow);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, N, N, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
 /* one rectangle (px, py, pw, ph inside the w x h tile) of a tile, same pixels as the
  * whole tile would give there */
 static void tile_part(GLuint tex, float x, float y, float w, float h, float px, float py, float pw, float ph,
@@ -2573,7 +2603,6 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "cross" },    "btn.cross",        "hint.play" },
       { { "start" },    "btn.start",        "hint.options" },
       { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
-      { { "l2", "r2" }, "btn.l2_r2",        "hint.platform" },
       { { "select" },   "btn.select",       "hint.settings" } },
    [HINTS_GAMEMENU] = {
       { { "dpad" },     "btn.dpad",         "hint.move" },
@@ -3392,7 +3421,7 @@ static struct { char id[16]; GLuint tex; int w, h; label_t initials; } g_avatar;
 /* dashboard focus: Up from the games reaches the system tabs, Up again the profile */
 enum { FOCUS_GAMES, FOCUS_TABS, FOCUS_PROFILE };
 static int g_focus;
-static float g_dash_body = 1.0f;   /* tabs, tiles and title block: fade out under the settings, the status row stays */
+static float g_dash_body = 1.0f;   /* the Home fades out under the settings, status row included */
 static int g_avatar_dirty;   /* avatar.png of the active profile was replaced or removed */
 
 /* first letter of up to two words of the name (UTF-8 sequences kept whole) */
@@ -3790,8 +3819,8 @@ static void lit_color(const game_t *g, float o[3])
 static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float pos, double sel_t, double t,
                       float ua, float info_a, float info_y)
 {
-   static label_t l_name, l_title, l_kick, l_clock, l_empty, l_chip[3], l_pos;
-   const float white[4] = { 0.98f, 0.98f, 0.99f, ua };
+   static label_t l_name, l_title, l_kick, l_clock, l_empty, l_chip[3], l_pos, l_count;
+   float white[4] = { 0.98f, 0.98f, 0.99f, ua };
    char s[320], a1[96], a2[96], num[24];
    int i, k;
    if (ua <= 0.003f) { g_logo_t0 = -1.0; return; }   /* hidden: the logo enters again */
@@ -3802,13 +3831,22 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       avatar_load(profiles_active());
    }
 
-   /* Lumen PSX logo, left on the status row's line */
-   logo_draw(DASH_X + 44, TOP_Y + 22, t, ua);
+   /* the settings take the whole screen: the status row leaves with the rest of the Home
+    * (their title sits where the logo is) */
+   {
+      const float body = ua * g_dash_body;
+      if (body <= 0.003f) return;
+      /* Lumen PSX logo, left on the status row's line */
+      logo_draw(DASH_X + 44, TOP_Y + 22, t, body);
+      ua = body; white[3] = ua;
+   }
 
    /* status capsule, right: clock (only when the time is known), the modules' items, network,
     * controllers | avatar and profile name. One ink shape. Laid out right to left, twice:
     * pass 0 measures, pass 1 draws; the focus ring goes around it when the profile has it */
    {
+      /* the game menu's sheet covers this corner and is not opaque: the capsule leaves with it */
+      const float ua_all = ua, ua_ = (white[3] = ua = ua * (1.0f - clampf(gamemenu_amount() * 1.5f, 0.0f, 1.0f)));
       const profile_t *ap = profiles_active();
       const float on[4] = { 1, 1, 1, 0.86f * ua }, off[4] = { 1, 1, 1, 0.35f * ua };
       const float ch = 44, cy = TOP_Y + 22, ad = 28, gh = 22;
@@ -3895,11 +3933,9 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
             x -= 14 + l_clock.w;
             if (pass) draw_text(&l_clock, x, cy - l_clock.h * 0.5f, white);
          }
-      }
+      }      (void)ua_; ua = ua_all; white[3] = ua;
    }
 
-   ua *= g_dash_body;   /* from here on: the part of the home a full-screen menu replaces */
-   if (ua <= 0.003f) return;
 
    /* system tabs: L2 [names] R2. Text only; the selected one is at full strength with the
     * light's bar under it (no pills: eight shapes and eight shadows fewer per frame) */
@@ -3917,6 +3953,12 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          float cw = 0;
          if (p->logo_tex) cw += lh * p->logo_w / (float)p->logo_h + (p->show_name && p->label ? 9.0f : 0.0f);
          if (p->show_name && p->label) cw += p->label_w;
+         if (i == sel_plat && n > 0)
+         {  /* how many games the open system has: a small figure after its name */
+            snprintf(num, sizeof(num), "%d", n);
+            label_set(&l_count, g_font_caps, num);
+            cw += 5 + l_count.w;
+         }
          pws[i] = cw + 2 * padx;
          if (i == sel_plat) { sx = total; sw = pws[i]; }
          total += pws[i] + (i + 1 < g_nplat ? tgap : 0.0f);
@@ -3951,7 +3993,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          {  /* the light's bar; with the focus on the tabs, the ring around the name */
             float bar[4];
             lit_color(n ? &g_games[pl->first + sel] : NULL, bar); bar[3] = ua;
-            draw_shape(x, TAB_Y + ph - 4, pw, 3, 1.5f, 0, bar);
+            draw_shape(x, TAB_Y + ph - 4, pw - (n > 0 ? 5 + l_count.w : 0), 3, 1.5f, 0, bar);
             if (tabf > 0.01f)
             {
                float fring[4];
@@ -3967,7 +4009,15 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
             cx += lw + 9.0f;
          }
          if (p->show_name && p->label)
+         {
             draw_2d(p->label, floorf(cx), floorf(TAB_Y + (ph - p->label_h) * 0.5f), p->label_w, p->label_h, c, 0);
+            cx += p->label_w;
+         }
+         if (on_ && n > 0)
+         {
+            const float cc[4] = { 0.87f, 0.89f, 0.93f, 0.66f * ua };
+            draw_text(&l_count, floorf(cx + 5), floorf(TAB_Y + 6), cc);
+         }
          x += pw + tgap;
       }
       glDisable(GL_SCISSOR_TEST);
@@ -4009,11 +4059,11 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
             const float sc_[4] = { 0, 0, 0, 0.60f * ta };
             float b = 22.0f * sz / 220.0f;
             draw_2d(g_tile_shadow, x - b, ty - b + 10, sw + 2 * b, sz + 2 * b, sc_, 0);
-            {  /* the glow: the same shadow texture, larger, in the game's light (one quad) */
-               const float gb = 1.4f * b;   /* close to the texture's own falloff: it stays soft */
+            {  /* the glow: the tile's shape with a wide falloff, in the game's light (one quad) */
+               const float gb = GLOW_BLUR * sz / 220.0f;
                float gl_[4];
-               lit_color(g, gl_); gl_[3] = 0.42f * ta * gamef;
-               draw_2d(g_tile_shadow, x - gb, ty - gb, sw + 2 * gb, sz + 2 * gb, gl_, 0);
+               lit_color(g, gl_); gl_[3] = 0.62f * ta * gamef;
+               draw_2d(g_tile_glow, x - gb, ty - gb, sw + 2 * gb, sz + 2 * gb, gl_, 0);
             }
          }
          if (g->tex)
@@ -4108,14 +4158,18 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          glyph_draw("star", x + 12, y + 8, 18, star);
       }
       if (n > 1)
-      {  /* where we are in the list, right above the shelf's end */
-         const float tr_[4] = { 1, 1, 1, 0.16f * ua }, th[4] = { 1, 1, 1, 0.85f * ua }, pc[4] = { 0.87f, 0.89f, 0.93f, 0.66f * ua };
-         const float py = SHELF_B - TILE_SEL - 34, tw = 96;
+      {  /* where we are in the list: bottom left, on the help bar's line */
+         /* it leaves while the game menu is open: the help bar is centred left of the sheet */
+         const float pa = ua * (1.0f - clampf(gamemenu_amount() * 2.0f, 0.0f, 1.0f));
+         const float tr_[4] = { 1, 1, 1, 0.14f * pa }, th[4] = { 1, 1, 1, 0.92f * pa }, pc[4] = { 0.87f, 0.89f, 0.93f, 0.66f * pa };
+         const float py = 672, tw = 120;
+         float px;
          snprintf(num, sizeof(num), "%d / %d", sel + 1, n);
          label_set(&l_pos, g_font_caps, num);
-         draw_shape(W - DASH_X - tw, py + 8, tw, 3, 1.5f, 0, tr_);
-         draw_shape(W - DASH_X - tw, py + 8, fmaxf(6.0f, tw * (sel + 1) / (float)n), 3, 1.5f, 0, th);
-         draw_text(&l_pos, W - DASH_X - tw - 12 - l_pos.w, py + 9.5f - l_pos.h * 0.5f, pc);
+         draw_text(&l_pos, DASH_X, floorf(py - l_pos.h * 0.5f), pc);
+         px = DASH_X + l_pos.w + 12;
+         draw_shape(px, py - 1.5f, tw, 3, 1.5f, 0, tr_);
+         draw_shape(px, py - 1.5f, fmaxf(6.0f, tw * (sel + 1) / (float)n), 3, 1.5f, 0, th);
       }
    }
    else
@@ -4288,7 +4342,7 @@ static void dialog_launch_info(char *title, size_t tn, char *cover, size_t cn)
 static int run_dialog(SDL_Window *win, const char *kind)
 {
    enum { MAXROW = 12 };
-   label_t kicker = { 0 }, title = { 0 }, sect = { 0 }, row_l[MAXROW], tag = { 0 }, h_ok = { 0 }, h_back = { 0 };
+   label_t kicker = { 0 }, title = { 0 }, sub = { 0 }, sect = { 0 }, row_l[MAXROW], tag = { 0 }, h_ok = { 0 }, h_back = { 0 };
    int ans[MAXROW], sect_before = -1, n = 0, sel = 0, answer = -1, i, discs = 1, cur = 1;
    char gtitle[256], cover_path[700], buf[64];
    GLuint cover = 0; int cw_ = 0, chh = 0;
@@ -4320,6 +4374,12 @@ static int run_dialog(SDL_Window *win, const char *kind)
       if (sf) { cw_ = sf->w; chh = sf->h; cover = surface_to_tex(sf, 1, NULL); SDL_FreeSurface(sf); }
    }
    label_set(&title, g_font_title, gtitle[0] ? gtitle : tr("dialog.title"));
+   if (discs > 1)
+   {  /* which disc is in: "Disc 1 of 2" under the title */
+      char n1[12], n2[12], sb[96];
+      snprintf(n1, sizeof(n1), "%d", cur); snprintf(n2, sizeof(n2), "%d", discs);
+      label_set(&sub, g_font_small, trf(sb, sizeof(sb), "dialog.disc_of", "n", n1, "m", n2, NULL));
+   }
    label_set(&sect, g_font_small, tr("dialog.change_disc"));
    label_set(&tag, g_font_small, tr("dialog.in_use"));
    label_set(&h_ok, g_font_small, tr("dialog.choose"));
@@ -4345,7 +4405,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
       spring_step(&fade, 1.0f, 60, 14, dt);
       {
          /* geometry: header 132, rows 56, a section label before the discs */
-         const float RW = n <= 6 ? 62.0f : 54.0f, BH_ = RW - 14, cwid = 540, head = 140, pad = 28;   /* a button and its ring fill the pitch */
+         const float RW = n <= 6 ? 66.0f : 54.0f, BH_ = RW - 14, cwid = 480, head = 150, pad = 32;   /* a button and its ring fill the pitch */
          float chgt = head + n * RW + (sect_before >= 0 ? 34 : 0) + pad, cx = (W - cwid) * 0.5f, cy = (H - chgt) * 0.5f - 18;
          float a = clampf(fade.x, 0, 1), rowy[MAXROW], y = cy + head;
          float white[4] = { 1, 1, 1, a }, txt[4], dim[4], scrim[4], red[4];
@@ -4378,11 +4438,11 @@ static int run_dialog(SDL_Window *win, const char *kind)
             float tx = cx + pad;
             if (cover)
             {
-               float th = 92, tw = th * cw_ / (float)chh;
-               if (tw > 92) { tw = 92; th = tw * chh / (float)cw_; }
+               float th = 90, tw = th * cw_ / (float)chh;
+               if (tw > 90) { tw = 90; th = tw * chh / (float)cw_; }
                draw_shadow(cx + pad, cy + pad, tw, th, 10, 10, 3, 0.45f * a);
-               draw_2d(cover, cx + pad, cy + pad, tw, th, white, 0);
-               tx += tw + 22;
+               draw_tile(cover, cw_, chh, cx + pad, cy + pad, tw, th, 8, -2.0f, 0.0f, white);
+               tx += tw + 20;
             }
             if (gtitle[0]) ui_kicker(&kicker, tr("dialog.title"), tx, cy + pad + 8, a);   /* no game title: the title says it */
             if (title.tex)
@@ -4390,13 +4450,9 @@ static int run_dialog(SDL_Window *win, const char *kind)
                float maxw = cx + cwid - pad - tx, tw2 = title.w > maxw ? maxw : title.w;
                draw_2d(title.tex, tx, cy + pad + 8 + kicker.h + 4, tw2, title.h, txt, 0);
             }
+            if (sub.tex) draw_2d(sub.tex, tx, cy + pad + 8 + kicker.h + 4 + title.h + 2, sub.w, sub.h, dim, 0);
          }
-         /* separator, section label, selection pill, rows */
-         {
-            float sep[4];
-            theme_color(TC_TEXT, sep); sep[3] = 0.08f * a;
-            draw_2d(0, cx + pad, cy + head - 14, cwid - 2 * pad, 1, sep, 0);
-         }
+         /* section label, selection pill, rows */
          if (sect_before >= 0 && sect.tex) draw_2d(sect.tex, cx + pad + 18, rowy[sect_before] - 28, sect.w, sect.h, dim, 0);
          /* the actions: buttons with their glyph, the first one filled; the focus is glass and
           * the ring behind the button (ui.h), the destructive answer red text, never a block */
@@ -4614,6 +4670,7 @@ int main(int argc, char **argv)
       scan_th = SDL_CreateThread(scan_worker, "scan", NULL);
    }
    make_tile_shadow();
+   make_tile_glow();
    bg_mx = SDL_CreateMutex();
    bg_cv = SDL_CreateCond();
    SDL_CreateThread(bg_worker, "bg", NULL);
@@ -4626,7 +4683,7 @@ int main(int argc, char **argv)
    g_font_small = open_font(fonts_reg, 17);
    splash_tick(0.1f);
    g_font_cover = open_font(fonts_bold, 22);
-   g_font_hero  = open_font(fonts_semi, 64);
+   g_font_hero  = open_font(fonts_semi, 68);
    g_font_tab   = open_font(fonts_med, 19);
    splash_tick(0.2f);
    g_font_name  = open_font(fonts_med, 21);
@@ -5171,6 +5228,7 @@ int main(int argc, char **argv)
             if (fold) dim_fold(fold_c, fold_a); else dim_none();
          }
          if (blackout) glClearColor(0, 0, 0, 1);
+         else if (padwait_amount() > 0.995f) glClearColor(0.02f, 0.02f, 0.03f, 1);   /* the "no controller" card's backdrop, for free (padwait.c) */
          else glClearColor(bg[0].x * (1 - fold_a) + fold_c[0] * fold_a, bg[1].x * (1 - fold_a) + fold_c[1] * fold_a,
                            bg[2].x * (1 - fold_a) + fold_c[2] * fold_a, 1);
          glClearDepthf(1.0f);
@@ -5181,6 +5239,7 @@ int main(int argc, char **argv)
          glUseProgram(g_prog_2d);
          glUniform1i(u2_tex, 0);
          covered = welcome_amount() > 0.995f || blackout ||   /* a full-screen section is open */
+                   padwait_amount() > 0.995f ||              /* the "no controller" card's backdrop is opaque */
                    (play_t >= 0 && play_pt > 0.44f);   /* or the launch's opaque field covers it all */
          if (!covered)
          {  /* full-screen art (current layer, next one crossfading over it), then the
@@ -5231,7 +5290,7 @@ int main(int argc, char **argv)
                           gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
                           (attract_active() ? HINTS_ATTRACT : g_focus == FOCUS_TABS ? HINTS_DASH_TABS :
                            g_focus == FOCUS_PROFILE ? HINTS_DASH_PROFILE : HINTS_CAROUSEL);
-               const float ha = (1 - fade) * (1 - att.amount) * launch_ui;
+               const float ha = (1 - fade) * (1 - att.amount) * launch_ui * (1 - padwait_amount());   /* the "no controller" card has its own bar */
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
                /* the game menu is a sheet on the right edge (gamemenu.c, 468 px): its help

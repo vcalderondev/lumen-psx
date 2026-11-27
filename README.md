@@ -19,7 +19,7 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 - per-game background image (`games/<n>/background.jpg|png`) at ~30 % opacity,
   crossfaded and decoded on a worker thread so browsing never stutters
 - launches games in RetroArch and comes back to the same game afterwards
-- small: a single <!-- lumen-size -->~441 KB<!-- /lumen-size --> binary; only covers near
+- small: a single <!-- lumen-size -->~445 KB<!-- /lumen-size --> binary; only covers near
   the selection stay in memory
 - translated UI: English (default), Spanish, Portuguese, French, German, Italian
 - game menu on Start: favourites and folders (shown as their own rows), and "Save and exit"
@@ -256,8 +256,10 @@ Backspace (back), Escape (leave).
 ## Settings panel
 
 Seven categories on the left; a row with › opens a sub-page in the same card, and Circle
-goes back to the row it came from. A help line at the foot of the card describes the
-focused option.
+goes back to the row it came from. Rows are grouped under small headers and each one says
+what it does under its label; choices of two or three values are a segmented control, on /
+off ones a switch. The foot of the card holds the rest of the focused row's description, or
+the page's note.
 
 **Profile** (switch, create, rename, colour, avatar, delete), **Display** (output after a
 restart, CRT filter live; sub-pages **Theme**, **Graphics**: per-system presets, empty

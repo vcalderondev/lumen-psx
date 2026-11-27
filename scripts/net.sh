@@ -57,13 +57,21 @@ unpack_mod() {
   [ -f "${PKG}/psc-netmod-stock.tar.gz" ] || return 1
   mkdir -p "${MOD}" && tar xzf "${PKG}/psc-netmod-stock.tar.gz" -C "${MOD}" || return 1
 }
+# Parameters a module is loaded with. Realtek's own Wi-Fi drivers: no power saving of the
+# chip while the interface is idle or down (ips, power management). On a combo adapter
+# (RTL8821CU: Wi-Fi and Bluetooth in one chip) loading the driver with its defaults left the
+# Bluetooth half answering nothing ("hci0 command tx timeout") until the adapter was
+# unplugged; loaded like this, Bluetooth kept its controller.
+mod_args() {
+  case "$1" in 8821cu|88x2bu|8812au|8821au) echo "rtw_ips_mode=0 rtw_power_mgnt=0" ;; esac
+}
 # load the modules of a set in load order, each once; the set lists what the feature needs
 load_set() {  # module names...
   is_stock || return 1
   for m in $(cat "${MOD}/netmod/load-order.txt"); do
     case " $* " in *" $m "*) ;; *) continue ;; esac
     [ -d "/sys/module/$(echo "$m" | tr - _)" ] && continue
-    if insmod "${MOD}/netmod/$m.ko" 2>>"${LOGF}"; then log "module: $m loaded"; else log "module: $m FAILED"; fi
+    if insmod "${MOD}/netmod/$m.ko" $(mod_args "$m") 2>>"${LOGF}"; then log "module: $m loaded"; else log "module: $m FAILED"; fi
   done
 }
 # Wi-Fi drivers (psc-platform kernel/build-net-modules.sh): the kernel's (MediaTek MT7601U,
@@ -185,6 +193,22 @@ esac
 SH
   chmod 755 "${RUN}/udhcpc.sh"
 }
+# Transmit power of Realtek's own drivers, limited to 3 dBm (300 mBm; another value in
+# <home>/debug/wifi-txpower, "auto" for the driver's own). At full power an RTL8821CU on a
+# controller port fell off the USB bus as soon as it searched for networks (hundreds of
+# "RX proto error", then disconnect and reconnect in a loop), which also dropped every
+# Bluetooth controller on the same adapter; at 3 dBm it joined a network and stayed, with
+# no USB error. The console's ports feed little current: the likely reason, not measured.
+wifi_txpower() {  # interface, drivers
+  tp=""
+  for m in $2; do case " ${WIFI_VENDOR} " in *" $m "*) tp=300 ;; esac; done
+  [ -f "${LUMEN_HOME}/debug/wifi-txpower" ] && tp=$(tr -cd 'a-z0-9' < "${LUMEN_HOME}/debug/wifi-txpower")
+  [ -z "${tp}" ] && return 0
+  [ -x "${NET}/sbin/iw" ] || return 0
+  if [ "${tp}" = auto ]; then netenv "${NET}/sbin/iw" dev "$1" set txpower auto 2>>"${LOGF}"
+  else netenv "${NET}/sbin/iw" dev "$1" set txpower fixed "${tp}" 2>>"${LOGF}" && log "wifi: transmit power ${tp} mBm ($1)"; fi
+  return 0
+}
 wifi_on() {
   unpack_pkg psc-net.tar.gz "${NET}" || die "psc-net.tar.gz missing"
   fw_path; unpack_mod
@@ -231,6 +255,7 @@ wifi_on() {
   { echo "ctrl_interface=${RUN}/wpa"; [ -n "${WIFI_FREQS}" ] && echo "${WIFI_FREQS}"
     grep -v '^ctrl_interface=\|^freq_list=' "${CONF}/wpa_supplicant.conf"; } > "${RUN}/wpa.conf"
   ip link set "${IF}" up
+  wifi_txpower "${IF}" "${want}"
   # no -f <log file>: psc-platform's wpa_supplicant is built without CONFIG_DEBUG_FILE, and an
   # option it does not know makes it print its usage and leave (with status 0: the networks
   # list then stayed empty for ever). Its being there is checked, not its exit status.
@@ -238,6 +263,7 @@ wifi_on() {
       -c "${RUN}/wpa.conf" -P "${RUN}/wpa.pid" > "${RUN}/wpa.log" 2>&1
   i=0; while ! pidof wpa_supplicant >/dev/null && [ $i -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
   pidof wpa_supplicant >/dev/null || { log "wpa_supplicant: $(tail -n 3 "${RUN}/wpa.log" 2>/dev/null | tr '\n' ' ')"; die "wpa_supplicant did not start"; }
+  wifi_txpower "${IF}" "${want}"   # again: the driver sets its own once the supplicant has the interface
   resolv_on; dhcp_script
   [ -f "${RUN}/udhcpc.pid" ] && kill -0 "$(cat "${RUN}/udhcpc.pid")" 2>/dev/null ||
     udhcpc -i "${IF}" -s "${RUN}/udhcpc.sh" -p "${RUN}/udhcpc.pid" -t 0 -T 3 -A 5 >/dev/null 2>&1 &

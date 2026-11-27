@@ -42,19 +42,21 @@
 /* a section over the dimmed art (lumen-design, settings.html): the title and the rail of
  * sections on the left, one glass card with the focused section on the right */
 #define TITLE_X 84.0f
-#define TITLE_Y 112.0f
-#define RAIL_X  70.0f
-#define RAIL_Y  172.0f
-#define RAIL_W  320.0f
-#define RAIL_H  46.0f        /* the sections of the rail (up to eight), from y 172 */
-#define RAIL_P  50.0f        /* rail pitch */
-#define CARD_X  420.0f
-#define CARD_Y  108.0f
-#define CARD_W  776.0f
-#define CARD_H  528.0f
-#define HEAD_H  138.0f       /* card header: kicker, title, caption, hairline */
-#define ROW_H   54.0f        /* row pitch; the pill is ROW_H - 14 high, its ring fills the pitch */
-#define PAD     28.0f
+#define TITLE_Y 44.0f
+#define RAIL_X  72.0f
+#define RAIL_Y  112.0f
+#define RAIL_W  268.0f
+#define RAIL_H  48.0f        /* the sections of the rail (up to eight), from y 112 */
+#define RAIL_P  52.0f        /* rail pitch */
+#define CARD_X  372.0f
+#define CARD_Y  36.0f
+#define CARD_W  824.0f
+#define CARD_H  600.0f
+#define HEAD_H  (s_head_cap ? 128.0f : 104.0f)   /* card header: kicker, title and, on some pages, a caption */
+#define ROW_H   68.0f        /* row pitch; the pill is ROW_H - 14 high, its ring fills the pitch */
+#define GRP_H   34.0f        /* a group's small caps header above its first row */
+#define PAD     36.0f
+static int s_head_cap;       /* the page drawn last had a caption under its title */
 #define SLIDE_OFF 560.0f     /* s_slide when closed: drives the open/close motion */
 #define MAX_ROWS 20
 
@@ -368,12 +370,26 @@ typedef struct {
    int themes;                  /* theme row: a swatch per theme, this index + 1 selected; 0 not it */
    int avatar;                  /* the active profile's picture drawn left of the value */
    const char *why;             /* disabled row: tr key shown as a toast on Cross */
-   const char *desc;            /* what the row does: tr key shown in the help line, NULL none */
+   const char *desc;            /* what the row does: tr key; its first sentence under the label, the rest in the help line */
+   const char *group;           /* tr key of the group this row opens (a small caps header above it), NULL none */
+   const char *seg[3];          /* a segmented control instead of "< value >": every option, nseg of them */
+   int nseg, seg_sel;
+   float slider;                /* an amount 0..1 drawn as a slider, < 0 not one */
    char label[96], value[96];
 } row_t;
 
 static row_t   s_rows[MAX_ROWS];
 static int     s_nrows;
+
+/* where row i starts in the list: the rows before it and the group headers down to it */
+static float row_top(int i)
+{
+   float y = 0;
+   int k;
+   if (i < 0) return 0.0f;
+   for (k = 0; k <= i && k < s_nrows; k++) y += (s_rows[k].group ? GRP_H : 0.0f) + (k < i ? ROW_H : 0.0f);
+   return y;
+}
 static char    s_foot[400];            /* page footer text (translated), "" = none */
 
 static int     s_open, s_page = 1, s_sel;
@@ -386,6 +402,8 @@ static long    s_free_mb = -1;         /* in MB below 1 GB; measured when the pa
 
 static label_t s_title, s_ptitle, s_lt, s_gt, s_kick, s_cap, s_rail_l[16];
 static label_t s_rl[MAX_ROWS], s_rv[MAX_ROWS], s_rvf[MAX_ROWS];   /* label, value, value cut to fit */
+static label_t s_rd[MAX_ROWS], s_rg[MAX_ROWS];  /* description, group header */
+static ui_seg_t s_seg[MAX_ROWS];
 /* The help line shows one text at a time: when the focus moves, the text on screen fades
  * out, and the new one fades in only once the focus has rested (HELP_REST_S) and the old
  * one is gone. Two texts are never drawn over each other, and moving fast through the rows
@@ -497,7 +515,7 @@ static const char *row_desc(int id)
       { ID_SS_PREVIEW, "desc.ss_preview" },
       { ID_SND_MUSIC, "desc.sound_music" }, { ID_SND_VOLUME, "desc.sound_volume" }, { ID_SND_UI, "desc.sound_ui" },
       { ID_AUDIO_OUT, "desc.audio_auto" },
-      { ID_NET_WIFI, "desc.net_wifi" }, { ID_NET_WIFI_LIST, "desc.net_network" }, { ID_NET_BT, "desc.net_bt" },
+      { ID_NET_WIFI, "desc.net_wifi" }, { ID_NET_WIFI_LIST, "desc.net_network" }, { ID_NET_ETH, "desc.net_cable" }, { ID_NET_IP, "desc.net_ip" }, { ID_NET_BT, "desc.net_bt" },
       { ID_NET_BT_LIST, "desc.net_devices" }, { ID_NET_BT_ADD, "desc.net_bt_add" }, { ID_NET_TIME, "desc.net_time" },
       { ID_LIB_STOCK, "desc.lib_stock" }, { ID_LIB_AUDIT, "desc.lib_audit" }, { ID_LIB_TRANSFER, "desc.lib_transfer" },
       { ID_KERNEL, "desc.kernel" }, { ID_SYS_REBOOT, "desc.system_reboot" },
@@ -523,13 +541,27 @@ static const char *const k_rail_desc[P_RAIL_END] = {
    "desc.rail_library", "desc.rail_modules", "desc.rail_system"
 };
 
+/* A row's description is one or more sentences: the first is written under the row's label,
+ * the rest (when there is more) in the help line while the row has the focus. Returns the
+ * rest, "" when the description is a single sentence. */
+static const char *desc_split(const char *text, char *first, size_t n)
+{
+   const char *p = text;
+   size_t l;
+   while ((p = strstr(p, ". ")) && !p[2]) p += 2;
+   l = p ? (size_t)(p - text) + 1 : strlen(text);
+   if (l >= n) l = n - 1;
+   memcpy(first, text, l); first[l] = 0;
+   return p ? p + 2 : "";
+}
+
 static row_t *row_add(int type, int id, const char *label, const char *value)
 {
    row_t *r;
    if (s_nrows >= MAX_ROWS) return NULL;
    r = &s_rows[s_nrows++];
    memset(r, 0, sizeof(*r));
-   r->type = type; r->id = id; r->enabled = 1; r->swatch = -1; r->sw = -1; r->desc = row_desc(id);
+   r->type = type; r->id = id; r->enabled = 1; r->swatch = -1; r->sw = -1; r->slider = -1.0f; r->desc = row_desc(id);
    snprintf(r->label, sizeof(r->label), "%s", label);
    snprintf(r->value, sizeof(r->value), "%s", value ? value : "");
    return r;
@@ -604,11 +636,11 @@ static void page_build(void)
       const profile_t *ap = profiles_active();
       int ai = profiles_find(ap->id), np = profiles_count(), color = s_pcolor >= 0 ? s_pcolor : ap->color;
       if ((r = row_add(R_CHOICE, ID_PROFILE_ACTIVE, tr("profile.active"), profiles_display_name(ap))))
-      { r->swatch = color; r->at_lo = ai <= 0; r->at_hi = ai >= np - 1; }
+      { r->swatch = color; r->at_lo = ai <= 0; r->at_hi = ai >= np - 1; r->group = "group.profiles"; }
       snprintf(num, sizeof(num), "%d", np);
       if ((r = row_add(R_ACTION, ID_PROFILE_CREATE, tr("profile.create"), trf(v, sizeof(v), "profile.count", "n", num, NULL))) && np >= MAX_PROFILES)
       { r->enabled = 0; r->dim = 1; r->why = "profile.full"; }
-      row_add(R_ACTION, ID_PROFILE_RENAME, tr("profile.rename"), NULL);
+      if ((r = row_add(R_ACTION, ID_PROFILE_RENAME, tr("profile.rename"), NULL))) r->group = "group.this_profile";
       if ((r = row_add(R_CHOICE, ID_PROFILE_COLOR, tr("profile.color"), NULL)))
       { r->swatches = 1; r->swatch = color; r->at_lo = color <= 0; r->at_hi = color >= PROFILE_COLORS - 1; }
       /* avatar: a picture picked from the stick (file picker), else the initials on the colour */
@@ -624,21 +656,20 @@ static void page_build(void)
    {
       int hd = out_1080(), sc = settings_get_int("scanout", 1, 0, 1);
       if ((r = row_add(R_CHOICE, ID_DSP_OUTPUT, tr("display.output"), hd ? "1080p" : "720p")))
-      { r->at_lo = !hd; r->at_hi = hd; }
-      if ((r = row_switch(ID_DSP_SCANOUT, tr("display.scanout"), sc)))
-      {
-         r->at_lo = !sc; r->at_hi = sc;
-         if (comp_in_use() == 0) { r->enabled = 0; r->dim = 1; r->why = "display.scanout_stock"; }
-      }
-      snprintf(v, sizeof(v), "%s  \xC2\xB7  %s", out_in_use_1080() ? "1080p" : "720p", tr(k_comp_key[comp_in_use()]));
-      row_add(R_INFO, ID_INFO, tr("display.in_use"), v);
-      if ((r = row_add(R_ACTION, ID_DSP_RESTART, tr("display.restart"), NULL)) && !display_pending())
-      { r->enabled = 0; r->dim = 1; r->why = "display.nothing_pending"; }
+      { r->at_lo = !hd; r->at_hi = hd; r->group = "group.output"; r->seg[0] = "720p"; r->seg[1] = "1080p"; r->nseg = 2; r->seg_sel = hd; }
+      /* direct scanout exists only under Lumen's compositor; restart only with something to apply */
+      if (comp_in_use() != 0 && (r = row_switch(ID_DSP_SCANOUT, tr("display.scanout"), sc)))
+      { r->at_lo = !sc; r->at_hi = sc; }
+      if (display_pending()) row_add(R_ACTION, ID_DSP_RESTART, tr("display.restart"), NULL);
       {  /* CRT filter: the dashboard changes at once, games from their next launch */
          static const char *const k_crt_key[CRT_LEVELS] = { "value.off", "display.crt_soft", "display.crt_strong" };
-         int cl = crt_level();
+         int cl = crt_level(), k;
          if ((r = row_add(R_CHOICE, ID_DSP_CRT, tr("display.crt"), tr(k_crt_key[cl]))))
-         { r->at_lo = cl == CRT_OFF; r->at_hi = cl == CRT_LEVELS - 1; }
+         {
+            r->at_lo = cl == CRT_OFF; r->at_hi = cl == CRT_LEVELS - 1; r->group = "group.look";
+            for (k = 0; k < CRT_LEVELS && k < 3; k++) r->seg[k] = tr(k_crt_key[k]);
+            r->nseg = k; r->seg_sel = cl;
+         }
       }
       if ((r = row_add(R_ACTION, P_THEME, tr("section.theme"), theme_name(theme_setting_index())))) r->enter = 1;
       if ((r = row_add(R_ACTION, P_GRAPHICS, tr("section.graphics"), NULL))) r->enter = 1;
@@ -685,20 +716,25 @@ static void page_build(void)
          if (!g_plat[i].has_gfx) continue;
          lv = gfx_level(i);
          if ((r = row_add(R_CHOICE, ID_GFX + i, g_plat[i].name, tr(gfx_labels[lv]))))
-         { r->at_lo = lv == 0; r->at_hi = lv == (g_plat[i].has_native ? 2 : 1); }
+         {
+            int k;
+            r->at_lo = lv == 0; r->at_hi = lv == (g_plat[i].has_native ? 2 : 1);
+            r->nseg = g_plat[i].has_native ? 3 : 2; r->seg_sel = lv;
+            for (k = 0; k < r->nseg; k++) r->seg[k] = tr(gfx_labels[k]);
+         }
       }
       snprintf(s_foot, sizeof(s_foot), "%s", tr(s_nrows ? "gfx.note" : "gfx.none"));
       break;
    case P_SOUND:
    {
       int on = music_on(), vol = music_volume();
-      if ((r = row_add(R_ACTION, P_AUDIO_OUT, tr("section.audio_out"), audio_out_name()))) r->enter = 1;
+      if ((r = row_add(R_ACTION, P_AUDIO_OUT, tr("section.audio_out"), audio_out_name()))) { r->enter = 1; r->group = "group.output"; }
       if ((r = row_switch(ID_SND_MUSIC, tr("sound.music"), on)))
-      { r->at_lo = !on; r->at_hi = on; }
+      { r->at_lo = !on; r->at_hi = on; r->group = "group.menu"; }
       snprintf(num, sizeof(num), "%d", vol);
       trf(v, sizeof(v), "sound.vol_value", "n", num, NULL);
       if ((r = row_add(R_CHOICE, ID_SND_VOLUME, tr("sound.volume"), v)))
-      { r->at_lo = vol <= 0; r->at_hi = vol >= 100; }
+      { r->at_lo = vol <= 0; r->at_hi = vol >= 100; r->slider = vol / 100.0f; }
       on = settings_get_int("ui_sounds", 1, 0, 1);
       if ((r = row_switch(ID_SND_UI, tr("sound.ui"), on)))
       { r->at_lo = !on; r->at_hi = on; }
@@ -733,7 +769,7 @@ static void page_build(void)
       const int m_wifi = mod_on("wifi"), m_eth = mod_on("ethernet");
       if (m_wifi && (r = row_switch(ID_NET_WIFI, tr("net.wifi"), ns->wifi_on)))
       {
-         r->at_lo = !ns->wifi_on; r->at_hi = ns->wifi_on;
+         r->at_lo = !ns->wifi_on; r->at_hi = ns->wifi_on; r->group = "group.wireless";
          if (ns->wifi_cap == NET_CAP_NO && !ns->wifi_on) { r->enabled = 0; r->dim = 1; r->why = "net.wifi_nokernel"; }
       }
       /* the networks only once Wi-Fi is on and a USB adapter answers (a console's settings do
@@ -742,11 +778,11 @@ static void page_build(void)
          row_add(R_INFO, ID_INFO, tr("net.network"), tr("net.noadapter"));
       else if (m_wifi && ns->wifi_on && (r = row_add(R_ACTION, ID_NET_WIFI_LIST, tr("net.network"),
                        ns->wifi == NET_CONNECTED ? ns->ssid : ns->wifi == NET_CONNECTING ? tr("net.connecting") : tr("net.notconnected"))))
-      { r->enter = 1; r->check = ns->wifi == NET_CONNECTED; }
-      if (m_eth) row_add(R_INFO, ID_NET_ETH, tr("net.cable"),
-              ns->eth == NET_CONNECTED ? ns->eth_ip : ns->eth == NET_CONNECTING ? tr("net.connecting") :
-              ns->eth == NET_NOCABLE ? tr("net.nocable") : tr("net.noadapter"));
+      r->enter = 1;
       if (m_wifi && ns->wifi == NET_CONNECTED && ns->ip[0]) row_add(R_INFO, ID_NET_IP, tr("net.ip"), ns->ip);
+      if (m_eth && (r = row_add(R_INFO, ID_NET_ETH, tr("net.cable"),
+              ns->eth == NET_CONNECTED ? ns->eth_ip : ns->eth == NET_CONNECTING ? tr("net.connecting") :
+              ns->eth == NET_NOCABLE ? tr("net.nocable") : tr("net.noadapter")))) r->group = "group.wired";
       snprintf(s_foot, sizeof(s_foot), "%s", tr("net.note"));
       break;
    }
@@ -756,7 +792,7 @@ static void page_build(void)
       char cnt[16], cnt2[16];
       if ((r = row_switch(ID_NET_BT, tr("net.bt"), ns->bt_on)))
       {
-         r->at_lo = !ns->bt_on; r->at_hi = ns->bt_on;
+         r->at_lo = !ns->bt_on; r->at_hi = ns->bt_on; r->group = "group.adapter";
          if (ns->bt_cap == NET_CAP_NO && !ns->bt_on) { r->enabled = 0; r->dim = 1; r->why = "net.bt_nokernel"; }
       }
       snprintf(cnt, sizeof(cnt), "%d", ns->paired); snprintf(cnt2, sizeof(cnt2), "%d", ns->connected);
@@ -765,8 +801,8 @@ static void page_build(void)
          row_add(R_INFO, ID_INFO, tr("net.adapter"), tr("net.noadapter"));
       else if (ns->bt_on && ns->bt == NET_CONNECTED)
       {
-         if ((r = row_add(R_ACTION, ID_NET_BT_LIST, tr("net.devices"), trf(v, sizeof(v), "net.paired_n", "n", cnt, "c", cnt2, NULL))))
-            r->enter = 1;
+         /* the counts are under the title: the row gives only how many are paired */
+         if ((r = row_add(R_ACTION, ID_NET_BT_LIST, tr("net.devices"), cnt))) { r->enter = 1; r->group = "group.pairing"; }
          if ((r = row_add(R_ACTION, ID_NET_BT_ADD, tr("net.bt_add"), NULL))) r->enter = 1;
       }
       else if (ns->bt_on) row_add(R_INFO, ID_INFO, tr("net.adapter"), tr("net.connecting"));
@@ -777,7 +813,7 @@ static void page_build(void)
    {  /* every module, its state as the value; the help line shows its description */
       for (i = 0; i < modules_count() && i < MAX_ROWS - 2; i++)
          if ((r = row_add(R_ACTION, ID_MOD + i, tr(module_name_key(i)), mod_state_text(i, v, sizeof(v)))))
-         { r->enter = 1; r->desc = module_desc_key(i); r->check = module_state(i) == MOD_ON; }
+         { r->enter = 1; r->desc = module_desc_key(i); if (i == 0) r->group = "group.features"; }
       if (modules_restart_pending()) row_add(R_ACTION, ID_SYS_REBOOT, tr("mods.restart"), NULL);
       snprintf(s_foot, sizeof(s_foot), "%s", tr("mods.note"));
       break;
@@ -806,24 +842,24 @@ static void page_build(void)
    {
       int stock = settings_get_int("show_stock_games", 0, 0, 1);
       if ((r = row_add(R_CHOICE, ID_LIB_STOCK, tr("lib.stock"), tr(stock ? "lib.visible" : "lib.hidden"))))
-      { r->at_lo = !stock; r->at_hi = stock; }
-      if ((r = row_add(R_ACTION, ID_LIB_AUDIT, tr("audit.title"), NULL))) r->enter = 1;
+      { r->at_lo = !stock; r->at_hi = stock; r->group = "group.games"; r->seg[0] = tr("lib.hidden"); r->seg[1] = tr("lib.visible"); r->nseg = 2; r->seg_sel = stock; }
+      if ((r = row_add(R_ACTION, ID_LIB_AUDIT, tr("audit.title"), NULL))) { r->enter = 1; r->group = "group.tools"; }
       if ((r = row_add(R_ACTION, ID_LIB_TRANSFER, tr("xfer.title"), NULL))) r->enter = 1;
       snprintf(s_foot, sizeof(s_foot), "%s", tr("lib.stock_note"));
       break;
    }
    case P_SYSTEM:
       i = lang_active_index();
-      if ((r = row_add(R_ACTION, P_LANGUAGE, tr("section.language"), i >= 0 ? i18n_name(i) : i18n_language()))) r->enter = 1;
-      if ((r = row_add(R_ACTION, P_UPDATE, tr("section.update"), update_status(v, sizeof(v))))) r->enter = 1;
+      if ((r = row_add(R_ACTION, P_LANGUAGE, tr("section.language"), i >= 0 ? i18n_name(i) : i18n_language()))) { r->enter = 1; r->group = "group.general"; }
       {
          const net_state_t *ns = net_state();
          if ((r = row_add(R_ACTION, P_DATETIME, tr("section.datetime"), ns->time_ok ? ns->time_text : tr("time.not_set")))) r->enter = 1;
       }
+      if ((r = row_add(R_ACTION, P_UPDATE, tr("section.update"), update_status(v, sizeof(v))))) { r->enter = 1; r->group = "group.software"; }
       if (*kern_name_key() && (r = row_add(R_ACTION, ID_KERNEL, tr("about.kernel"), tr(kern_name_key()))))
          r->enter = 1;   /* not Sony's stock kernel, or a backup to go back to: kern.c */
       if ((r = row_add(R_ACTION, P_ABOUT, tr("section.about"), LUMEN_VERSION))) r->enter = 1;
-      row_add(R_ACTION, ID_SYS_REBOOT, tr("system.reboot"), NULL);
+      if ((r = row_add(R_ACTION, ID_SYS_REBOOT, tr("system.reboot"), NULL))) r->group = "group.power";
       break;
    case P_LANGUAGE:
       for (i = 0; i < i18n_count(); i++)
@@ -937,7 +973,7 @@ static void measure_free(void)
 /* place the highlight and the scroll without animation (page entry) */
 static void rows_snap(void)
 {
-   s_hl.x = s_sel > 0 ? s_sel * ROW_H : 0.0f; s_hl.v = 0;
+   s_hl.x = row_top(s_sel); s_hl.v = 0;
    s_scroll.x = 0; s_scroll.v = 0;
    s_rail.x = rail_pos(rail_of(s_page)) * RAIL_P; s_rail.v = 0;
 }
@@ -951,7 +987,7 @@ static void page_enter(int page, int dir)
    page_build();
    s_sel = first_selectable();
    if (page == P_LANGUAGE && (i = lang_active_index()) >= 0) s_sel = i;
-   s_hl.x = s_sel > 0 ? s_sel * ROW_H : 0.0f; s_hl.v = 0;
+   s_hl.x = row_top(s_sel); s_hl.v = 0;
    s_scroll.x = 0; s_scroll.v = 0;
    s_px.x = dir * 24.0f; s_px.v = 0;
    s_pa.x = 0.0f; s_pa.v = 0;
@@ -1046,7 +1082,7 @@ static void sub_back(void)
    int from = s_page;
    page_enter(k_parent[s_page], -1);
    select_row(from == P_MODULE ? ID_MOD + s_mod_sel : from);   /* a module's row is ID_MOD + its index */
-   s_hl.x = s_sel > 0 ? s_sel * ROW_H : 0.0f; s_hl.v = 0;
+   s_hl.x = row_top(s_sel); s_hl.v = 0;
 }
 
 static void row_action(const row_t *r)
@@ -1721,10 +1757,11 @@ void panel_update(const ui_nav_t *nav, double t, float dt)
    {
       /* keep the selected row inside the visible rows area */
       float view = CARD_H - HEAD_H - help_room() - 12.0f;
-      float y = s_sel >= 0 ? s_sel * ROW_H : 0.0f, target = s_scroll.x;
+      float y = row_top(s_sel), target = s_scroll.x;
       if (s_sel >= 0)
       {
-         if (y < target) target = y;
+         const float y0 = y - (s_sel < s_nrows && s_rows[s_sel].group ? GRP_H : 0.0f);   /* its group header stays in view */
+         if (y0 < target) target = y0;
          if (y + ROW_H > target + view) target = y + ROW_H - view;
       }
       if (target < 0) target = 0;
@@ -1761,7 +1798,7 @@ static float draw_swatch(int color, float xr, float y, float a)
    return xr - SW_D - 10;
 }
 
-/* the help line's room at the foot of the card: three lines of the small font, kept the same
+/* the help line's room at the foot of the card: two lines of the small font, kept the same
  * whatever the text, so the rows never jump when the focus moves */
 static float help_room(void)
 {
@@ -1770,7 +1807,7 @@ static float help_room(void)
    {
       label_t m = { 0 };
       label_set(&m, g_font_small, "Ag");
-      h = m.h > 0 ? m.h * 3.0f + 22.0f : 92.0f;
+      h = m.h > 0 ? m.h * 2.0f + 24.0f : 70.0f;
       label_free(&m);
    }
    return h;
@@ -1832,18 +1869,18 @@ void panel_draw(double t)
       float lit[4];
       if (!theme_lit(lit)) theme_color(TC_ACCENT, lit);
       lit[3] = a;
-      ui_rest(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, RAIL_H * 0.5f, a);
-      draw_round_rect(RAIL_X - 10, RAIL_Y + rise + s_rail.x + 12, 3, RAIL_H - 24, 1.5f, lit, 0.0f);
+      ui_rest(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, UI_CTL_R, a);
+      draw_round_rect(RAIL_X - 10, RAIL_Y + rise + s_rail.x + 13, 3, RAIL_H - 26, 1.5f, lit, 0.0f);
    }
-   else ui_focus(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, RAIL_H * 0.5f, a);
+   else ui_focus(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, UI_CTL_R, a);
    for (i = 1; i < P_RAIL_END; i++)
    {
       label_t *l = &s_rail_l[i];
       if (!rail_shown(i)) continue;
       label_set(l, g_font_sub, tr(k_page_key[i]));
       col(c, C_TXT, a * (i == rail_of(s_page) ? 1.0f : 0.70f));
-      if (k_rail_glyph[i]) glyph_draw(k_rail_glyph[i], RAIL_X + 16, RAIL_Y + rise + rail_pos(i) * RAIL_P + (RAIL_H - 24) * 0.5f, 24, c);
-      draw_label(l, RAIL_X + 16 + 24 + 14, RAIL_Y + rise + rail_pos(i) * RAIL_P + (RAIL_H - l->h) * 0.5f, c);
+      if (k_rail_glyph[i]) glyph_draw(k_rail_glyph[i], RAIL_X + 14, RAIL_Y + rise + rail_pos(i) * RAIL_P + (RAIL_H - 24) * 0.5f, 24, c);
+      draw_label(l, RAIL_X + 14 + 24 + 14, RAIL_Y + rise + rail_pos(i) * RAIL_P + (RAIL_H - l->h) * 0.5f, c);
    }
 
    /* the card: a header that gives the section a face, then its rows */
@@ -1859,7 +1896,7 @@ void panel_draw(double t)
       if (s_page == P_PROFILE)
       {
          int played = stats_games_played();
-         ui_avatar_draw(cx + PAD, cy + 26, 72, ca);
+         ui_avatar_draw(cx + PAD, cy + 24, 72, ca);
          hx += 72 + 22;
          kick = tr("section.profile"); title = profiles_display_name(profiles_active());
          snprintf(num, sizeof(num), "%d", played);
@@ -1891,23 +1928,28 @@ void panel_draw(double t)
          const net_state_t *ns = net_state();
          const int wifi = ns->wifi == NET_CONNECTED, eth = ns->eth == NET_CONNECTED;
          size_t o = 0;
-         title = tr(wifi || eth ? "net.online" : (ns->wifi_cap == NET_CAP_NO && ns->eth_cap == NET_CAP_NO) ? "net.unavailable" : "net.offline");
-         buf[0] = 0;
+         /* the title stays the section's name; the state leads the caption, as on Bluetooth */
+         o = (size_t)snprintf(buf, sizeof(buf), "%s", tr(wifi || eth ? "net.online" : (ns->wifi_cap == NET_CAP_NO && ns->eth_cap == NET_CAP_NO) ? "net.unavailable" : "net.offline"));
+         if (wifi || eth) o += (size_t)snprintf(buf + o, sizeof(buf) - o, "  \xC2\xB7  ");
          if (eth) o += (size_t)snprintf(buf + o, sizeof(buf) - o, "%s  \xC2\xB7  %s", tr("net.cable"), ns->eth_ip);
          else if (wifi) o += (size_t)snprintf(buf + o, sizeof(buf) - o, "%s  \xC2\xB7  %s", ns->ssid, ns->ip);
-         if (ns->time_ok && o < sizeof(buf)) o += (size_t)snprintf(buf + o, sizeof(buf) - o, "%s%s", o ? "  \xC2\xB7  " : "",
+         if (ns->time_ok && o < sizeof(buf)) o += (size_t)snprintf(buf + o, sizeof(buf) - o, "%s%s", "  \xC2\xB7  ",
                                                                    trf(num, sizeof(num), "net.time_set", "t", ns->time_text + 11, NULL));
          cap = buf;
       }
-      ui_kicker(&s_kick, kick, hx, cy + 28, ca);
+      if (s_page == P_DISPLAY)
+      {  /* what the console is showing right now (the settings below apply at restart) */
+         snprintf(buf, sizeof(buf), "%s: %s  \xC2\xB7  %s", tr("display.in_use"), out_in_use_1080() ? "1080p" : "720p", tr(k_comp_key[comp_in_use()]));
+         cap = buf;
+      }
+      s_head_cap = cap[0] != 0;
+      ui_kicker(&s_kick, kick, hx, cy + 26, ca);
       label_set(&s_ptitle, g_font_title, title);
       col(c, C_TXT, ca);
       draw_label(&s_ptitle, hx, cy + 44, c);
       label_set(&s_cap, g_font_small, cap);
       col(c, C_DIM, ca);
-      draw_label(&s_cap, hx, cy + 88, c);
-      col(f, (const float[3]){ 1, 1, 1 }, 0.08f * a);
-      draw_2d(0, CARD_X + PAD, cy + 124, CARD_W - 2 * PAD, 1, f, 0);
+      draw_label(&s_cap, hx, cy + 90, c);
    }
 
    /* the help line at the foot of the card (a console's settings): what the focused row does,
@@ -1915,8 +1957,10 @@ void panel_draw(double t)
     * old one and rises 6 px; the room it takes never changes */
    {
       const row_t *fr = s_in_card && s_sel >= 0 && s_sel < s_nrows ? &s_rows[s_sel] : NULL;
+      char first[200];
+      const char *rest = fr && fr->desc ? desc_split(tr(fr->desc), first, sizeof(first)) : "";
       const char *help = !s_in_card ? (k_rail_desc[rail_of(s_page)] ? tr(k_rail_desc[rail_of(s_page)]) : "")
-                         : fr && fr->desc ? tr(fr->desc) : s_foot;
+                         : rest[0] ? rest : s_foot;
       const float room = help_room(), hy = cy + CARD_H - room + 6.0f, ha = clampf(s_help_a.x, 0.0f, 1.0f);
       label_t *cur = &s_help;
       size_t kn = sizeof(cur->key) - 1;
@@ -1930,16 +1974,16 @@ void panel_draw(double t)
          s_help_target = 0.0f;
          if ((ha < 0.03f || !cur->tex) && t - s_help_want_t >= HELP_REST_S)
          {
-            wlabel_set(cur, g_font_small, s_help_want, (int)(CARD_W - 2 * PAD - 12));
+            wlabel_set(cur, g_font_small, s_help_want, (int)(CARD_W - 2 * PAD));
             if (!cur->tex) snprintf(cur->key, sizeof(cur->key), "%s", s_help_want);
             s_help_a.x = 0.0f; s_help_a.v = 0.0f;
             s_help_target = 1.0f;
          }
       }
-      col(f, (const float[3]){ 1, 1, 1 }, 0.08f * ca);
+      col(f, (const float[3]){ 1, 1, 1 }, 0.08f * ca * (cur->tex && s_help_want[0] ? ha : 0.0f));   /* no rule over nothing */
       draw_2d(0, CARD_X + PAD, hy - 10.0f, CARD_W - 2 * PAD, 1, f, 0);
       col(c, C_DIM, ca * ha);
-      draw_label(cur, cx + PAD + 6, hy + (1.0f - ha) * 4.0f, c);
+      draw_label(cur, cx + PAD, hy + (1.0f - ha) * 4.0f, c);
       bottom = hy - 18.0f;
    }
 
@@ -1947,38 +1991,52 @@ void panel_draw(double t)
    top = cy + HEAD_H;
    glEnable(GL_SCISSOR_TEST);
    gl_scissor(CARD_X + 2, top - 8, CARD_W - 4, bottom - top + 16);
-   if (s_sel >= 0 && s_in_card) ui_focus(cx + 14, top + s_hl.x - s_scroll.x + 7, CARD_W - 28, ROW_H - 14, UI_CTL_R, ca);   /* pill + ring (7 px a side) = the row pitch: it never covers a neighbour */
+   if (s_sel >= 0 && s_in_card) ui_focus(cx + 20, top + s_hl.x - s_scroll.x + 7, CARD_W - 40, ROW_H - 14, UI_CTL_R, ca);   /* pill + ring (7 px a side) = the row pitch: it never covers a neighbour */
    for (i = 0; i < s_nrows; i++)
    {
       const row_t *r = &s_rows[i];
-      float y = top + i * ROW_H - s_scroll.x, xr = cx + CARD_W - 14 - 20, la = ca * (r->dim ? 0.38f : 1.0f);
+      float y = top + row_top(i) - s_scroll.x, xr = cx + CARD_W - 20 - 16, la = ca * (r->dim ? 0.38f : 1.0f);
       const int focused = i == s_sel && s_in_card;
       float lend;
       {  /* the label keeps at most 62 % of the row, cut with an ellipsis beyond */
          char buf[160];
-         label_set(&s_rl[i], g_font_sub, ui_fit(g_font_sub, r->label, (CARD_W - 68) * 0.62f, buf, sizeof(buf)));
+         label_set(&s_rl[i], g_font_sub, ui_fit(g_font_sub, r->label, (CARD_W - 72) * 0.62f, buf, sizeof(buf)));
       }
-      label_set(&s_rv[i], g_font_sub, r->value);
+      if (r->type != R_CHOICE) label_set(&s_rv[i], g_font_sub, r->value);   /* a control sets its own text */
       if (y + ROW_H < top - 8 || y > bottom + 8) continue;
       {  /* a row leaving the list fades out: it is never shown cut in half at full strength */
          const float vis = fminf(clampf((y + ROW_H - top + 8.0f) / ROW_H, 0.0f, 1.0f), clampf((bottom + 8.0f - y) / ROW_H, 0.0f, 1.0f));
          la *= vis * vis;
       }
-      col(c, C_TXT, la);
-      draw_label(&s_rl[i], cx + 14 + 20, y + (ROW_H - s_rl[i].h) * 0.5f, c);
-      lend = cx + 14 + 20 + s_rl[i].w + 28.0f;   /* nothing of the value left of here */
-      if (r->type == R_CHOICE && r->sw >= 0)
-      {  /* a switch: the track in the accent when on, the knob always light */
-         const float tw = 46, th = 26, tx = xr - tw, ty = y + (ROW_H - th) * 0.5f, kd = 20;
-         float tc[4], kc[4] = { 1, 1, 1, la };
-         if (r->sw) { col(tc, C_ACC, la); if (C_ACC[0] + C_ACC[1] + C_ACC[2] > 2.4f) { kc[0] = kc[1] = kc[2] = 0.05f; } }
-         else { theme_color(TC_GLASS, tc); tc[3] = 0.18f * la; }
-         draw_round_rect(tx, ty, tw, th, th * 0.5f, tc, 0.0f);
-         draw_round_rect(tx + (r->sw ? tw - kd - 3 : 3), ty + 3, kd, kd, kd * 0.5f, kc, 0.0f);
+      if (r->group)
+      {  /* the group this row opens: small caps above it */
+         const float gv = clampf((y - GRP_H - top + 16.0f) / 16.0f, 0.0f, 1.0f);
+         ui_group(&s_rg[i], tr(r->group), cx + 20 + 16, y - GRP_H + 12, ca * gv);
       }
+      col(c, C_TXT, la);
+      if (r->desc)
+      {  /* the label and, under it, the first sentence of what the row does */
+         char first[200], cut[200];
+         desc_split(tr(r->desc), first, sizeof(first));
+         label_set(&s_rd[i], g_font_caps, ui_fit(g_font_caps, first, (CARD_W - 72) * 0.62f, cut, sizeof(cut)));
+         draw_label(&s_rl[i], cx + 20 + 16, y + 9, c);
+         col(f, C_DIM, la);
+         draw_label(&s_rd[i], cx + 20 + 16, y + ROW_H - 12 - s_rd[i].h, f);
+      }
+      else draw_label(&s_rl[i], cx + 20 + 16, y + (ROW_H - s_rl[i].h) * 0.5f, c);
+      lend = cx + 20 + 16 + s_rl[i].w + 28.0f;   /* nothing of the value left of here */
+      if (r->desc && cx + 20 + 16 + s_rd[i].w + 28.0f > lend)
+      {  /* nor over the description: the value keeps at least a third of the row, the rest is the text's */
+         const float third = xr - (CARD_W - 72) * 0.34f, de = cx + 20 + 16 + s_rd[i].w + 28.0f;
+         lend = de < third ? de : third;
+      }
+      /* the value side: one shared control per kind of value (ui.h "Controls") */
+      if (r->type == R_CHOICE && r->sw >= 0) ui_switch(xr, y + ROW_H * 0.5f, r->sw, la);
+      else if (r->type == R_CHOICE && r->nseg) ui_segmented(&s_seg[i], xr, y + ROW_H * 0.5f, r->seg, r->nseg, r->seg_sel, la);
+      else if (r->type == R_CHOICE && r->slider >= 0.0f) ui_slider(&s_rv[i], xr, y + ROW_H * 0.5f, r->slider, r->value, la);
       else if (r->type == R_CHOICE && r->themes)
       {  /* a swatch per theme: its card, a bar of its light, two covers; the chosen one ringed */
-         const float sw_ = 48, sh_ = 30;
+         const float sw_ = 72, sh_ = 44;
          const int nt = theme_count() > 6 ? 6 : theme_count(), first = r->themes - 1 >= nt ? r->themes - nt : 0;
          int k;
          for (k = first + nt - 1; k >= first; k--)
@@ -1990,67 +2048,48 @@ void panel_draw(double t)
             {
                float fr[4];
                theme_color(TC_FOCUS, fr); fr[3] = 0.95f * la;
-               ui_shape(sx - 3, sy - 3, sw_ + 6, sh_ + 6, 9, 2.0f, fr);
+               ui_shape(sx - 4, sy - 4, sw_ + 8, sh_ + 8, 12, 2.0f, fr);
             }
-            draw_round_rect(sx, sy, sw_, sh_, 6, card, 0.0f);
-            ui_shape(sx, sy, sw_, sh_, 6, 1.0f, ed);
-            draw_round_rect(sx + 6, sy + 6, 16, 3, 1.5f, lit, 0.0f);
-            draw_round_rect(sx + 6, sy + 13, 8, 11, 2, cv, 0.0f);
+            draw_round_rect(sx, sy, sw_, sh_, 8, card, 0.0f);
+            ui_shape(sx, sy, sw_, sh_, 8, 1.0f, ed);
+            draw_round_rect(sx + 7, sy + 8, 28, 4, 2, lit, 0.0f);
+            draw_round_rect(sx + 7, sy + 19, 13, 18, 3, cv, 0.0f);
             cv[3] *= 0.5f;
-            draw_round_rect(sx + 17, sy + 16, 7, 8, 2, cv, 0.0f);
-            draw_round_rect(sx + 27, sy + 16, 7, 8, 2, cv, 0.0f);
+            draw_round_rect(sx + 24, sy + 23, 10, 14, 3, cv, 0.0f);
+            draw_round_rect(sx + 38, sy + 23, 10, 14, 3, cv, 0.0f);
             xr -= sw_ + 10;
          }
          /* the chosen theme by name, left of the swatches */
          col(c, C_DIM, la);
          if (s_rv[i].tex) draw_label(&s_rv[i], xr - 6 - s_rv[i].w, y + (ROW_H - s_rv[i].h) * 0.5f, c);
       }
+      else if (r->type == R_CHOICE && r->swatches)
+      {  /* the profile colours: every one in sight, the chosen one ringed (like the themes) */
+         int k;
+         for (k = PROFILE_COLORS - 1; k >= 0; k--)
+         {
+            float sx = xr - SW_D, sy = y + (ROW_H - SW_D) * 0.5f;
+            if (k == r->swatch)
+            {
+               float fr[4];
+               theme_color(TC_FOCUS, fr); fr[3] = 0.95f * la;
+               ui_shape(sx - 4, sy - 4, SW_D + 8, SW_D + 8, SW_D * 0.5f + 4, 2.0f, fr);
+            }
+            profiles_color(k, f); f[3] = la * (k == r->swatch ? 1.0f : 0.70f);
+            draw_round_rect(sx, sy, SW_D, SW_D, SW_D * 0.5f, f, 0.0f);
+            xr -= SW_D + 12;
+         }
+      }
       else if (r->type == R_CHOICE)
       {
-         col(c, C_DIM, la * (r->at_hi ? 0.35f : 1.0f));
-         draw_label(&s_gt, xr - s_gt.w, y + (ROW_H - s_gt.h) * 0.5f, c);
-         xr -= s_gt.w + 12;
-         if (r->swatches)
-         {
-            int k;
-            for (k = PROFILE_COLORS - 1; k >= 0; k--)
-            {
-               float sx = xr - SW_D, sy = y + (ROW_H - SW_D) * 0.5f;
-               if (k == r->swatch)
-               {
-                  col(f, (const float[3]){ 1, 1, 1 }, 0.90f * la);
-                  draw_round_rect(sx - 3, sy - 3, SW_D + 6, SW_D + 6, SW_D * 0.5f + 3, f, 0.0f);
-               }
-               profiles_color(k, f); f[3] = la * (k == r->swatch ? 1.0f : 0.70f);
-               draw_round_rect(sx, sy, SW_D, SW_D, SW_D * 0.5f, f, 0.0f);
-               xr -= SW_D + 10;
-            }
-            xr -= 2;
-         }
-         else
-         {
-            float extra = (r->swatch >= 0 ? 30.0f : 0.0f) + s_lt.w + 12.0f;
-            col(c, C_TXT, la * 0.92f);
-            xr -= draw_value(i, r, xr, y, xr - lend - extra, focused, t, top - 8, bottom + 8, c) + 12;
-            if (r->swatch >= 0) xr = draw_swatch(r->swatch, xr, y, la);
-         }
-         col(c, C_DIM, la * (r->at_lo ? 0.35f : 1.0f));
-         draw_label(&s_lt, xr - s_lt.w, y + (ROW_H - s_lt.h) * 0.5f, c);
+         float dot[4];
+         if (r->swatch >= 0) profiles_color(r->swatch, dot);
+         ui_stepper(&s_rv[i], xr, y + ROW_H * 0.5f, r->value, xr - lend, r->at_lo, r->at_hi, r->swatch >= 0 ? dot : NULL, la);
       }
       else
       {
-         if (r->enter)
-         {
-            col(c, C_DIM, la);
-            draw_label(&s_gt, xr - s_gt.w, y + (ROW_H - s_gt.h) * 0.5f, c);
-            xr -= s_gt.w + 12;
-         }
-         if (r->check)
-         {
-            col(f, C_ACC, la);
-            draw_round_rect(xr - 12, y + ROW_H * 0.5f - 6, 12, 12, 6, f, 0.0f);
-            xr -= 12 + 12;
-         }
+         if (r->enter) xr -= ui_chevron(xr, y + ROW_H * 0.5f, la) + 12;
+         if (r->check) xr -= ui_mark(xr, y + ROW_H * 0.5f, la) + 12;
          {
             float extra = r->swatch >= 0 ? 30.0f : r->avatar ? 42.0f : 0.0f, vw;
             col(c, C_TXT, la * 0.92f);

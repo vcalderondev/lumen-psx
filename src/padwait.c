@@ -5,6 +5,7 @@
  * rippling out while the console searches (faster while pairing; gone, and the controller
  * in the accent, once paired); on the right the kicker, the title, one line on what to do
  * and how the usual controllers enter pairing mode; at the foot, the live status. */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +37,38 @@ static char    v_name[64];
 static int     s_armed;        /* a "done" left over from the previous card is not this card's */
 /* the illustrations (tools/make-illustrations.py, assets/ui/): white, tinted when drawn */
 typedef struct { GLuint tex; float w, h; int tried; } ill_t;
-static ill_t s_pad, s_recv;
+/* the controller is shown in several styles, one after another: assets/ui/pad.png, pad2.png,
+ * pad3.png ... (as many as there are, up to NPAD, numbered without a gap) */
+#define NPAD 8
+#define PAD_HOLD_S 3.2f      /* a drawing stays this long */
+#define PAD_FADE_S 0.55f     /* then gives way to the next one */
+static ill_t s_pads[NPAD], s_recv;
+static int   s_npad;
+
+
+/* The ripples around the disc: one ring baked into a small texture at the first draw and
+ * stretched, instead of three shapes whose outline the shader works out for every pixel of
+ * their boxes (most of this card's cost at 1080p: 47 fps on the console with them, measured). */
+#define RIPPLE_N 256
+static GLuint s_ripple;
+static void ripple_make(void)
+{
+   SDL_Surface *sf = SDL_CreateRGBSurface(0, RIPPLE_N, RIPPLE_N, 32, 0x000000ffu, 0x0000ff00u, 0x00ff0000u, 0xff000000u);
+   int x, y;
+   if (!sf) return;
+   for (y = 0; y < RIPPLE_N; y++)
+      for (x = 0; x < RIPPLE_N; x++)
+      {  /* a 3 px line (of a ring about 300 px across) just inside the texture's edge */
+         const float dxp = x + 0.5f - RIPPLE_N * 0.5f, dyp = y + 0.5f - RIPPLE_N * 0.5f, d = sqrtf(dxp * dxp + dyp * dyp);
+         const float r0 = RIPPLE_N * 0.5f - 3.0f, hw = 1.3f, k = clampf(1.0f - (fabsf(d - r0) - hw) / 1.2f, 0.0f, 1.0f);
+         Uint8 *px = (Uint8 *)sf->pixels + y * sf->pitch + x * 4;
+         px[0] = px[1] = px[2] = 255; px[3] = (Uint8)(255.0f * k + 0.5f);
+      }
+   s_ripple = tex_from_surface(sf);
+   SDL_FreeSurface(sf);
+}
+
+static void ripple_free(void) { if (s_ripple) { glDeleteTextures(1, &s_ripple); s_ripple = 0; } }
 static void ill_load(ill_t *il, const char *name)
 {
    char p[400];
@@ -130,7 +162,8 @@ void padwait_update(const ui_nav_t *nav, double t, float dt, int njoy, int block
       for (i = 0; i < 4; i++) label_free(all[i]);
       for (i = 0; i < NBRAND; i++) { label_free(&s_bname[i]); label_free(&s_bhow[i]); }
       for (i = 0; i < 2; i++) { label_free(&s_stepl[i]); label_free(&s_stepn[i]); }
-      ill_free(&s_pad); ill_free(&s_recv);
+      { int k; for (k = 0; k < NPAD; k++) ill_free(&s_pads[k]); s_npad = 0; } ill_free(&s_recv);
+      ripple_free();
    }
 }
 
@@ -191,8 +224,10 @@ void padwait_draw(double t)
    col4(txt, TC_TEXT, a); col4(dim, TC_DIM, a); col4(acc, TC_ACCENT, a); col4(sep, TC_TEXT, 0.08f * a);
    gl_use_2d();
    {  /* a screen of its own: the dashboard and its help bar go almost dark behind the card */
-      const float bd[4] = { 0.02f, 0.02f, 0.03f, 0.97f * a };
-      draw_2d(0, 0, 0, W, H, bd, 0);
+      const float bd[4] = { 0.02f, 0.02f, 0.03f, a };
+      /* fully open: main.c stops drawing the Home and clears the frame to this colour, so
+       * the backdrop costs no pass of its own */
+      if (a <= 0.995f) draw_2d(0, 0, 0, W, H, bd, 0);
    }
    ui_card(cx, cy, CW, CH, a);
 
@@ -204,24 +239,57 @@ void padwait_draw(double t)
       if (searching)
          for (i = 0; i < 3; i++)
          {  /* rings leave the disc and fade 60 px out, one every 0.8 s */
-            float ph = (float)fmod((t - s_t0) * 0.42 * speed + i / 3.0, 1.0), rr = DISC_R + 8.0f + ph * 62.0f;
-            ui_ring(dx - rr, dy - rr, rr * 2, rr * 2, rr, 0.0f, a * 0.55f * (1.0f - ph) * (1.0f - ph));
+            float ph = (float)fmod((t - s_t0) * 0.42 * speed + i / 3.0, 1.0), rr = DISC_R + 8.0f + ph * 48.0f;
+            const float ro = (rr + 3.0f) * (RIPPLE_N * 0.5f) / (RIPPLE_N * 0.5f - 3.0f);   /* the line sits 3 px inside the texture */
+            float rc[4];
+            if (!s_ripple) ripple_make();
+            theme_color(TC_FOCUS, rc); rc[3] = 0.95f * a * 0.55f * (1.0f - ph) * (1.0f - ph);
+            if (s_ripple) draw_2d(s_ripple, dx - ro, dy - ro, ro * 2, ro * 2, rc, 0);
+            else ui_ring(dx - rr, dy - rr, rr * 2, rr * 2, rr, 0.0f, a * 0.55f * (1.0f - ph) * (1.0f - ph));
          }
-      ui_rest(dx - DISC_R, dy - DISC_R, DISC_R * 2, DISC_R * 2, DISC_R, a);
+      {  /* the disc: resting glass, a full circle (ui_rest keeps to the controls' radius) */
+         float g[4];
+         theme_color(TC_GLASS, g); g[3] = UI_EDGE * a;
+         ui_fill(dx - DISC_R, dy - DISC_R, DISC_R * 2, DISC_R * 2, DISC_R, g, UI_REST * a);
+         ui_shape(dx - DISC_R, dy - DISC_R, DISC_R * 2, DISC_R * 2, DISC_R, 1.0f, g);
+      }
       if (ok > 0.01f) ui_fill(dx - DISC_R, dy - DISC_R, DISC_R * 2, DISC_R * 2, DISC_R, acc, a * 0.38f * ok);
       for (i = 0; i < 3; i++) body[i] = txt[i] + (acc[i] - txt[i]) * ok;
       body[3] = a * 0.94f;
       ink[0] = 0.10f; ink[1] = 0.11f; ink[2] = 0.14f; ink[3] = a * 0.90f * st;
       body[3] = a * 0.94f * st;
-      ill_load(&s_pad, "pad"); ill_load(&s_recv, "receiver");
+      if (!s_pads[0].tried)
+      {  /* every style there is; the first missing one ends the list */
+         char nm[16];
+         for (s_npad = 0; s_npad < NPAD; s_npad++)
+         {
+            if (s_npad) snprintf(nm, sizeof(nm), "pad%d", s_npad + 1); else snprintf(nm, sizeof(nm), "pad");
+            ill_load(&s_pads[s_npad], nm);
+            if (!s_pads[s_npad].tex) break;
+         }
+      }
+      ill_load(&s_recv, "receiver");
       if (st > 0.01f)
       {
          const float py = dy - 4.0f + (1.0f - st) * 14.0f;
-         if (s_pad.tex)
-         {  /* in colour, as drawn: the disc behind turns the accent once paired */
-            const float w4[4] = { 1, 1, 1, a * st };
-            const float pw = s_pad.w * 0.86f, ph = s_pad.h * 0.86f;   /* air between the drawing and the disc's edge */
-            draw_2d(s_pad.tex, dx - pw * 0.5f, py - ph * 0.5f, pw, ph, w4, 0);
+         if (s_npad > 0)
+         {  /* in colour, as drawn: the disc behind turns the accent once paired. With more
+             * than one style they take turns: the one on show slides out to the left as it
+             * fades, the next comes in from the right (two quads for half a second) */
+            const float cyc = PAD_HOLD_S + PAD_FADE_S, tt = (float)(t - s_t0);
+            const int cur = s_npad > 1 ? (int)(tt / cyc) % s_npad : 0;
+            float k = s_npad > 1 ? clampf((fmodf(tt, cyc) - PAD_HOLD_S) / PAD_FADE_S, 0.0f, 1.0f) : 0.0f;
+            int pass;
+            k = k * k * (3.0f - 2.0f * k);
+            for (pass = 0; pass < 2; pass++)
+            {
+               const ill_t *il = &s_pads[pass ? (cur + 1) % s_npad : cur];
+               const float pa = pass ? k : 1.0f - k, off = pass ? (1.0f - k) * 22.0f : -k * 22.0f;
+               const float w4[4] = { 1, 1, 1, a * st * pa };
+               const float pw = il->w * 0.86f, ph = il->h * 0.86f;   /* air between the drawing and the disc's edge */
+               if (pa <= 0.003f) continue;
+               draw_2d(il->tex, dx - pw * 0.5f + off, py - ph * 0.5f, pw, ph, w4, 0);
+            }
          }
          else draw_pad(dx, py, 150.0f, body, ink);
       }
