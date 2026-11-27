@@ -5,6 +5,76 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-27
+
+Home and surfaces follow the lumen-design proposal "Lumen 2: lit by the game"
+(`mockups/proposals/lumen-2`). Checked in psc-sim with the four themes and with a mirrored stick; not yet verified on a
+console, and the draw cost is not measured there.
+
+### Added
+- Home, the light: the focused cover glows in the accent of its own game (the cover's
+  palette), and the same colour underlines the selected system and marks the title block.
+  A theme can fix it with `lit` in `theme.ini` (Retro: yellow, Sunset: orange).
+- Home, the hero block: system, year and publisher as a small caps line, the title at 64 px,
+  and players, time played and last played as chips; a star chip for a favourite.
+- Home: position in the list ("3 / 16" and a thin track) above the end of the shelf.
+- Game menu as a sheet on the right edge, full height: the cover in its own proportions,
+  the publisher, a table of the facts that are known (year, players, time played) and a
+  glyph on each action. The game and the shelf stay visible on the left; the help bar is
+  centred in what is left of the screen. A long list of folders scrolls under the header.
+- Settings: on / off rows are switches; the theme row shows a swatch per theme (its card,
+  its light) with the chosen one ringed and named; every section of the rail has a glyph
+  and the open one a mark in the light's colour.
+- Pause dialog: the actions are buttons with glyphs, Continue filled as the main one.
+- Theme **Mono** (`themes/mono`): pure black and white, tighter corners.
+- Glyphs `players`, `calendar`, `star`, `play`, `folder`, `save`, `exit`, `user`, `screen`,
+  `sound`, `library`, `modules`, `system`.
+- Themes: `focus` (the focus ring), `glass` (tint of buttons, tabs, keys and the focused
+  row), `primary` and `on_primary` (the main button and its text) in `theme.ini`. Sunset
+  and Retro use them (Retro: yellow focus, blue main button). docs/themes.md.
+- Theme Retro ships button glyphs with hard corners (`themes/retro/glyphs`);
+  `tools/make-glyphs.py --square [--font FILE]` draws them for any theme.
+- Glyphs `chevron-right` and `chevron-down`.
+
+### Changed
+- Home layout: the covers stand on one line at the bottom of the screen (146 px at rest,
+  196 px focused; covers at rest are darker, not translucent) so the art owns the middle;
+  the logo moves to the left; clock, network, controllers and the profile share one capsule
+  on the right (the "games played" line left the Home); system tabs are text with a bar
+  under the selected one instead of glass pills with shadows.
+- The scrim baked into the background art follows the new Home: darker behind the title
+  block (left 74 %), the status row and tabs, and the lower half where the shelf and the
+  help bar are. Still baked when the art is decoded: no extra pass.
+- Surfaces are ink: cards use a dark flat colour (`#0A0F17` at 86 %) instead of white-tinted
+  glass, for more contrast under text. Buttons and rows have a 14 px radius; pills are kept
+  for chips and keycaps.
+- Interface sounds: the console's own instead of gliding sines. Plastic button tocks for
+  moves and pages, a heavier switch for systems and back, and a glassy tone that fades in
+  for open, confirm and Play. Still built at start from damped sines, no files, no noise.
+- One glyph language: every button is an outline (L1 / R1 / L2 / R2 were filled blocks next
+  to outlined Select / Start), labels use the UI font (Outfit) instead of Liberation Sans,
+  the settings cog is outlined like the rest.
+- Redrawn glyphs: Wi-Fi and network (the dot ran into the first arc), controller,
+  cartridge, d-pad (rounded corners).
+- The in-game pause dialog uses the same glass card, kicker and focus ring as every other
+  menu (it had an opaque card and a filled blue selection).
+- Every screen takes its colours from the theme: the dashboard's tabs and focus rings, the
+  keyboard and the settings no longer keep their own whites, and Lumen's own look has one
+  value for secondary text and for danger (the settings and the menus differed).
+- `card_alpha` of a theme works again: 1 is an opaque card (Retro).
+- A settings row leaving the list fades out instead of being cut in half.
+- The focus ring of a row no longer covers the rows next to it: the focused row and its ring
+  fill exactly the row pitch (settings, pause, file picker, connections, library check, USB
+  transfer).
+
+### Fixed
+- The chevron of "Add to a folder" in the game menu was drawn from 2 px squares and looked
+  broken at 1080p; it is a glyph now.
+
+### Removed
+- `pill` in `theme.ini` (a filled selection colour) is ignored: selection is glass with the
+  `focus` ring everywhere.
+
 ## [0.24.1] - 2026-11-27
 
 The Arcade system works out of the box: psc-platform 2.8.0 ships FinalBurn Neo. Not yet

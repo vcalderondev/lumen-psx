@@ -193,61 +193,73 @@ static void click_make(int k)
    clk[k] = b; clk_len[k] = n;
 }
 
-/* ---- interface sounds (guidelines/06 "Sound"): short glides and air, mono ---- */
+/* ---- interface sounds (lumen-design guidelines/06 "Sound"): the console's own, mono ---- */
 
-/* a sine gliding from f0 to f1 (exponentially), with an octave partial when rich,
- * a 2 ms attack and an exponential decay over dur */
-static void fx_glide(float *b, int n, float at, float f0, float f1, float dur, float amp, int rich)
-{
-   int i, i0 = (int)(at * dev_rate), m = (int)(dur * dev_rate);
-   double ph = 0;
-   for (i = 0; i < m && i0 + i < n; i++)
-   {
-      float t = (float)i / dev_rate, f = f0 * powf(f1 / f0, t / dur);
-      float e = expf(-t * 6.0f / dur) * (t < 0.002f ? t / 0.002f : 1.0f);
-      ph += 6.2831853 * f / dev_rate;
-      b[i0 + i] += (sinf((float)ph) + (rich ? 0.25f * sinf(2.0f * (float)ph) : 0.0f)) * e * amp;
-   }
-}
+/* One struck or lit object (lumen-design, proposals/sounds "System"): a few partials that
+ * are not harmonic, each with its own decay (the high ones die first), every partial as two
+ * components a hair apart so the tone moves, a raised-cosine attack, and with `body` the
+ * shell answering (150 Hz, 10 ms). Damped sines only: no noise. mat: {ratio, amp, decay s}. */
+typedef struct { float ratio, amp, tau; } partial_t;
+static const partial_t k_plastic[] = { { 1.00f, 1.00f, 0.011f }, { 1.83f, 0.55f, 0.007f }, { 2.92f, 0.30f, 0.005f }, { 4.60f, 0.14f, 0.003f } };
+static const partial_t k_switch[]  = { { 1.00f, 1.00f, 0.016f }, { 2.21f, 0.50f, 0.010f }, { 3.72f, 0.28f, 0.006f }, { 5.90f, 0.12f, 0.004f } };
+static const partial_t k_light[]   = { { 1.00f, 1.00f, 0.30f }, { 2.76f, 0.42f, 0.16f }, { 5.40f, 0.20f, 0.07f }, { 8.93f, 0.08f, 0.035f } };
 
-/* a soft wooden tap: a warm tone falling 4 % into tune in the first ms, a 2.3x partial
- * (the wood) that dies fast, and a 3 kHz breath of noise for the strike */
-static void fx_wood(float *b, int n, float at, float f, float amp)
+static void fx_strike(float *b, int n, float at, float f, const partial_t *mat, float amp, float attack, float body)
 {
-   int i, i0 = (int)(at * dev_rate);
-   float l1 = 0, l2 = 0, a = 1.0f - expf(-6.2831853f * 3000.0f / dev_rate);
-   for (i = 0; i0 + i < n; i++)
+   const int i0 = (int)(at * dev_rate), m = (int)(attack * dev_rate);
+   int i, k;
+   for (k = 0; k < 4; k++)
    {
-      float t = (float)i / dev_rate, x = rnd();
-      l1 += a * (x - l1); l2 += a * (l1 - l2);
-      b[i0 + i] += amp * (sinf(6.2831853f * f * t * (1.0f + 0.04f * expf(-t / 0.004f))) * expf(-t * 38.0f)
-              + 0.5f * sinf(6.2831853f * f * 2.3f * t) * expf(-t * 80.0f)
-              + 0.35f * l2 * expf(-t * 400.0f)) * (t < 0.0008f ? t / 0.0008f : 1.0f);
+      const float fk = f * mat[k].ratio;
+      const double w = 6.2831853 * fk / dev_rate;
+      int last = (int)(mat[k].tau * 9.0f * dev_rate);   /* under -78 dB after 9 decays */
+      if (fk > 0.45f * dev_rate) continue;
+      if (last > n - i0) last = n - i0;
+      for (i = 0; i < last; i++)
+      {  /* sin(1.0006 x) + sin(0.9994 x) = 2 sin(x) cos(0.0006 x) */
+         float e = expf(-(float)i / (mat[k].tau * dev_rate)) * (i < m ? 0.5f - 0.5f * cosf(3.14159265f * i / m) : 1.0f);
+         b[i0 + i] += amp * mat[k].amp * sinf((float)(w * i)) * cosf((float)(w * i * 0.0006)) * e;
+      }
    }
+   if (body > 0)
+      for (i = 0; i < dev_rate / 10 && i0 + i < n; i++)
+      {
+         float t = (float)i / dev_rate;
+         b[i0 + i] += amp * body * sinf(6.2831853f * 150.0f * t) * expf(-t / 0.010f) * (i < m ? 0.5f - 0.5f * cosf(3.14159265f * i / m) : 1.0f);
+      }
 }
 
 static void sfx_make(int id)
 {
-   static const float len_s[SFX_COUNT] = { 0.07f, 0.07f, 0.07f, 0.22f, 0.22f, 0.18f, 0.18f, 0.3f, 0.2f, 0.24f, 0.45f };
+   static const float len_s[SFX_COUNT] = { 0.08f, 0.08f, 0.08f, 0.20f, 0.20f, 0.22f, 0.22f, 0.55f, 0.22f, 0.30f, 1.00f };
    const int n = (int)(len_s[id] * dev_rate);
    float *b = calloc(n, sizeof(float)), peak = 0, want;
    int i;
    if (!b) return;
    switch (id)
    {
-   case SFX_MOVE_NEXT: fx_glide(b, n, 0, 1650, 1500, 0.045f, 1, 0); break;
-   case SFX_MOVE_PREV: fx_glide(b, n, 0, 1500, 1350, 0.045f, 1, 0); break;
-   case SFX_FOCUS:     fx_glide(b, n, 0, 1250, 1150, 0.040f, 1, 0); break;
-   /* a page: two quick wooden taps, a tone apart, rising for the next page */
-   case SFX_PAGE_NEXT: fx_wood(b, n, 0, 587, 0.8f); fx_wood(b, n, 0.045f, 659, 1); break;
-   case SFX_PAGE_PREV: fx_wood(b, n, 0, 659, 0.8f); fx_wood(b, n, 0.045f, 587, 1); break;
-   /* the system: a wooden tap, higher for the next system than for the previous */
-   case SFX_SYSTEM_NEXT: fx_wood(b, n, 0, 520, 1); break;
-   case SFX_SYSTEM_PREV: fx_wood(b, n, 0, 440, 1); break;
-   case SFX_OPEN:      fx_glide(b, n, 0, 880, 880, 0.12f, 1, 1); fx_glide(b, n, 0.06f, 1320, 1320, 0.14f, 1, 1); break;
-   case SFX_BACK:      fx_glide(b, n, 0, 990, 600, 0.12f, 1, 1); break;
-   case SFX_CONFIRM:   fx_glide(b, n, 0, 660, 990, 0.16f, 1, 1); break;
-   case SFX_PLAY:      fx_glide(b, n, 0, 523, 1046, 0.35f, 1, 1); break;
+   /* a button of the console: the same tock, a little smaller to the left and for the focus */
+   case SFX_MOVE_NEXT: fx_strike(b, n, 0, 1250, k_plastic, 1, 0.001f, 0.35f); break;
+   case SFX_MOVE_PREV: fx_strike(b, n, 0, 1120, k_plastic, 1, 0.001f, 0.35f); break;
+   case SFX_FOCUS:     fx_strike(b, n, 0, 950, k_plastic, 1, 0.001f, 0.40f); break;
+   /* a page: the detent of a shoulder button, two tocks, rising for the next page */
+   case SFX_PAGE_NEXT: fx_strike(b, n, 0, 820, k_plastic, 0.8f, 0.001f, 0.4f); fx_strike(b, n, 0.055f, 980, k_plastic, 1, 0.001f, 0.4f); break;
+   case SFX_PAGE_PREV: fx_strike(b, n, 0, 980, k_plastic, 0.8f, 0.001f, 0.4f); fx_strike(b, n, 0.055f, 820, k_plastic, 1, 0.001f, 0.4f); break;
+   /* a system: the big switch, press and release; brighter for the next system */
+   case SFX_SYSTEM_NEXT: fx_strike(b, n, 0, 470, k_switch, 1, 0.001f, 0.8f); fx_strike(b, n, 0.070f, 610, k_switch, 0.45f, 0.001f, 0.3f); break;
+   case SFX_SYSTEM_PREV: fx_strike(b, n, 0, 410, k_switch, 1, 0.001f, 0.8f); fx_strike(b, n, 0.070f, 530, k_switch, 0.45f, 0.001f, 0.3f); break;
+   /* open: a button, then the light comes on; back: the lid shuts */
+   case SFX_OPEN:      fx_strike(b, n, 0, 1050, k_plastic, 0.7f, 0.001f, 0.3f); fx_strike(b, n, 0.03f, 740, k_light, 1, 0.060f, 0); break;
+   case SFX_BACK:      fx_strike(b, n, 0, 360, k_switch, 1, 0.002f, 0.9f); break;
+   /* confirm: the button and a short glint of the light */
+   case SFX_CONFIRM:   fx_strike(b, n, 0, 1180, k_plastic, 0.9f, 0.001f, 0.3f); fx_strike(b, n, 0.01f, 1110, k_light, 0.55f, 0.020f, 0); break;
+   /* play: the light blooms, partial after partial, on one pitch; then the launch's click */
+   case SFX_PLAY:      fx_strike(b, n, 0, 185, k_light, 0.9f, 0.12f, 0); fx_strike(b, n, 0.10f, 370, k_light, 0.8f, 0.14f, 0);
+                       fx_strike(b, n, 0.22f, 555, k_light, 0.6f, 0.16f, 0); fx_strike(b, n, 0.34f, 740, k_light, 0.5f, 0.18f, 0); break;
+   }
+   {  /* two early reflections: a surface near the object (back to front: no feedback) */
+      const int d1 = dev_rate * 11 / 1000, d2 = dev_rate * 23 / 1000;
+      for (i = n - 1; i >= d1; i--) b[i] += 0.11f * b[i - d1] + (i >= d2 ? 0.06f * b[i - d2] : 0.0f);
    }
    for (i = 0; i < n; i++)
    {  /* the last 25 ms fade out: an effect never ends on a cut */

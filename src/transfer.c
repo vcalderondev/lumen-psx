@@ -1439,7 +1439,7 @@ static void draw_pane(int p, float x, float y, double t, float a)
 
    glEnable(GL_SCISSOR_TEST);
    gl_scissor(x - 8, ly - 8, PANE_W + 16, lh + 16);
-   if (act) ui_focus(x, ly + pn->pill.x - pn->scroll.x + 1, PANE_W, ROW - 2, (ROW - 2) * 0.5f, a);
+   if (act) ui_focus(x, ly + pn->pill.x - pn->scroll.x + 7, PANE_W, ROW - 14, UI_CTL_R, a);
    else ui_rest(x, ly + pn->pill.x - pn->scroll.x + 1, PANE_W, ROW - 2, (ROW - 2) * 0.5f, a * 0.8f);
    for (i = (int)(pn->scroll.x / ROW) - 1; i < pn->n; i++)
    {
@@ -1525,7 +1525,7 @@ static void draw_dest(float a)
    draw_2d(0, x + PADX, y + 96, w - 2 * PADX, 1, sep, 0);
    glEnable(GL_SCISSOR_TEST);
    gl_scissor(lx - 8, ly - 8, lw + 16, DVIS * ROW + 16);
-   ui_focus(lx, ly + s_dpill.x - s_dscroll.x + 1, lw, ROW - 2, (ROW - 2) * 0.5f, a);
+   ui_focus(lx, ly + s_dpill.x - s_dscroll.x + 7, lw, ROW - 14, UI_CTL_R, a);
    for (i = 0; i < s_ndest; i++)
    {
       float ry = ly + i * ROW - s_dscroll.x;
@@ -1669,7 +1669,7 @@ static void draw_menu(float a)
    col4(txt, TC_TEXT, a); col4(dim, TC_DIM, a); col4(red, TC_DANGER, a * (s_nsel ? 1.0f : 0.4f));
    ui_card(x, y, w, h, a);
    ui_kicker(&s_sk, tr("hint.options"), x + PADX, y + 24, a);
-   ui_focus(lx, ly + s_msel * ROW + 1, lw, ROW - 2, (ROW - 2) * 0.5f, a);
+   ui_focus(lx, ly + s_msel * ROW + 7, lw, ROW - 14, UI_CTL_R, a);
    label_set(&s_st, g_font_sub, tr("xfer.eject"));
    draw_label(&s_st, lx + 20, ly + (ROW - s_st.h) * 0.5f, txt);
    snprintf(num, sizeof(num), "%d", s_nsel);
