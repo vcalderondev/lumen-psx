@@ -709,7 +709,7 @@ void audit_draw(double t)
 
    glEnable(GL_SCISSOR_TEST);
    gl_scissor(lx - 8, ly - 8, LIST_W + 16, lh + 16);
-   ui_focus(lx, ly + s_pill.x - s_scroll.x + 2, LIST_W, ROW - 4, (ROW - 4) * 0.5f, a);
+   ui_focus(lx, ly + s_pill.x - s_scroll.x + 7, LIST_W, ROW - 14, UI_CTL_R, a);
    for (i = (int)(s_scroll.x / ROW) - 1; i < n; i++)
    {
       float y, c[4];

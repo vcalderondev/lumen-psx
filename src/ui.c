@@ -5,8 +5,6 @@
 #include "ui.h"
 #include "theme.h"
 
-static const float k_white[3] = { 1.0f, 1.0f, 1.0f };
-
 void ui_fill(float x, float y, float w, float h, float radius, const float rgb[3], float a)
 {
    const float c[4] = { rgb[0], rgb[1], rgb[2], a };
@@ -29,36 +27,46 @@ void ui_scrim(float a)
 
 void ui_card(float x, float y, float w, float h, float a)
 {
-   /* glass.card (white 9 %) over glass.base (the theme's card colour at 74 %), as one fill */
-   const float base = 0.74f, tint = 0.09f, cover = 1.0f - (1.0f - base) * (1.0f - tint);
-   float c[4];
+   /* ink: the theme's card colour at 86 % in Lumen's own look (a theme's card_alpha moves
+    * it, 1 = an opaque card) under a breath of the glass tint, as one flat fill */
+   const float ca = theme_card_alpha();
+   const float base = ca >= 0.92f ? 0.86f + (ca - 0.92f) * (0.14f / 0.08f) : 0.86f * ca / 0.92f;
+   const float tint = 0.03f, cover = 1.0f - (1.0f - base) * (1.0f - tint);
+   float c[4], g[3];
    int i;
    if (a <= 0.003f) return;
-   theme_color(TC_CARD, c);
-   for (i = 0; i < 3; i++) c[i] = (c[i] * base * (1.0f - tint) + tint) / cover;
+   theme_color(TC_CARD, c); theme_color(TC_GLASS, g);
+   for (i = 0; i < 3; i++) c[i] = (c[i] * base * (1.0f - tint) + g[i] * tint) / cover;
    c[3] = cover * a;
    ui_glass_card(x, y, w, h, UI_CARD_R, c, UI_EDGE * a, 28, 12, 0.45f * a);
 }
 
 void ui_rest(float x, float y, float w, float h, float radius, float a)
 {
-   const float edge[4] = { 1, 1, 1, UI_EDGE * a };
+   float edge[4];
    if (a <= 0.003f) return;
-   ui_fill(x, y, w, h, radius, k_white, UI_REST * a);
+   if (radius > UI_CTL_R) radius = UI_CTL_R;
+   theme_color(TC_GLASS, edge); edge[3] = UI_EDGE * a;
+   ui_fill(x, y, w, h, radius, edge, UI_REST * a);
    ui_shape(x, y, w, h, radius, 1.0f, edge);
 }
 
 void ui_ring(float x, float y, float w, float h, float radius, float gap, float a)
 {
-   const float c[4] = { 1, 1, 1, 0.95f * a }, o = gap + 3.0f;
+   const float o = gap + 3.0f;
+   float c[4];
+   theme_color(TC_FOCUS, c); c[3] = 0.95f * a;
    if (a > 0.003f) ui_shape(x - o, y - o, w + 2 * o, h + 2 * o, radius + o, 3.0f, c);
 }
 
 void ui_focus(float x, float y, float w, float h, float radius, float a)
 {
+   float g[3];
    if (a <= 0.003f) return;
+   if (radius > UI_CTL_R) radius = UI_CTL_R;
+   theme_color(TC_GLASS, g);
    ui_shadow(x, y, w, h, radius, 12, 4, 0.35f * a);
-   ui_fill(x, y, w, h, radius, k_white, UI_SELECTED * a);
+   ui_fill(x, y, w, h, radius, g, UI_SELECTED * a);
    ui_ring(x, y, w, h, radius, 4.0f, a);
 }
 
