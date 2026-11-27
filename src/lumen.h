@@ -34,6 +34,7 @@ typedef struct {
    char meta[300];             /* layout = stock: metadata file next to the declaration */
    char ports[512];            /* native ports listed with this system's games ([library] ports, default <root>/games/<id>-native) */
    int order, show_name, kind;
+   float tile_ar;              /* width / height of this system's game boxes: the shape of its tiles ([media] cover) */
    char flat[32];              /* the launch's illustration: <home>/assets/launch/<flat>/ ([animation] flat, default the id) */
    /* [graphics]: per-core options and RetroArch overrides, "k=v, k=v" lists */
    char gfx_core[48], gfx_enh[640], gfx_orig[640], gfx_ra_enh[160], gfx_ra_orig[160];

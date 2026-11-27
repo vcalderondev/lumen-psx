@@ -16,7 +16,8 @@
  * network command, so RESET / OPEN / Start+Select do nothing and the console looks frozen)
  * is killed, and run.sh brings the dashboard back. See wd_tick().
  * OPEN in a game pauses it and asks (lumen --dialog): continue, change disc, save and exit,
- * exit; in a homebrew app it quits the app.
+ * exit; in a homebrew app it quits the app. The PS / Home button of a controller does the
+ * same (ps_scan).
  *
  * Power LED: green pulses (breathes) while the Lumen dashboard is on screen, solid green
  * in a game ("powered by LPSX"); settings.ini led=pulse|solid. A gpio LED without
@@ -596,6 +597,65 @@ static void open_in_game(void)
    else ra_cmd("PAUSE_TOGGLE");
 }
 
+/* OPEN: in a game, pause and ask (change disc / exit / continue); a homebrew app quits */
+static void open_pressed(const char *what)
+{
+   pid_t ra = find_proc("retroarch"), ap = app_pid();
+   logf_("%s pressed%s", what, ra ? "" : (ap ? " (app: quit)" : " (dashboard: nothing)"));
+   if (ra && !find_proc("lumen")) open_in_game();
+   else if (ap) app_quit(ap);
+}
+
+/* The PS / Home button of a controller (BTN_MODE: DualShock 4, DualSense, Xbox, 8BitDo...)
+ * does what OPEN does, from the sofa. Read here because RetroArch and the homebrew apps
+ * give it no meaning; in the dashboard Lumen reads it itself (it goes back to the games). */
+#define PS_MAX 8
+static struct { int fd, num; } ps_dev[PS_MAX];
+static int ps_n;
+static double ps_next;
+
+static void ps_scan(void)
+{
+   DIR *d = opendir("/dev/input");
+   struct dirent *de;
+   if (!d) return;
+   while ((de = readdir(d)) && ps_n < PS_MAX)
+   {
+      char path[300];
+      unsigned long keys[KEY_MAX / (8 * sizeof(long)) + 1];
+      int num, fd, i;
+      if (strncmp(de->d_name, "event", 5)) continue;
+      num = atoi(de->d_name + 5);
+      for (i = 0; i < ps_n && ps_dev[i].num != num; i++) ;
+      if (i < ps_n) continue;
+      snprintf(path, sizeof(path), "/dev/input/%s", de->d_name);
+      if ((fd = open(path, O_RDONLY | O_NONBLOCK)) < 0) continue;
+      memset(keys, 0, sizeof(keys));
+      ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys);
+      if (!TEST_BIT(BTN_MODE, keys)) { close(fd); continue; }
+      ps_dev[ps_n].fd = fd; ps_dev[ps_n].num = num; ps_n++;
+      logf_("ps button: watching %s", path);
+   }
+   closedir(d);
+}
+
+/* read pad i: 1 when its PS button went down; a pad that left is dropped (-1) */
+static int ps_read(int i)
+{
+   struct input_event ev;
+   ssize_t n;
+   int hit = 0;
+   while ((n = read(ps_dev[i].fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev))
+      if (ev.type == EV_KEY && ev.code == BTN_MODE && ev.value == 1) hit = 1;
+   if (n < 0 && errno != EAGAIN && errno != EINTR)
+   {
+      close(ps_dev[i].fd);
+      ps_dev[i] = ps_dev[--ps_n];
+      return -1;
+   }
+   return hit;
+}
+
 int main(int argc, char **argv)
 {
    const char *log_path = NULL, *power_dir = "/data/power";
@@ -640,8 +700,19 @@ int main(int argc, char **argv)
 
    for (;;)
    {
-      struct pollfd pfd = { fd, POLLIN, 0 };
-      int r = poll(&pfd, 1, led_tick(paused));
+      struct pollfd pfd = { fd, POLLIN, 0 }, pads[1 + PS_MAX];
+      int r, k, ps_hit = 0;
+      if (mono_s() >= ps_next) { ps_scan(); ps_next = mono_s() + 2.0; }
+      pads[0] = pfd;
+      for (k = 0; k < ps_n; k++) { pads[1 + k].fd = ps_dev[k].fd; pads[1 + k].events = POLLIN; pads[1 + k].revents = 0; }
+      r = poll(pads, 1 + ps_n, led_tick(paused));
+      pfd = pads[0];
+      for (k = ps_n - 1; r > 0 && k >= 0; k--) if (pads[1 + k].revents && ps_read(k) > 0) ps_hit = 1;
+      if (ps_hit && !paused)
+      {
+         open_pressed("ps button");
+         for (k = ps_n - 1; k >= 0; k--) ps_read(k);   /* what was pressed during the question */
+      }
       log_tick();
       wd_tick(paused);
 
@@ -694,10 +765,7 @@ int main(int argc, char **argv)
             }
             else if (ev.code == KEY_EJECTCD)
             {  /* OPEN: in a game, pause and ask (change disc / exit / continue) */
-               pid_t ra = find_proc("retroarch"), ap = app_pid();
-               logf_("open pressed%s", ra ? "" : (ap ? " (app: quit)" : " (dashboard: nothing)"));
-               if (ra && !find_proc("lumen")) open_in_game();
-               else if (ap) app_quit(ap);
+               open_pressed("open");
             }
             else if (ev.code == KEY_SLEEP) logf_("power pressed");
             else logf_("key %d pressed", ev.code);

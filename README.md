@@ -18,7 +18,7 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 - per-game background image (`games/<n>/background.jpg|png`) at ~30 % opacity,
   crossfaded and decoded on a worker thread so browsing never stutters
 - launches games in RetroArch and comes back to the same game afterwards
-- small: a single <!-- lumen-size -->~412 KB<!-- /lumen-size --> binary; only covers near
+- small: a single <!-- lumen-size -->~432 KB<!-- /lumen-size --> binary; only covers near
   the selection stay in memory
 - translated UI: English (default), Spanish, Portuguese, French, German, Italian
 - game menu on Start: favourites and folders (shown as their own rows), and "Save and exit"
@@ -37,7 +37,7 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 - USB transfer between the Lumen stick and a second USB drive, and a library check that
   reports broken games
 - native ports (games recompiled to run on the console, `games/<id>-native/`), homebrew
-  apps (`layout = apps`, docs/systems.md) and themes (docs/themes.md)
+  apps (`layout = apps`, docs/systems.md) and themes (docs/themes.md; two ship with it: Sunset and Retro, a 1990s console look)
 
 Target: SDL2 2.0.4 (or SDL3 3.4 through sdl2-compat), SDL2_image 2.0.1, SDL2_ttf 2.0.14,
 OpenGL ES 3.0 on a PowerVR GE8300, Wayland (Weston 16 from Lumen's overlay, or the stock
@@ -131,6 +131,8 @@ USB layout:
                               at most once per second, at once for error lines, and at
                               exit, so they survive a power-off on the exFAT stick)
 /lumen/settings.ini           settings (key=value; created with the defaults on first exit)
+/lumen/modules/state.ini      which modules are on (<id>=1|0; written by Settings > Modules;
+                              a module with no line uses its default, docs/modules.md)
 /lumen/lang/<code>.lang       UI translations (es, en, pt, fr, de, it)
 /lumen/profiles/<id>/         one folder per extra profile: profile.ini, saves/, states/
 /lumen/systems/<id>.ini       one declaration per system (docs/systems.md)
@@ -242,6 +244,7 @@ Screensaver page starts the scene at once.
 | Triangle, or Select tapped alone | open the settings panel |
 | Start | game menu (favourites, folders) |
 | Select + Start | leave Lumen (opens the stock Sony menu) |
+| PS / Home | back to the games (closes what is open); in a game, the same as the console's OPEN button |
 
 Inside the settings panel: D-pad moves and changes values (left/right), Cross
 selects, Circle or Square goes back (closes the panel on the first page), Triangle
@@ -259,10 +262,13 @@ focused option.
 restart, CRT filter live; sub-pages **Theme**, **Graphics**: per-system presets, empty
 until a system declares them, and **Screensaver**: start after Never/1–30 min, game demos
 on/off, length of each demo, preview), **Sound** (menu music, its volume, interface
-sounds; sub-page **Audio output**: HDMI, a USB audio card or paired Bluetooth headphones),
+sounds; sub-page **Audio output**: HDMI, a USB audio card or paired Bluetooth headphones;
+the sound moves to the chosen output at once, and to a Bluetooth headset whenever it connects),
 **Network** (Wi-Fi and its networks, USB Ethernet), **Bluetooth** (paired devices, add a
 device), **Library** (built-in games Hidden / Visible, rescanned live; library check; USB
-transfer) and **System** (sub-pages **Language**, applied live, **System update**, **Date
+transfer), **Modules** (switch Wi-Fi, network cable and Bluetooth on or off, each with a
+short description; Network and Bluetooth leave the rail while their modules are off, see
+[docs/modules.md](docs/modules.md)) and **System** (sub-pages **Language**, applied live, **System update**, **Date
 and time** and **About**: version, games, systems, profiles, free space on the USB; the
 kernel card; restart the console). Wi-Fi and Bluetooth only offer networks and devices
 once switched on with a USB adapter plugged in. Changes are written to `settings.ini` when
@@ -291,12 +297,14 @@ src/net.c, src/conn.c         Connections worker and cards
 src/kern.c                    kernel card
 src/update.c                  system update: check, download, verify, stage
 src/padwait.c                 "no controller" card: Bluetooth receiver and unattended pairing
-src/status.c                  top-right clock and network status
+src/module.c, src/mod_net.c   modules: registry, extension points, built-in wifi / ethernet / bluetooth (docs/modules.md)
+src/status.c                  top-right clock and network status (the modules add their items: Wi-Fi signal, cable, Bluetooth)
 src/buttons.c                 lumen-buttons: console buttons daemon, demo watcher, game watchdog
 scripts/boot.sh, run.sh       boot entry, session loop
 scripts/power.sh, net.sh,     power button, connections, kernel restore,
   kernel.sh, package.sh       release packaging
 scripts/update.sh             installs a staged system update (run by boot.sh from RAM)
+tests/run.sh                  host unit tests, no console needed (tests/test_module.c: the module core)
 dist/                         data files installed next to the binary (lang, systems,
                               shaders, themes, controller mappings)
 third_party/                  SDL_image 2.0.1 / SDL_ttf 2.0.14 headers (zlib licence), stb_vorbis

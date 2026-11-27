@@ -52,6 +52,7 @@
 #include "transfer.h"
 #include "audit.h"
 #include "net.h"
+#include "module.h"
 #include "conn.h"
 #include "kern.h"
 #include "update.h"
@@ -456,6 +457,48 @@ static void parse_color(const char *s, float c[3])
    { c[0] = ((v >> 16) & 255) / 255.0f; c[1] = ((v >> 8) & 255) / 255.0f; c[2] = (v & 255) / 255.0f; }
 }
 
+/* The shape of a system's tiles: the proportions of its retail game box (width / height),
+ * so a shelf of NES games is a row of tall boxes and a shelf of Super Nintendo ones a row
+ * of wide ones. [media] cover = W:H (or a number) in the declaration wins; without it the
+ * system's id is looked up here; an unknown system gets a square. Kept within 0.55 .. 1.5:
+ * the row has one height. */
+static float box_aspect(const char *id, const char *decl)
+{
+   static const struct { const char *id; float ar; } k_box[] = {
+      /* Sony */
+      { "psx", 1.0f }, { "psxstock", 1.0f }, { "ps1", 1.0f }, { "ps2", 0.71f }, { "ps3", 0.87f }, { "psp", 0.59f }, { "psvita", 0.78f },
+      /* Nintendo */
+      { "nes", 0.71f }, { "famicom", 0.71f }, { "fds", 0.86f }, { "snes", 1.40f }, { "sfc", 0.56f }, { "superfamicom", 0.56f },
+      { "n64", 1.40f }, { "gamecube", 0.71f }, { "gc", 0.71f }, { "wii", 0.71f }, { "virtualboy", 1.0f },
+      { "gb", 1.0f }, { "gbc", 1.0f }, { "gba", 1.0f }, { "nds", 1.10f }, { "3ds", 1.10f }, { "gameandwatch", 1.0f },
+      /* Sega */
+      { "sg1000", 0.71f }, { "mastersystem", 0.71f }, { "sms", 0.71f }, { "megadrive", 0.71f }, { "genesis", 0.71f }, { "md", 0.71f },
+      { "sega32x", 0.71f }, { "32x", 0.71f }, { "segacd", 0.60f }, { "megacd", 0.71f }, { "saturn", 0.60f }, { "dreamcast", 1.0f },
+      { "gamegear", 0.71f }, { "gg", 0.71f },
+      /* NEC, SNK, Atari, Bandai and others */
+      { "pcengine", 1.0f }, { "pce", 1.0f }, { "tg16", 1.0f }, { "pcenginecd", 1.0f }, { "pcecd", 1.0f }, { "supergrafx", 1.0f },
+      { "neogeo", 0.74f }, { "neogeocd", 1.0f }, { "ngp", 0.86f }, { "ngpc", 0.86f },
+      { "atari2600", 0.72f }, { "atari5200", 0.72f }, { "atari7800", 0.72f }, { "lynx", 0.80f }, { "jaguar", 0.72f },
+      { "wonderswan", 0.71f }, { "wonderswancolor", 0.71f }, { "colecovision", 0.72f }, { "intellivision", 0.72f },
+      { "vectrex", 0.72f }, { "3do", 0.60f }, { "cdi", 0.71f },
+      /* arcade flyers, home computers */
+      { "arcade", 0.75f }, { "mame", 0.75f }, { "fbneo", 0.75f }, { "cps1", 0.75f }, { "cps2", 0.75f }, { "cps3", 0.75f },
+      { "msx", 0.71f }, { "msx2", 0.71f }, { "c64", 0.71f }, { "amiga", 0.80f }, { "zxspectrum", 0.64f }, { "amstradcpc", 0.64f },
+      { "atarist", 0.80f }, { "dos", 0.80f }, { "pc", 0.80f }, { "scummvm", 0.80f }, { "x68000", 0.80f }, { "pc98", 0.80f },
+   };
+   float ar = 0.0f, a = 0.0f, b = 0.0f;
+   size_t i;
+   if (decl && *decl)
+   {
+      if (sscanf(decl, "%f : %f", &a, &b) == 2 && a > 0.0f && b > 0.0f) ar = a / b;
+      else if (sscanf(decl, "%f", &a) == 1 && a > 0.0f) ar = a;
+      else logf_("system %s: bad [media] cover = %s (W:H expected)", id, decl);
+   }
+   for (i = 0; ar <= 0.0f && i < sizeof(k_box) / sizeof(k_box[0]); i++) if (!strcasecmp(id, k_box[i].id)) ar = k_box[i].ar;
+   if (ar <= 0.0f) ar = 1.0f;
+   return ar < 0.55f ? 0.55f : ar > 1.5f ? 1.5f : ar;
+}
+
 static void platform_from_decl(platform_t *pl, const char *ini)
 {
    char v[300];
@@ -480,6 +523,8 @@ static void platform_from_decl(platform_t *pl, const char *ini)
    decl_get(ini, "launch", "core", pl->core, sizeof(pl->core), "");
    decl_get(ini, "media", "kind", v, sizeof(v), "disc");
    pl->kind = !strcmp(v, "cartridge") || !strcmp(v, "card") ? KIND_CART : (!strcmp(v, "arcade") ? KIND_ARCADE : KIND_DISC);
+   decl_get(ini, "media", "cover", v, sizeof(v), "");
+   pl->tile_ar = box_aspect(pl->id, v);
    /* the launch: the flat illustration <home>/assets/launch/<flat>/ (flat.inc); a system
     * without one gets the generic launch, the game's cover as the object */
    decl_get(ini, "animation", "flat", pl->flat, sizeof(pl->flat), pl->id);
@@ -1693,6 +1738,9 @@ void draw_2d(GLuint tex, float x, float y, float w, float h, const float rgba[4]
  * the outer half of that fade was never drawn (the window's multisampling used to cover
  * for it). The quad is one device pixel larger on every side, the shape's own
  * coordinates unchanged (uvw). */
+/* the theme's corner rounding (theme.ini radius): scales the radius of every rectangle,
+ * card, tile and shadow; circles (avatars, discs) stay round */
+static float g_rk = 1.0f;
 static void draw_sdf(GLuint tex, float x, float y, float w, float h, const float rgba[4], int mode)
 {
    const float p = 1.0f / g_ui_scale;
@@ -1705,7 +1753,7 @@ static void draw_sdf(GLuint tex, float x, float y, float w, float h, const float
 void draw_round_rect(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha)
 {
    const float k = g_ui_scale;   /* shape maths in device px: 1-px antialiased edges */
-   glUniform4f(u2_rect, w * k, h * k, radius * k, border_alpha);
+   glUniform4f(u2_rect, w * k, h * k, radius * g_rk * k, border_alpha);
    glUniform4f(u2_aux0, 2.0f * k, 0.0f, 0.0f, 0.0f);   /* border band: 2 logical px */
    draw_sdf(0, x, y, w, h, rgba, 5);
 }
@@ -1751,7 +1799,7 @@ static void draw_shape(float x, float y, float w, float h, float radius, float s
 {
    const float k = g_ui_scale, p = 1.0f / k;
    const float in = ceilf((fmaxf(radius, stroke) + 2.0f) * k) / k;   /* inside this inset: alpha 0 */
-   glUniform4f(u2_rect, w * k, h * k, radius * k, 0.0f);
+   glUniform4f(u2_rect, w * k, h * k, radius * g_rk * k, 0.0f);
    glUniform4f(u2_aux0, stroke * k, 0.0f, 0.0f, 0.0f);
    if (stroke > 0.0f && (w - 2 * in) * k >= 24.0f && (h - 2 * in) * k >= 24.0f)
    {
@@ -1882,7 +1930,7 @@ static void draw_shadow_ex(float x, float y, float w, float h, float radius, flo
    shadow_key_t q;
    GLuint tex;
    if (!g_fx_shadows || a <= 0.003f) return;
-   q.w = (w + 2 * blur) * k; q.h = (h + 2 * blur) * k; q.r = radius * k; q.blur = blur * k; q.dy = dy * k; q.cut = cut;
+   q.w = (w + 2 * blur) * k; q.h = (h + 2 * blur) * k; q.r = radius * g_rk * k; q.blur = blur * k; q.dy = dy * k; q.cut = cut;
    q.fx = q.fy = 0.0f;
    if (cut)
    {
@@ -1904,7 +1952,7 @@ static void draw_shadow_ex(float x, float y, float w, float h, float radius, flo
       glUseProgram(g_prog_2d);
       return;
    }
-   glUniform4f(u2_rect, (w + 2 * blur) * k, (h + 2 * blur) * k, radius * k, 0.0f);
+   glUniform4f(u2_rect, (w + 2 * blur) * k, (h + 2 * blur) * k, radius * g_rk * k, 0.0f);
    glUniform4f(u2_aux0, blur * k, cut ? 1.0f : 0.0f, dy * k, 0.0f);
    draw_2d(0, x - blur, y - blur + dy, w + 2 * blur, h + 2 * blur, c, 10);
 }
@@ -1941,7 +1989,7 @@ void ui_glass_card(float x, float y, float w, float h, float radius, const float
    int i;
    if (g_card_merge && g_fx_shadows && sh_a > 0.003f && rgba[3] > 0.003f && ix1 - ix0 > 32.0f && iy1 - iy0 > 32.0f)
    {
-      q.w = qw * k; q.h = qh * k; q.r = radius * k; q.blur = blur * k; q.dy = dy * k; q.cut = 0; q.fx = q.fy = 0.0f;
+      q.w = qw * k; q.h = qh * k; q.r = radius * g_rk * k; q.blur = blur * k; q.dy = dy * k; q.cut = 0; q.fx = q.fy = 0.0f;
       tex = shadow_lookup(&q);
    }
    if (!tex)
@@ -1967,7 +2015,7 @@ void ui_glass_card(float x, float y, float w, float h, float radius, const float
    glUniform4f(ut_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
    glUseProgram(g_prog_2d);
    /* the card's frame (rounded corners, border; 1 px more outside for the edge's fade) */
-   glUniform4f(u2_rect, w * k, h * k, radius * k, border_alpha);
+   glUniform4f(u2_rect, w * k, h * k, radius * g_rk * k, border_alpha);
    glUniform4f(u2_aux0, 2.0f * k, 0.0f, 0.0f, 0.0f);
    for (i = 0; i < 4; i++)
    {
@@ -2055,7 +2103,7 @@ static void draw_tile(GLuint tex, int tw, int th, float x, float y, float w, flo
       if (ar > want) { us = want / ar; u0 = (1.0f - us) * 0.5f; }
       else { vs = ar / want; v0 = (1.0f - vs) * 0.5f; }
    }
-   glUniform4f(u2_rect, w * g_ui_scale, h * g_ui_scale, radius * g_ui_scale, 0.0f);
+   glUniform4f(u2_rect, w * g_ui_scale, h * g_ui_scale, radius * g_rk * g_ui_scale, 0.0f);
    glUniform4f(u2_aux0, u0, v0, us, vs);
    glUniform4f(u2_aux1, sheen, light, 0.0f, 0.0f);
    if (g_tile_split < 0) g_tile_split = settings_get_int("tile_split", 1, 0, 1);
@@ -2333,6 +2381,7 @@ static int           in_nctrl;
 static double        in_last_activity;      /* last input of any kind (attract, step 5) */
 int                  g_want_settings;   /* set when Select is tapped alone; consumed by the settings panel */
 
+static int g_home_pump;   /* PS / Home pressed: Back presses still to send while something is open */
 static void in_set(int b, int down)
 {
    if (b < 0) return;
@@ -2428,6 +2477,9 @@ static void in_event(const SDL_Event *e)
       case SDL_CONTROLLER_BUTTON_Y: b = IN_OPTIONS; break;
       case SDL_CONTROLLER_BUTTON_START: b = IN_START; break;
       case SDL_CONTROLLER_BUTTON_BACK: b = IN_SELECT; break;
+      case SDL_CONTROLLER_BUTTON_GUIDE:   /* PS / Home: back to the games, whatever is open */
+         if (d) { g_home_pump = 12; in_last_activity = now_s(); }
+         break;
       }
       in_set(b, d);
       break;
@@ -2645,6 +2697,8 @@ static struct { const char *name; SDL_Surface *sf; int done; } g_icon_pre[] = {
    { "cross" }, { "circle" }, { "square" }, { "triangle" }, { "start" }, { "select" }, { "dpad" },
    { "l1" }, { "r1" }, { "l2" }, { "r2" }, { "pad" }, { "network" }, { "disc" }, { "cartridge" }, { "coin" },
    { "clock" }, { "gallery" }, { "info" }, { "settings" },
+   /* the status bar glyphs of the built-in modules (mod_net.c) */
+   { "wifi-0" }, { "wifi-1" }, { "wifi-2" }, { "wifi-3" }, { "bluetooth" }, { "ethernet" },
 };
 static void icons_preload(const char *home)
 {
@@ -2726,6 +2780,7 @@ static void hints_load(const char *home)
  * set each frame through label_set(..., tr(...)) */
 void ui_language_changed(void)
 {
+   modules_emit(MEV_LANGUAGE, i18n_language());
    hints_reload();
    ui_cards_changed();
 }
@@ -3419,13 +3474,15 @@ void draw_image(GLuint tex, int tw, int th, float x, float y, float w, float h, 
 
 /* horizontal position and size of a tile at offset d from the selection (continuous,
  * so the row slides and the selected tile grows while the selection spring moves) */
-static float tile_x(float d)
+static float tile_x(float d, float ar)   /* ar: the system's box proportions (platform_t tile_ar): the tiles' width */
 {
-   if (d >= 1.0f) return DASH_X + TILE_SEL + TILE_GAP + (d - 1.0f) * (TILE + TILE_GAP);
-   if (d >= 0.0f) return DASH_X + d * (TILE_SEL + TILE_GAP);
-   return DASH_X + d * (TILE + TILE_GAP);
+   if (d >= 1.0f) return DASH_X + TILE_SEL * ar + TILE_GAP + (d - 1.0f) * (TILE * ar + TILE_GAP);
+   if (d >= 0.0f) return DASH_X + d * (TILE_SEL * ar + TILE_GAP);
+   return DASH_X + d * (TILE * ar + TILE_GAP);
 }
-static float tile_size(float d) { float a = fabsf(d); return a >= 1.0f ? TILE : lerpf(TILE_SEL, TILE, a); }
+/* games per L1 / R1 page: what the row shows right of the selection (6 square tiles) */
+static int dash_page(float ar) { int n = (int)(DASH_PAGE / ar + 0.5f); return n < 3 ? 3 : n > 10 ? 10 : n; }
+static float tile_size(float d) { float a = fabsf(d); return a >= 1.0f ? TILE : lerpf(TILE_SEL, TILE, a); }   /* the height */
 
 static void glyph_draw(const char *name, float x, float y, float h, const float c[4])
 {
@@ -3786,7 +3843,26 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          draw_text(&l_clock, x, cy - l_clock.h * 0.5f, white);
          x -= 26;
       }
-      if (g_status.net_up)
+      {  /* the modules' items (docs/modules.md, "status"), closest to the clock first */
+         const int n = mod_status_count();
+         for (k = 0; k < n; k++)
+         {
+            const mod_status_item_t *it = mod_status_item(k);
+            if (it->badge[0])
+            {
+               static label_t l_badge[MOD_STATUS_MAX];
+               label_set(&l_badge[k], g_font_small, it->badge);
+               x -= l_badge[k].w;
+               draw_text(&l_badge[k], x, cy - l_badge[k].h * 0.5f, it->dim ? off : on);
+               x -= 4;
+            }
+            x -= glyph_w(it->glyph, 26);
+            glyph_draw(it->glyph, x, cy - 13, 26, it->dim ? off : on);
+            x -= 22;
+         }
+      }
+      /* the plain network glyph only when no network module shows its own */
+      if (g_status.net_up && !module_running("wifi") && !module_running("ethernet"))
       {
          x -= glyph_w("network", 26);
          glyph_draw("network", x, cy - 13, 26, on);
@@ -3888,16 +3964,16 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          float u = fmodf(st - 0.35f, 6.0f);
          if (u < 1.0f) sheen = -0.6f + u * 2.4f;
       }
-      for (k = -2; k <= 8; k++)
+      for (k = -2; k <= 12; k++)
       {
          int idx = base + k;
-         float d, x, sz, ta;
+         float d, x, sz, sw, ta;
          game_t *g;
          if (idx < 0 || idx >= n) continue;
          if (!g_fx_sides && idx != sel) continue;
-         d = idx - pos; x = tile_x(d); sz = tile_size(d);
+         d = idx - pos; x = tile_x(d, pl->tile_ar); sz = tile_size(d); sw = sz * pl->tile_ar;   /* sw x sz: the box */
          ta = ua * (d < 0.0f ? clampf(1.0f + d * 1.8f, 0.0f, 1.0f) : 1.0f);
-         if (ta <= 0.003f || x > W || x + sz < 0) continue;
+         if (ta <= 0.003f || x > W || x + sw < 0) continue;
          g = &g_games[pl->first + idx];
          /* only the focused tile casts a shadow: the others sit on dimmed art where it
           * barely shows, and seven blurred quads cost ~5 ms a frame on the console */
@@ -3905,17 +3981,17 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          {
             const float sc_[4] = { 0, 0, 0, 0.60f * ta };
             float b = 22.0f * sz / 220.0f;
-            draw_2d(g_tile_shadow, x - b, TILE_Y - b + 10, sz + 2 * b, sz + 2 * b, sc_, 0);
+            draw_2d(g_tile_shadow, x - b, TILE_Y - b + 10, sw + 2 * b, sz + 2 * b, sc_, 0);
          }
          if (g->tex)
          {
             const float c[4] = { 1, 1, 1, ta };
-            draw_tile(g->tex, g->tex_w, g->tex_h, x, TILE_Y, sz, sz, 14, idx == sel ? sheen : -2.0f, idx == sel ? 1.0f : 0.0f, c);
+            draw_tile(g->tex, g->tex_w, g->tex_h, x, TILE_Y, sw, sz, 14, idx == sel ? sheen : -2.0f, idx == sel ? 1.0f : 0.0f, c);
          }
          else
          {
             const float c[4] = { 0.16f, 0.16f, 0.20f, 0.7f * ta };
-            draw_shape(x, TILE_Y, sz, sz, 14, 0, c);   /* (its shadow above is not cut: barely visible) */
+            draw_shape(x, TILE_Y, sw, sz, 14, 0, c);   /* (its shadow above is not cut: barely visible) */
          }
          if (g->port)
          {  /* a native port of the game: a chip in the cover's top left corner, on every tile */
@@ -3934,10 +4010,10 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
             const float bedge[4] = { 1, 1, 1, 0.22f * ta };
             const char *mg = pl->kind == KIND_CART ? "cartridge" : (pl->kind == KIND_ARCADE ? "coin" : "disc");
             const float gc[4] = { 1, 1, 1, 0.95f * ta };
-            draw_shape(x - 7, TILE_Y - 7, sz + 14, sz + 14, 20, 3.0f, ring);
-            draw_shape(x + sz - 50, TILE_Y + sz - 50, 40, 40, 20, 0, badge);
-            draw_shape(x + sz - 50, TILE_Y + sz - 50, 40, 40, 20, 1.0f, bedge);
-            glyph_draw(mg, x + sz - 43, TILE_Y + sz - 43, 26, gc);
+            draw_shape(x - 7, TILE_Y - 7, sw + 14, sz + 14, 20, 3.0f, ring);
+            draw_shape(x + sw - 50, TILE_Y + sz - 50, 40, 40, 20, 0, badge);
+            draw_shape(x + sw - 50, TILE_Y + sz - 50, 40, 40, 20, 1.0f, bedge);
+            glyph_draw(mg, x + sw - 43, TILE_Y + sz - 43, 26, gc);
          }
       }
    }
@@ -4331,6 +4407,15 @@ int main(int argc, char **argv)
    label_t l_start = { 0 };
    float fade = 1.0f; /* 1 = black, fades in at start */
 
+   /* "lumen --audio-sink <device> <config> <rate>": the child that plays the dashboard's
+    * sound on a named ALSA device (music.c). Before anything else: it is not a dashboard. */
+   if (argc >= 5 && !strcmp(argv[1], "--audio-sink")) return music_sink_main(argv[2], argv[3], atoi(argv[4]));
+   /* A DualSense / DualShock 4 on Bluetooth stays in its simple report mode: SDL's "enhanced
+    * reports" (rumble, LED) switch the pad to a report only SDL reads, and the console's
+    * kernel then gives RetroArch and the PS button (lumen-buttons) no input at all until the
+    * pad reconnects. The environment, not SDL_SetHint: it reaches SDL 3 under sdl2-compat. */
+   setenv("SDL_JOYSTICK_ENHANCED_REPORTS", "0", 0);
+
    for (i = 1; i < argc; i++)
    {
       if (!strcmp(argv[i], "--root") && i + 1 < argc) snprintf(g_root, sizeof(g_root), "%s", argv[++i]);
@@ -4368,6 +4453,7 @@ int main(int argc, char **argv)
    if (settings_load(g_home) < 0)
       settings_set_int("language_asked", 0);   /* new install: the welcome asks for the language */
    theme_init(g_home);
+   g_rk = theme_radius();
    {  /* a theme may bring its own fonts (themes/<id>/fonts/<weight>.ttf) */
       theme_asset(font_b, sizeof(font_b), "fonts/bold.ttf");
       theme_asset(font_r, sizeof(font_r), "fonts/regular.ttf");
@@ -4538,6 +4624,9 @@ int main(int argc, char **argv)
    memset(&dpos, 0, sizeof(dpos)); dpos.x = (float)sel;
    boot_mark("resume");
    panel_init();
+   /* modules first (docs/modules.md): the wifi, bluetooth and ethernet modules tell net_init
+    * which radios it may start */
+   modules_init(g_home);
    net_init();   /* after settings: Wi-Fi / Bluetooth / USB Ethernet as they were left */
    update_init(); /* after settings + net: a staged update, or the leftovers of a download */
    kern_init();  /* which kernel runs (Settings, About) */
@@ -4618,6 +4707,14 @@ int main(int argc, char **argv)
       {
          if (e.type == SDL_QUIT) running = 0;
          else in_event(&e);
+      }
+      if (g_home_pump > 0)
+      {  /* PS / Home: one Back every 8 frames until nothing is open (a keyboard, a question,
+          * a sub-page each take one) */
+         static int gap;
+         if (!panel_active() && !gamemenu_active() && !filepicker_active() && !transfer_active() && !audit_active() && !conn_active() && !kern_active()) g_home_pump = 0;
+         else if (gap > 0) gap--;
+         else { in_pressed[IN_BACK] = 1; g_home_pump--; gap = 8; }
       }
       if (g_ntin && !test_input(g_rec_on ? g_rec_frames / g_rec_fps : t - t0)) running = 0;   /* recording: from its first frame */
       if (g_want_reboot) { exit_code = 12; running = 0; }
@@ -4721,6 +4818,18 @@ int main(int argc, char **argv)
          const char *nt;
          net_poll();
          if ((nt = net_take_toast())) panel_toast(nt);
+         {  /* modules: their per-frame work, and the online / offline events (module.h) */
+            static int was_online = -1;
+            const net_state_t *ms = net_state();
+            const int online = ms->wifi == NET_CONNECTED || ms->eth == NET_CONNECTED;
+            modules_poll(t);
+            panel_audio_route(t);   /* the sound follows the chosen output as it comes and goes */
+            if (online != was_online)
+            {
+               if (was_online >= 0 || online) modules_emit(online ? MEV_ONLINE : MEV_OFFLINE, NULL);
+               was_online = online;
+            }
+         }
          {  /* software update: the daily check runs while a connection is up (update.h) */
             const net_state_t *us = net_state();
             update_poll(t, us->wifi == NET_CONNECTED || us->eth == NET_CONNECTED, us->time_ok);
@@ -4809,7 +4918,7 @@ int main(int argc, char **argv)
       if (n > 1 && page)
       {  /* a page is what the row shows to the right of the selection; from the last
           * (first) game the next (previous) page wraps to the other end */
-         int ns = page > 0 ? (sel == n - 1 ? 0 : sel + DASH_PAGE) : (sel == 0 ? n - 1 : sel - DASH_PAGE);
+         int ns = page > 0 ? (sel == n - 1 ? 0 : sel + dash_page(pl->tile_ar)) : (sel == 0 ? n - 1 : sel - dash_page(pl->tile_ar));
          ns = ns < 0 ? 0 : (ns > n - 1 ? n - 1 : ns);
          if (ns != sel) { sel = ns; info_y.x = 18.0f; info_a.x = 0.0f; sel_t = t; music_sfx(page > 0 ? SFX_PAGE_NEXT : SFX_PAGE_PREV); }
       }
@@ -5264,6 +5373,12 @@ int main(int argc, char **argv)
 
    /* persist settings and selection; hand the launch request to the launcher script.
     * In the attract scene the selection saved is the user's, from before it started (10.5). */
+   if ((exit_code == 10 || exit_code == 11) && g_nplat)
+   {  /* modules: a game or app starts next (docs/modules.md, MEV_LAUNCH) */
+      const int gi = exit_code == 11 ? attract_demo_game() : g_plat[sel_plat].first + sel;
+      if (gi >= 0) modules_emit(MEV_LAUNCH, &gi);
+   }
+   modules_emit(MEV_EXIT, NULL);
    music_shutdown();   /* release the audio device before RetroArch starts */
    transfer_shutdown();   /* stop a copy, unmount the second USB drive */
    panel_shutdown();   /* a colour picked or settings changed with the panel still open */

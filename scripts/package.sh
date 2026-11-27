@@ -61,6 +61,11 @@ for p in psc-net.tar.gz psc-bt.tar.gz psc-netmod-stock.tar.gz; do [ -f "$PF/$p" 
 T="$(mktemp -d)"; tar xzf "$PF/psc-retroarch.tar.gz" -C "$T"
 cp "$T/bin/retroarch" "$L/retroarch/retroarch"; chmod 755 "$L/retroarch/retroarch"
 cp -R "$T/share/retroarch/autoconfig/udev" "$L/retroarch/autoconfig/"
+# The Home / PS button belongs to Lumen (lumen-buttons: it does what OPEN does), so no
+# profile may also open RetroArch's menu with it; Start+Select does that (retroarch.cfg).
+grep -l '^input_menu_toggle_btn' "$L/retroarch/autoconfig/udev/"*.cfg 2>/dev/null | while IFS= read -r f; do
+  sed '/^input_menu_toggle_btn/d' "$f" > "$f.tmp" && mv -f "$f.tmp" "$f"
+done
 rm -rf "$T"
 cp psc/retroarch.cfg "$L/retroarch/retroarch.cfg"
 sed -n 's/^retroarch=//p' "$PF/versions.txt" | head -1 > "$L/retroarch/VERSION"
