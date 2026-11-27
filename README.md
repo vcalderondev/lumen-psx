@@ -7,8 +7,9 @@ A lightweight game frontend for the PlayStation Classic.
 **Website, screenshots and library manager: [lpsx.dev](https://lpsx.dev/)** ·
 made by [Víctor Calderón](https://vcalderon.dev/)
 
-- flat dashboard (OpenGL ES 3.0): full-screen game art, system tabs, a row of cover tiles
-  moved by springs, ambient colour taken from the selected cover
+- flat dashboard (OpenGL ES 3.0): full-screen game art, system tabs, the game's title with
+  its facts as chips, a shelf of covers moved by springs; the focused cover, the selected
+  system and the title block are lit in the colour of the selected game's cover
 - systems: PlayStation, the console's built-in games, PlayStation Portable, Nintendo 64,
   NES, Super Nintendo, Mega Drive / Genesis, Game Boy / Color, Game Boy Advance, Arcade
   and homebrew apps, each declared by one file (docs/systems.md)
@@ -18,7 +19,7 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 - per-game background image (`games/<n>/background.jpg|png`) at ~30 % opacity,
   crossfaded and decoded on a worker thread so browsing never stutters
 - launches games in RetroArch and comes back to the same game afterwards
-- small: a single <!-- lumen-size -->~432 KB<!-- /lumen-size --> binary; only covers near
+- small: a single <!-- lumen-size -->~441 KB<!-- /lumen-size --> binary; only covers near
   the selection stay in memory
 - translated UI: English (default), Spanish, Portuguese, French, German, Italian
 - game menu on Start: favourites and folders (shown as their own rows), and "Save and exit"
@@ -37,7 +38,7 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 - USB transfer between the Lumen stick and a second USB drive, and a library check that
   reports broken games
 - native ports (games recompiled to run on the console, `games/<id>-native/`), homebrew
-  apps (`layout = apps`, docs/systems.md) and themes (docs/themes.md; two ship with it: Sunset and Retro, a 1990s console look)
+  apps (`layout = apps`, docs/systems.md) and themes (docs/themes.md; three ship with it: Sunset, Mono and Retro, a 1990s console look)
 
 Target: SDL2 2.0.4 (or SDL3 3.4 through sdl2-compat), SDL2_image 2.0.1, SDL2_ttf 2.0.14,
 OpenGL ES 3.0 on a PowerVR GE8300, Wayland (Weston 16 from Lumen's overlay, or the stock

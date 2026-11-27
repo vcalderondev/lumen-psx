@@ -5,14 +5,21 @@ White on transparent, drawn at 8x and downsampled (smooth edges), exported at
 2x the logical size (logical 32 px -> 64 px PNG). The frontend tints them in
 the shader, so one white set serves every colour.
 
-Usage: python3 tools/make-glyphs.py [out_dir]   (default: assets/glyphs)
-Requires Pillow. Font: Liberation Sans Bold (shipped with the console).
+One visual language for the whole set: outlines with round caps and joins, 1.8 px for
+the frame of a button (ring, shoulder, pill), 2.4 px for symbols; labels in the UI font.
+
+Usage: python3 tools/make-glyphs.py [--square] [--font FILE] [out_dir]
+  out_dir   default: assets/glyphs
+  --square  hard corners on shoulders, pills and the d-pad, and only those glyphs are
+            written (a theme with `radius = 0` ships them in its glyphs/ folder)
+  --font    label font (default: assets/fonts/bold.ttf, the UI font; LUMEN_FONT too)
+Requires Pillow.
 """
 import math
 import os
 import sys
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 LOGICAL = 32            # design grid (px)
 EXPORT = 2              # export scale -> 64 px
@@ -21,8 +28,9 @@ N = LOGICAL * SS        # drawing canvas (256)
 W = (255, 255, 255, 255)
 DIM = (255, 255, 255, 82)   # the unlit part of a level glyph (wifi-0 .. wifi-3)
 STROKE = 2.4            # logical stroke width
-FONT = os.environ.get("LUMEN_FONT", os.path.join(os.path.dirname(__file__), "..", "..", "device-dump",
-                      "sysroot", "usr", "share", "fonts", "ttf", "LiberationSans-Bold.ttf"))
+FRAME = 1.8             # logical stroke width of a button's frame
+FONT = os.environ.get("LUMEN_FONT", os.path.join(os.path.dirname(__file__), "..", "assets", "fonts", "bold.ttf"))
+SQUARE = False          # --square: hard corners
 
 
 def u(v):
@@ -66,17 +74,6 @@ def label(d, text, cx, cy, size, w_canvas=LOGICAL, cut=False):
     d.text((x, y), text, font=f, fill=(0, 0, 0, 0) if cut else W)
 
 
-def knockout_label(im, text, cx, cy, size):
-    """text cut out of a filled shape (transparent letters)"""
-    mask = Image.new("L", im.size, 0)
-    md = ImageDraw.Draw(mask)
-    f = ImageFont.truetype(FONT, int(u(size)))
-    b = md.textbbox((0, 0), text, font=f)
-    md.text((u(cx) - (b[2] - b[0]) / 2 - b[0], u(cy) - (b[3] - b[1]) / 2 - b[1]), text, font=f, fill=255)
-    a = im.getchannel("A")
-    im.putalpha(Image.composite(Image.new("L", im.size, 0), a, mask))
-
-
 # ---------------------------------------------------------------- face buttons
 def face(symbol):
     im, d = canvas()
@@ -94,17 +91,35 @@ def face(symbol):
     return im
 
 
+def arc(d, cx, cy, r, a0, a1, col=W, w=STROKE):
+    """an arc with round caps (angles in degrees, clockwise from 3 o'clock)"""
+    d.arc((u(cx - r), u(cy - r), u(cx + r), u(cy + r)), a0, a1, fill=col, width=int(u(w)))
+    rm, cap = r - w / 2, u(w) / 2
+    for ang in (a0, a1):
+        x, y = u(cx + rm * math.cos(math.radians(ang))), u(cy + rm * math.sin(math.radians(ang)))
+        d.ellipse((x - cap, y - cap, x + cap, y + cap), fill=col)
+
+
+def outline(im, w=STROKE):
+    """the filled silhouette in `im` as an outline of w logical px, inside its edge"""
+    a = im.getchannel("A")
+    inner = a.filter(ImageFilter.MinFilter(2 * int(u(w)) + 1))
+    im.putalpha(ImageChops.subtract(a, inner))
+    return im
+
+
 def shoulder(text):
+    """L1 / R1 / L2 / R2: the same frame as Select and Start, a little taller"""
     im, d = canvas(40)
-    rrect(d, 1.5, 6, 38.5, 26, 6, fill=True)
-    knockout_label(im, text, 20, 16.2, 12)
+    rrect(d, 1.2, 6.5, 38.8, 25.5, 0 if SQUARE else 6, FRAME)
+    label(d, text, 20, 16, 12, 40)
     return im
 
 
 def pill(text, width):
     im, d = canvas(width)
-    rrect(d, 1.2, 8, width - 1.2, 24, 8, 1.8)
-    label(d, text, width / 2, 16.2, 8.5, width)
+    rrect(d, 1.2, 8, width - 1.2, 24, 0 if SQUARE else 8, FRAME)
+    label(d, text, width / 2, 16, 8.5, width)
     return im
 
 
@@ -113,7 +128,13 @@ def dpad():
     a = 4.6
     pts = [(16 - a, 3), (16 + a, 3), (16 + a, 16 - a), (29, 16 - a), (29, 16 + a), (16 + a, 16 + a),
            (16 + a, 29), (16 - a, 29), (16 - a, 16 + a), (3, 16 + a), (3, 16 - a), (16 - a, 16 - a)]
-    d.polygon([(u(x), u(y)) for x, y in pts], outline=W, width=int(u(1.8)))
+    if SQUARE:
+        d.polygon([(u(x), u(y)) for x, y in pts], outline=W, width=int(u(FRAME)))
+    else:   # the cross with rounded corners: two rounded bars, outlined as one shape
+        d.rounded_rectangle((u(16 - a), u(3), u(16 + a), u(29)), radius=u(1.6), fill=W)
+        d.rounded_rectangle((u(3), u(16 - a), u(29), u(16 + a)), radius=u(1.6), fill=W)
+        outline(im, FRAME)
+        d = ImageDraw.Draw(im)
     # small arrows centred in each arm, apex pointing outwards
     for (cx, cy, ox, oy) in ((16, 8.2, 0, -1), (16, 23.8, 0, 1), (8.2, 16, -1, 0), (23.8, 16, 1, 0)):
         h, s_ = 1.5, 1.7                       # half height (along the arm), half base
@@ -127,20 +148,14 @@ def dpad():
 # ---------------------------------------------------------------- status / top icons
 def pad():
     im, d = canvas()
-    # controller silhouette: body with two grips
-    d.rounded_rectangle((u(4), u(9), u(28), u(21)), radius=u(6), outline=W, width=int(u(STROKE)))
-    line(d, [(8.5, 19.5), (6.5, 26), (10.5, 26.5), (13, 21)])
-    line(d, [(23.5, 19.5), (25.5, 26), (21.5, 26.5), (19, 21)])
-    line(d, [(9.5, 15), (13.5, 15)]); line(d, [(11.5, 13), (11.5, 17)])
-    disc(d, 20.5, 13.6, 1.3); disc(d, 23.2, 16.2, 1.3)
-    return im
-
-
-def network():
-    im, d = canvas()
-    for i, r in enumerate((13, 8.6, 4.2)):
-        d.arc((u(16 - r), u(25 - r), u(16 + r), u(25 + r)), 225, 315, fill=W, width=int(u(STROKE)))
-    disc(d, 16, 24.5, 1.9)
+    # controller silhouette: a body and two grips, outlined as one shape
+    d.rounded_rectangle((u(2.5), u(8), u(29.5), u(20)), radius=u(6), fill=W)
+    d.rounded_rectangle((u(2.5), u(10), u(12), u(26.5)), radius=u(4.7), fill=W)
+    d.rounded_rectangle((u(20), u(10), u(29.5), u(26.5)), radius=u(4.7), fill=W)
+    outline(im, 2.0)
+    d = ImageDraw.Draw(im)
+    line(d, [(7.3, 14.4), (12.1, 14.4)], 1.8); line(d, [(9.7, 12), (9.7, 16.8)], 1.8)
+    disc(d, 20.6, 13.0, 1.35); disc(d, 23.6, 15.8, 1.35)
     return im
 
 
@@ -148,10 +163,123 @@ def wifi(level):
     """Wi-Fi signal for the status bar (the wifi module): `level` of the three arcs lit,
     the rest drawn faint, so the shape never changes width as the signal moves"""
     im, d = canvas()
-    for i, r in enumerate((4.2, 8.6, 13)):
-        col = W if i < level else DIM
-        d.arc((u(16 - r), u(25 - r), u(16 + r), u(25 + r)), 225, 315, fill=col, width=int(u(STROKE)))
-    disc(d, 16, 24.5, 1.9)
+    for i, r in reversed(list(enumerate((7.2, 11.6, 16)))):
+        arc(d, 16, 24.6, r, 228, 312, W if i < level else DIM)
+    disc(d, 16, 24.6, 2.0)
+    return im
+
+
+def network():
+    return wifi(3)
+
+
+def players():
+    im, d = canvas()
+    ring(d, 12, 11, 4.6, 2.2)
+    arc(d, 12, 31, 10.5, 197, 343, w=2.2)
+    arc(d, 21, 11, 4.6, 290, 70, w=2.2)
+    arc(d, 23, 31, 9.5, 300, 345, w=2.2)
+    return im
+
+
+def calendar():
+    im, d = canvas()
+    rrect(d, 4.5, 7, 27.5, 27.5, 4, 2.2)
+    line(d, [(5.5, 13.5), (26.5, 13.5)], 2.2)
+    line(d, [(11, 4), (11, 9)], 2.2); line(d, [(21, 4), (21, 9)], 2.2)
+    return im
+
+
+def star():
+    im, d = canvas()
+    pts = []
+    for k in range(10):
+        a = -math.pi / 2 + k * math.pi / 5
+        r = 12.5 if k % 2 == 0 else 5.4
+        pts.append((16 + r * math.cos(a), 17 + r * math.sin(a)))
+    line(d, pts + [pts[0]], 2.2)
+    return im
+
+
+def play():
+    """the main action: a filled triangle with soft corners"""
+    im, d = canvas()
+    pts = [(11, 7.5), (24.5, 16), (11, 24.5)]
+    d.polygon([(u(x), u(y)) for x, y in pts], fill=W)
+    line(d, pts + [pts[0]], 3.0)
+    return im
+
+
+def folder():
+    im, d = canvas()
+    line(d, [(4.5, 24), (4.5, 8.5), (12.5, 8.5), (15.5, 12), (27.5, 12), (27.5, 24), (4.5, 24)], 2.2)
+    return im
+
+
+def save():
+    im, d = canvas()
+    line(d, [(5.5, 5.5), (21.5, 5.5), (26.5, 10.5), (26.5, 26.5), (5.5, 26.5), (5.5, 5.5)], 2.2)
+    line(d, [(10.5, 6.5), (10.5, 12), (19.5, 12), (19.5, 6.5)], 2.0)
+    rrect(d, 10, 18, 22, 26.5, 1.5, 2.0)
+    return im
+
+
+def exit_():
+    im, d = canvas()
+    line(d, [(18, 5.5), (7.5, 5.5), (7.5, 26.5), (18, 26.5)], 2.2)
+    line(d, [(14, 16), (27, 16)], 2.2); line(d, [(22.5, 11.5), (27, 16), (22.5, 20.5)], 2.2)
+    return im
+
+
+def user():
+    im, d = canvas()
+    ring(d, 16, 11, 5.4, 2.2)
+    arc(d, 16, 32, 11.5, 200, 340, w=2.2)
+    return im
+
+
+def screen():
+    im, d = canvas()
+    rrect(d, 3.5, 6, 28.5, 22, 3, 2.2)
+    line(d, [(16, 22.5), (16, 26.5)], 2.2); line(d, [(11, 26.5), (21, 26.5)], 2.2)
+    return im
+
+
+def sound():
+    im, d = canvas()
+    line(d, [(5.5, 13), (10, 13), (16, 8), (16, 24), (10, 19), (5.5, 19), (5.5, 13)], 2.2)
+    arc(d, 15, 16, 7.5, 318, 42, w=2.2)
+    arc(d, 15, 16, 12.5, 318, 42, w=2.2)
+    return im
+
+
+def library():
+    im, d = canvas()
+    rrect(d, 5, 6, 11, 26, 1.8, 2.2); rrect(d, 14, 6, 20, 26, 1.8, 2.2)
+    line(d, [(23.5, 9), (27, 25.5)], 2.2)
+    return im
+
+
+def modules():
+    im, d = canvas()
+    rrect(d, 5, 5, 14, 14, 2.4, 2.2); rrect(d, 18, 5, 27, 14, 2.4, 2.2); rrect(d, 5, 18, 14, 27, 2.4, 2.2)
+    line(d, [(22.5, 18.5), (22.5, 26.5)], 2.2); line(d, [(18.5, 22.5), (26.5, 22.5)], 2.2)
+    return im
+
+
+def system():
+    im, d = canvas()
+    rrect(d, 9, 9, 23, 23, 3, 2.2)
+    for v in (13, 19):
+        line(d, [(v, 4), (v, 8)], 2.0); line(d, [(v, 24), (v, 28)], 2.0)
+        line(d, [(4, v), (8, v)], 2.0); line(d, [(24, v), (28, v)], 2.0)
+    return im
+
+
+def chevron(down=False):
+    """the mark of a row that opens (right) or has dropped its content down"""
+    im, d = canvas()
+    line(d, [(10, 12.5), (16, 18.5), (22, 12.5)] if down else [(12.5, 10), (18.5, 16), (12.5, 22)])
     return im
 
 
@@ -205,9 +333,8 @@ def settings():
             a = a0 + t
             pts.append((16 + r * math.cos(a), 16 + r * math.sin(a)))
     d.polygon([(u(x), u(y)) for x, y in pts], fill=W)
-    disc_mask = Image.new("L", im.size, 0)
-    ImageDraw.Draw(disc_mask).ellipse((u(16 - 4.2), u(16 - 4.2), u(16 + 4.2), u(16 + 4.2)), fill=255)
-    im.putalpha(Image.composite(Image.new("L", im.size, 0), im.getchannel("A"), disc_mask))
+    outline(im, 2.2)          # an outlined cog, like the rest of the set
+    ring(ImageDraw.Draw(im), 16, 16, 4.4, 2.0)
     return im
 
 
@@ -222,11 +349,12 @@ def disc_badge():
 
 def cartridge():
     im, d = canvas()
-    pts = [(7, 4), (25, 4), (25, 25), (22.5, 28), (9.5, 28), (7, 25), (7, 4)]
+    # a cartridge: the shell with its two cut corners, the label and the grip lines
+    pts = [(9.5, 4), (22.5, 4), (25, 6.5), (25, 28), (7, 28), (7, 6.5), (9.5, 4)]
     line(d, pts)
-    rrect(d, 10.5, 8, 21.5, 18, 1.5, 1.8)
-    for x in (12, 14.7, 17.4, 20):
-        line(d, [(x, 24.2), (x, 25.6)], 1.4)
+    rrect(d, 11, 9, 21, 17.5, 1.5, FRAME)
+    for x in (12.4, 16, 19.6):
+        line(d, [(x, 22), (x, 24.4)], 1.6)
     return im
 
 
@@ -251,17 +379,34 @@ GLYPHS = {
     # status bar glyphs of the built-in modules (docs/modules.md, "status")
     "wifi-0": lambda: wifi(0), "wifi-1": lambda: wifi(1), "wifi-2": lambda: wifi(2), "wifi-3": lambda: wifi(3),
     "bluetooth": bluetooth, "ethernet": ethernet,
+    "chevron-right": chevron, "chevron-down": lambda: chevron(True),
+    "players": players, "calendar": calendar, "star": star,
+    # actions of the game sheet and the pause; sections of the settings' rail
+    "play": play, "folder": folder, "save": save, "exit": exit_,
+    "user": user, "screen": screen, "sound": sound, "library": library, "modules": modules, "system": system,
 }
+# the glyphs with corners: what --square writes
+CORNERED = ("l1", "r1", "l2", "r2", "select", "start", "dpad")
 
 
 def main():
-    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "assets", "glyphs")
+    global FONT, SQUARE
+    args = sys.argv[1:]
+    if "--square" in args:
+        SQUARE = True
+        args.remove("--square")
+    if "--font" in args:
+        i = args.index("--font")
+        FONT = args[i + 1]
+        del args[i:i + 2]
+    out = args[0] if args else os.path.join(os.path.dirname(__file__), "..", "assets", "glyphs")
     os.makedirs(out, exist_ok=True)
-    for name, make in GLYPHS.items():
-        im = make()
+    names = CORNERED if SQUARE else list(GLYPHS)
+    for name in names:
+        im = GLYPHS[name]()
         w = round(im.width / SS * EXPORT)
         im.resize((w, LOGICAL * EXPORT), Image.LANCZOS).save(os.path.join(out, name + ".png"), optimize=True)
-    print("wrote", len(GLYPHS), "glyphs to", os.path.abspath(out))
+    print("wrote", len(names), "glyphs to", os.path.abspath(out))
 
 
 if __name__ == "__main__":

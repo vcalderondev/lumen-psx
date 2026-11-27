@@ -643,3 +643,7 @@ mod.ethernet.name = Network cable
 mod.ethernet.description = Connects the console with a USB Ethernet adapter and a cable.
 mod.bluetooth.name = Bluetooth
 mod.bluetooth.description = Wireless controllers, keyboards and headphones with a USB Bluetooth adapter.
+
+fact.year = Year
+fact.players = Players
+fact.played = Played

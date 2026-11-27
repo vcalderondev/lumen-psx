@@ -8,18 +8,22 @@
 #include "collections.h"
 #include "i18n.h"
 #include "panel.h"
+#include "stats.h"
 #include "theme.h"
 #include "ui.h"
 
-/* lumen-design, game-menu.html: a glass card on the right half, so the focused tile and
- * its title stay visible on the left; the actions are buttons, the main one white */
-#define CW      520.0f   /* card width                   */
-#define CX      676.0f
-#define HEAD    168.0f   /* header: cover, kicker, title */
-#define RH      64.0f    /* button pitch (52 + 12)       */
+/* lumen-design, proposals/lumen-2 "Game menu": a sheet on the right edge, full height, so
+ * the game stays visible on the left; the facts are a table, every action has its glyph and
+ * the main one is filled (the theme's `primary`, white in Lumen's own look) */
+#define CW      468.0f   /* sheet width                  */
+#define CX      (W - CW)
+#define HEAD    326.0f   /* header: cover, kicker, title, the facts */
+#define HEAD_NF 236.0f   /* ... with no fact known       */
+#define RH      66.0f    /* button pitch (52 + 14)       */
 #define BH      52.0f
 #define SH      46.0f    /* folder row pitch (dropped)   */
-#define PADX    28.0f
+#define PADX    40.0f
+#define VIEW_B  632.0f   /* the rows end here: the help bar is under them */
 #define MAXR    (6 + MOD_MENU_MAX + COLL_MAX_FOLDERS + 1)
 
 enum { R_PLAY, R_FAV, R_FOLDERS, R_FOLDER, R_NEWFOLDER, R_RESUME, R_RESTART, R_MOD };
@@ -33,7 +37,8 @@ static double  s_t0;
 static float   s_dt = 1.0f / 60.0f;   /* last frame time: the pill spring steps in draw */
 static mrow_t  s_rows[MAXR];
 static int     s_n;
-static label_t s_kicker, s_ltitle, s_facts, s_rl[MAXR], s_rv[MAXR];
+static label_t s_kicker, s_ltitle, s_facts, s_rl[MAXR], s_rv[MAXR], s_fk[3], s_fv[3];
+static spring  s_view;   /* rows scrolled up, when the dropped folders do not fit */
 
 static void col4(float o[4], int tc, float a) { theme_color(tc, o); o[3] = a; }
 
@@ -184,60 +189,100 @@ static const char *row_text(const mrow_t *r, const char **value)
    return "";
 }
 
+static const char *row_glyph(const mrow_t *r)
+{
+   switch (r->type)
+   {
+   case R_PLAY: case R_RESUME: return "play";
+   case R_FAV:     return "star";
+   case R_FOLDERS: return "folder";
+   }
+   return NULL;
+}
+
 void gamemenu_draw(double t)
 {
    float a = gamemenu_amount(), ex = clampf(s_exp.x, 0, 1);
-   float rowy[MAXR], rowh[MAXR], y, chgt, cx = CX, cy;
-   float txt[4], dim[4], acc[4];
-   const float white[3] = { 1, 1, 1 }, ink[4] = { 0.043f, 0.047f, 0.063f, a };
-   char buf[160];
+   float rowy[MAXR], rowh[MAXR], y, cx = CX + (1 - a) * 40, cy = 0, head, want, edge[4];
+   float txt[4], dim[4], acc[4], white[4], ink[4], card[4];
+   const char *fk[3], *fv[3];
+   char buf[160], dur[48];
    const game_t *g;
-   int i;
+   const game_stats_t *gs;
+   int i, nf = 0;
    (void)t;
    if (a <= 0.003f || s_gi < 0 || s_gi >= g_ngames) return;
    g = &g_games[s_gi];
+   gs = stats_get(g->content);
    col4(txt, TC_TEXT, a); col4(dim, TC_DIM, a); col4(acc, TC_ACCENT, a);
+   col4(white, TC_PRIMARY, a); col4(ink, TC_ON_PRIMARY, a);   /* the main button and its text */
+   col4(card, TC_CARD, 0.94f * a); col4(edge, TC_GLASS, 0.20f * a);
 
-   y = HEAD;
+   /* the facts that are known (guidelines/08: never "unknown") */
+   if (g->year[0]) { fk[nf] = "fact.year"; fv[nf++] = g->year; }
+   if (g->players[0]) { fk[nf] = "fact.players"; fv[nf++] = g->players; }
+   if (gs && gs->seconds > 0) { fk[nf] = "fact.played"; fv[nf++] = stats_format_duration(dur, sizeof(dur), gs->seconds); }
+   head = nf ? HEAD : HEAD_NF;
+
+   y = head;
    for (i = 0; i < s_n; i++)
    {
       rowh[i] = s_rows[i].sub ? SH * ex : RH;
       rowy[i] = y; y += rowh[i];
    }
-   chgt = y + 16;
-   cy = 150.0f;
-   if (cy + chgt > 636.0f) cy = 636.0f - chgt;   /* many folders dropped down: the card grows upwards */
-   if (cy < 104.0f) cy = 104.0f;
-   cy += (1 - a) * 16;
-   for (i = 0; i < s_n; i++) rowy[i] += cy;
    if (s_sel >= s_n) s_sel = s_n - 1;
+   /* the selection stays above the help bar: the rows scroll under the header */
+   want = rowy[s_sel] + (s_rows[s_sel].sub ? SH : BH) + 12 > VIEW_B ? rowy[s_sel] + (s_rows[s_sel].sub ? SH : BH) + 12 - VIEW_B : 0.0f;
+   if (a < 0.05f) { s_view.x = want; s_view.v = 0; }
+   spring_step(&s_view, want, 220, 26, s_dt);
+   for (i = 0; i < s_n; i++) rowy[i] -= s_view.x;
    if (fabsf(s_pill.x - rowy[s_sel]) > 400 || a < 0.05f) { s_pill.x = rowy[s_sel]; s_pill.v = 0; }
    spring_step(&s_pill, rowy[s_sel], 260, 26, s_dt);
 
    gl_use_2d();
-   ui_scrim(a);
-   ui_card(cx, cy, CW, chgt, a);
+   ui_scrim(a * 0.55f);
+   /* the sheet: one flat ink shape to the edge of the screen, lit along its left edge */
+   draw_2d(0, cx, 0, W - cx + 1, H, card, 0);
+   draw_2d(0, cx, 0, 1, H, edge, 0);
 
-   {  /* header: the game's cover, the kicker, the title, one line of facts */
+   {  /* header: the game's cover in its own proportions, the kicker, the title */
       float tx = cx + PADX;
       if (g->tex && (g->tex_state == 1) && g->tex_w > 0 && g->tex_h > 0)
       {
-         const float wh[4] = { 1, 1, 1, a };
-         ui_shadow(cx + PADX, cy + PADX, 112, 112, 12, 10, 3, 0.45f * a);
-         draw_image(g->tex, g->tex_w, g->tex_h, cx + PADX, cy + PADX, 112, 112, 12, wh);
+         const float wh[4] = { 1, 1, 1, a }, ch = 140, cw = clampf(ch * g->tex_w / (float)g->tex_h, 100.0f, 130.0f);
+         ui_shadow(cx + PADX, cy + 56, cw, ch, 12, 10, 3, 0.45f * a);
+         draw_image(g->tex, g->tex_w, g->tex_h, cx + PADX, cy + 56, cw, ch, 12, wh);
          gl_use_2d();
-         tx += 112 + 22;
+         tx += cw + 24;
       }
-      ui_kicker(&s_kicker, tr(s_mode ? "gm.resume_title" : "gm.title"), tx, cy + 44, a);
-      label_set(&s_ltitle, g_font_title, ui_fit(g_font_title, s_title, cx + CW - PADX - tx, buf, sizeof(buf)));
-      if (s_ltitle.tex) draw_2d(s_ltitle.tex, floorf(tx), floorf(cy + 62), s_ltitle.w, s_ltitle.h, txt, 0);
-      label_set(&s_facts, g_font_small, g->year);
-      if (s_facts.tex) draw_2d(s_facts.tex, floorf(tx), floorf(cy + 108), s_facts.w, s_facts.h, dim, 0);
+      ui_kicker(&s_kicker, tr(s_mode ? "gm.resume_title" : "gm.title"), tx, cy + 80, a);
+      {  /* the title at its size when it fits beside the cover, else smaller before it is cut */
+         int tw = 0, th = 0;
+         TTF_Font *tf = g_font_title && TTF_SizeUTF8(g_font_title, s_title, &tw, &th) == 0 && tw <= (W - PADX - tx) * g_ui_scale ? g_font_title : g_font_medium;
+         label_set(&s_ltitle, tf, ui_fit(tf, s_title, W - PADX - tx, buf, sizeof(buf)));
+      }
+      if (s_ltitle.tex) draw_2d(s_ltitle.tex, floorf(tx), floorf(cy + 100), s_ltitle.w, s_ltitle.h, txt, 0);
+      label_set(&s_facts, g_font_small, ui_fit(g_font_small, g->publisher, W - PADX - tx, buf, sizeof(buf)));
+      if (s_facts.tex) draw_2d(s_facts.tex, floorf(tx), floorf(cy + 146), s_facts.w, s_facts.h, dim, 0);
+   }
+   if (nf)
+   {  /* the facts: a table between two hairlines */
+      const float fy = cy + 226, fw = (CW - 2 * PADX) / 3.0f;
+      float hl[4];
+      col4(hl, TC_TEXT, 0.10f * a);
+      draw_2d(0, cx + PADX, fy, CW - 2 * PADX, 1, hl, 0);
+      draw_2d(0, cx + PADX, fy + 72, CW - 2 * PADX, 1, hl, 0);
+      for (i = 0; i < nf; i++)
+      {
+         ui_kicker(&s_fk[i], tr(fk[i]), cx + PADX + i * fw, fy + 14, a);
+         label_set(&s_fv[i], g_font_medium, fv[i]);
+         if (s_fv[i].tex) draw_2d(s_fv[i].tex, floorf(cx + PADX + i * fw), floorf(fy + 36), s_fv[i].w, s_fv[i].h, txt, 0);
+      }
    }
 
-   /* the dropped-down folders are clipped to the card */
+   /* the rows are clipped between the header and the help bar */
    glEnable(GL_SCISSOR_TEST);
-   gl_scissor(cx, cy + HEAD - 10, CW, chgt - HEAD + 10);
+   gl_scissor(cx, cy + head - 10, CW, VIEW_B - head + 20);
    {  /* focus: glass and ring behind the buttons, travelling with a spring */
       const float fh = s_rows[s_sel].sub ? SH - 6 : BH, fx = cx + PADX + (s_rows[s_sel].sub ? 16 : 0);
       ui_focus(fx, s_pill.x + (s_rows[s_sel].sub ? 3 : 0), cx + CW - PADX - fx, fh, fh * 0.5f, a);
@@ -247,7 +292,8 @@ void gamemenu_draw(double t)
       const mrow_t *r = &s_rows[i];
       const char *val, *lbl = row_text(r, &val);
       const int primary = r->type == R_PLAY || r->type == R_RESUME;
-      float ra = r->sub ? ex : 1.0f, h = r->sub ? SH : BH, x = cx + PADX + 24 + (r->sub ? 26 : 0), xr = cx + CW - PADX - 24;
+      const char *gly = row_glyph(r);
+      float ra = r->sub ? ex : 1.0f, h = r->sub ? SH : BH, x = cx + PADX + 18 + (r->sub ? 32 : 0), xr = cx + CW - PADX - 18;
       float c[4];
       if (ra < 0.02f) continue;
       memcpy(c, txt, sizeof(c));
@@ -255,29 +301,22 @@ void gamemenu_draw(double t)
       c[3] *= ra;
       if (!r->sub)
       {  /* a button: the main action is the white pill, the others glass */
-         if (primary) ui_fill(cx + PADX, rowy[i], CW - 2 * PADX, BH, BH * 0.5f, white, a);
+         if (primary) ui_fill(cx + PADX, rowy[i], CW - 2 * PADX, BH, UI_CTL_R, white, a);
          else ui_rest(cx + PADX, rowy[i], CW - 2 * PADX, BH, BH * 0.5f, a);
          if (primary) memcpy(c, ink, sizeof(c));
+      }
+      if (gly)
+      {  /* the action's glyph; the star is filled in the accent once the game is a favourite */
+         float gc[4] = { c[0], c[1], c[2], c[3] * (primary ? 1.0f : 0.70f) };
+         glyph_draw(gly, x, rowy[i] + h * 0.5f - 12, 24, gc);
+         x += 24 + 14;
       }
       label_set(&s_rl[i], r->sub ? g_font_sub : g_font_medium, lbl);
       if (s_rl[i].tex) draw_2d(s_rl[i].tex, floorf(x), floorf(rowy[i] + (h - s_rl[i].h) * 0.5f), s_rl[i].w, s_rl[i].h, c, 0);
       if (r->type == R_FOLDERS)
-      {  /* chevron: > folded, v dropped down (2 px steps) */
-         float cv[4] = { c[0], c[1], c[2], c[3] * 0.85f }, ccx = xr - 8, ccy = rowy[i] + h * 0.5f;
-         int k;
-         for (k = 0; k < 5; k++)
-         {
-            if (ex > 0.5f)
-            {
-               draw_2d(0, ccx - 8 + k * 2, ccy - 4 + k * 2, 2.5f, 2.5f, cv, 0);
-               draw_2d(0, ccx + 8 - k * 2 - 2.5f, ccy - 4 + k * 2, 2.5f, 2.5f, cv, 0);
-            }
-            else
-            {
-               draw_2d(0, ccx - 4 + k * 2, ccy - 8 + k * 2, 2.5f, 2.5f, cv, 0);
-               draw_2d(0, ccx - 4 + k * 2, ccy + 8 - k * 2 - 2.5f, 2.5f, 2.5f, cv, 0);
-            }
-         }
+      {  /* chevron: > folded, v dropped down */
+         const float cv[4] = { c[0], c[1], c[2], c[3] * 0.85f };
+         glyph_draw(ex > 0.5f ? "chevron-down" : "chevron-right", xr - 22, rowy[i] + h * 0.5f - 12, 24, cv);
          xr -= 30;
       }
       if ((r->type == R_FOLDER && coll_in_folder(r->folder, s_content)) || (r->type == R_FAV && coll_is_fav(s_content)))
