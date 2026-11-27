@@ -5,6 +5,20 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-11-27
+
+The Arcade system works out of the box: psc-platform 2.8.0 ships FinalBurn Neo. Not yet
+verified on a console.
+
+### Added
+- FinalBurn Neo (`fbneo_libretro.so`) in the package, the core the Arcade system launches;
+  until now it had to be copied to the USB drive by hand.
+
+### Changed
+- psc-platform 2.8.0: every core at its current upstream commit (FCEUmm, PCSX-ReARMed,
+  Genesis Plus GX, Snes9x, Gambatte, Mupen64Plus-Next). RetroArch stays at 1.22.2, the
+  latest release.
+
 ## [0.24.0] - 2026-11-27
 
 Modules, Bluetooth headphones that play, a DualSense that works in games, game boxes with
