@@ -21,6 +21,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#ifdef LUMEN_ALSA   /* build.sh: the console; without it a named output falls back to the default */
+#include <alsa/asoundlib.h>
+#endif
 #include "lumen.h"
 #include "music.h"
 
@@ -50,6 +57,13 @@ typedef struct
 } voice_t;
 
 static SDL_AudioDeviceID dev;
+/* The mixer (audio_cb) is called by SDL's audio thread, or by our own thread when the output
+ * is an ALSA device written directly (direct_*, below). Its state is guarded by mix_mx. */
+static SDL_mutex *mix_mx;
+static void mix_lock(void) { if (mix_mx) SDL_LockMutex(mix_mx); }
+static void mix_unlock(void) { if (mix_mx) SDL_UnlockMutex(mix_mx); }
+enum { DIRECT_NONE, DIRECT_OPENING, DIRECT_RUNNING, DIRECT_FAILED };
+static SDL_atomic_t direct_state, direct_quit, direct_gone;
 static int dev_rate = 44100;
 static voice_t vo[NV];
 static src_t freel[NFREE];
@@ -283,7 +297,7 @@ static void sfx_dump(const char *dir)
 static void slot_start(int k, float g)
 {
    int i, best = 0;
-   SDL_LockAudioDevice(dev);
+   mix_lock();
    for (i = 0; i < NSLOT; i++)
    {
       if (slot[i].k < 0) { best = i; break; }
@@ -291,7 +305,7 @@ static void slot_start(int k, float g)
    }
    slot[best].k = k; slot[best].pos = 0; slot[best].gain = g;
    slot_age[best] = ++slot_clock;
-   SDL_UnlockAudioDevice(dev);
+   mix_unlock();
 }
 
 void music_click(int kind)
@@ -308,11 +322,17 @@ void music_sfx(int id)
 
 void music_sfx_level(float v) { ui_level = v < 0 ? 0 : v > 1 ? 1 : v; }
 
+static void mix(Uint8 *stream, int len);
 static void SDLCALL audio_cb(void *ud, Uint8 *stream, int len)
+{  /* the default output stays open for good; while a named output plays the mix it is silent */
+   (void)ud;
+   if (SDL_AtomicGet(&direct_state) == DIRECT_RUNNING) { memset(stream, 0, (size_t)len); return; }
+   mix_lock(); mix(stream, len); mix_unlock();
+}
+static void mix(Uint8 *stream, int len)
 {
    short *out = (short *)stream;
    int n = len / 4, i, k;
-   (void)ud;
    for (i = 0; i < n; i++)
    {
       float l = 0, r = 0, m;
@@ -367,12 +387,12 @@ static void reap(void)
 {
    src_t tmp[NFREE];
    int n, i, d = 0;
-   SDL_LockAudioDevice(dev);
+   mix_lock();
    n = nfree;
    memcpy(tmp, freel, sizeof(src_t) * n);
    nfree = 0;
    for (i = 0; i < NV; i++) d |= vo[i].used && vo[i].dead;
-   SDL_UnlockAudioDevice(dev);
+   mix_unlock();
    for (i = 0; i < n; i++) src_free(&tmp[i]);
    if (d && !dead_seen) logf_("music: decode error mid-stream, voice silenced");
    dead_seen = d;
@@ -504,7 +524,7 @@ static int SDLCALL loader_main(void *ud)
          voice_t *v = NULL, *q = NULL;
          int stop;
          SDL_LockMutex(req_mx); stop = quit; SDL_UnlockMutex(req_mx);
-         SDL_LockAudioDevice(dev);
+         mix_lock();
          if (id == cur_id && !stop && ++tries <= 100)   /* ~0.5 s at most: then the track is dropped */
          {
             for (k = 0; k < NV && !v; k++)
@@ -533,7 +553,7 @@ static int SDLCALL loader_main(void *ud)
          }
          else
             v = &nv;                           /* superseded: drop */
-         SDL_UnlockAudioDevice(dev);
+         mix_unlock();
          if (v) break;
          SDL_Delay(5);
       }
@@ -548,6 +568,10 @@ static int SDLCALL loader_main(void *ud)
 int music_init(void)
 {
    SDL_AudioSpec want, got;
+   /* always the default output at start: a named device (run.sh may have exported AUDIODEV
+    * for a Bluetooth headset) is taken by music_reopen(), which writes it directly */
+   unsetenv("AUDIODEV"); unsetenv("SDL_AUDIO_ALSA_DEFAULT_DEVICE");
+   if (!mix_mx) mix_mx = SDL_CreateMutex();
    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
    {
       logf_("music: SDL audio init failed: %s", SDL_GetError());
@@ -596,6 +620,198 @@ int music_init(void)
    return 0;
 }
 
+/* bluez-alsa's ALSA plugin needs libraries the console does not have (GLib and friends);
+ * they are in the Bluetooth package, and the plugin's RUNPATH reaches only the ones it names
+ * itself, not what those need in turn (libgmodule -> libglib -> libpcre2). Loaded here once,
+ * dependencies first: the loader then finds them by name when ALSA opens the plugin. */
+int music_bt_libs(void)
+{
+   static const char *const libs[] = { "libpcre2-8.so.0", "libffi.so.8", "libglib-2.0.so.0", "libgmodule-2.0.so.0",
+                                       "libsbc.so.1", "libbluetooth.so.3" };
+   static int done;
+   char p[96];
+   size_t i;
+   if (done) return done > 0;
+   done = 1;
+   for (i = 0; i < sizeof(libs) / sizeof(libs[0]); i++)
+   {
+      FILE *f;
+      snprintf(p, sizeof(p), "/tmp/lumen-bt/lib/%s", libs[i]);
+      if (!(f = fopen(p, "rb"))) continue;   /* a package without it: the plugin does not need it either */
+      fclose(f);
+      if (!SDL_LoadObject(p)) { logf_("music: %s did not load: %s", p, SDL_GetError()); done = -1; }
+   }
+   return done > 0;
+}
+
+/* ---- direct ALSA output: a named device (a Bluetooth headset through bluez-alsa, a USB
+ * card) is not opened through SDL, and not in this process at all. On the console SDL's
+ * ALSA backend never gets a bluez-alsa device going (an endless underrun), and opening the
+ * device inside the running dashboard dead-locks in the open, while a fresh process with
+ * plain blocking writes plays. So a child ("lumen --audio-sink", music_sink_main) owns the
+ * device and plays what it reads from a pipe; a thread here mixes and feeds the pipe, which
+ * also paces it. A device that hangs costs a killed child, never the dashboard. */
+#define SINK_FRAMES 1024
+static char direct_name[96], direct_conf[128];
+static SDL_atomic_t direct_pid;
+
+int music_sink_main(const char *name, const char *conf, int rate)
+{
+#ifdef LUMEN_ALSA
+   static short buf[SINK_FRAMES * 2];
+   snd_pcm_t *pcm = NULL;
+   int rc, errs = 0;
+   if (!strncmp(name, "bluealsa:", 9)) music_bt_libs();
+   if (conf && *conf) setenv("ALSA_CONFIG_PATH", conf, 1);
+   if ((rc = snd_pcm_open(&pcm, name, SND_PCM_STREAM_PLAYBACK, 0)) < 0 ||
+       (rc = snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16, SND_PCM_ACCESS_RW_INTERLEAVED, 2, (unsigned)rate, 1, 200000)) < 0)
+   {
+      fprintf(stderr, "audio-sink: %s: %s\n", name, snd_strerror(rc));
+      return 1;
+   }
+   if (write(3, "R", 1) != 1) return 1;   /* ready: the parent starts to feed */
+   for (;;)
+   {
+      size_t got = 0;
+      while (got < sizeof(buf))
+      {
+         ssize_t n = read(0, (char *)buf + got, sizeof(buf) - got);
+         if (n <= 0) { snd_pcm_drop(pcm); snd_pcm_close(pcm); return 0; }   /* the parent closed: done */
+         got += (size_t)n;
+      }
+      rc = (int)snd_pcm_writei(pcm, buf, SINK_FRAMES);
+      if (rc < 0 && snd_pcm_recover(pcm, rc, 1) < 0)
+      {  /* the device is gone (the headset left) */
+         if (++errs > 20) { fprintf(stderr, "audio-sink: %s stopped: %s\n", name, snd_strerror(rc)); return 2; }
+         usleep(20000);
+      }
+      else errs = 0;
+   }
+#else
+   (void)name; (void)conf; (void)rate;
+   return 1;
+#endif
+}
+
+static int direct_main(void *unused)
+{
+#ifdef LUMEN_ALSA
+   static short buf[SINK_FRAMES * 2];
+   int data[2] = { -1, -1 }, st[2] = { -1, -1 }, ready = 0, i, wst;
+   char rate[16], c;
+   pid_t pid = -1;
+   (void)unused;
+   snprintf(rate, sizeof(rate), "%d", dev_rate);
+   if (pipe(data) == 0 && pipe(st) == 0) pid = fork();
+   if (pid == 0)
+   {
+      dup2(data[0], 0); dup2(st[1], 3);
+      for (i = 4; i < 256; i++) close(i);
+      execl("/proc/self/exe", "lumen", "--audio-sink", direct_name, direct_conf, rate, (char *)NULL);
+      _exit(127);
+   }
+   if (pid < 0)
+   {
+      if (data[0] >= 0) { close(data[0]); close(data[1]); }
+      if (st[0] >= 0) { close(st[0]); close(st[1]); }
+      SDL_AtomicSet(&direct_state, DIRECT_FAILED); SDL_AtomicSet(&direct_gone, 1);
+      return 0;
+   }
+   close(data[0]); close(st[1]);
+   SDL_AtomicSet(&direct_pid, (int)pid);
+#ifdef F_SETPIPE_SZ
+   fcntl(data[1], F_SETPIPE_SZ, 4096);   /* one block of delay, not the pipe's 64 KB (0.37 s) */
+#endif
+   fcntl(st[0], F_SETFL, O_NONBLOCK);
+   for (i = 0; i < 400 && !ready && !SDL_AtomicGet(&direct_quit); i++)   /* 8 s for the device to open */
+   {
+      if (read(st[0], &c, 1) == 1) { ready = 1; break; }
+      if (waitpid(pid, &wst, WNOHANG) == pid) { pid = -1; break; }
+      SDL_Delay(20);
+   }
+   close(st[0]);
+   if (ready)
+   {
+      logf_("music: output %s (%d Hz)", direct_name, dev_rate);
+      SDL_AtomicSet(&direct_state, DIRECT_RUNNING);
+      while (!SDL_AtomicGet(&direct_quit))
+      {
+         size_t put = 0;
+         mix_lock(); mix((Uint8 *)buf, (int)sizeof(buf)); mix_unlock();
+         while (put < sizeof(buf))
+         {  /* blocks until the child has played the block before: this is the pacing */
+            ssize_t n = write(data[1], (char *)buf + put, sizeof(buf) - put);
+            if (n <= 0) break;
+            put += (size_t)n;
+         }
+         if (put < sizeof(buf)) { logf_("music: %s stopped", direct_name); break; }   /* the child left */
+      }
+   }
+   else logf_("music: %s did not open", direct_name);
+   close(data[1]);   /* the child sees the end and closes the device */
+   if (pid > 0)
+   {
+      for (i = 0; i < 50 && waitpid(pid, &wst, WNOHANG) == 0; i++) SDL_Delay(20);
+      if (i == 50) { kill(pid, SIGKILL); waitpid(pid, &wst, 0); }
+   }
+   SDL_AtomicSet(&direct_pid, 0);
+   SDL_AtomicSet(&direct_state, SDL_AtomicGet(&direct_quit) ? DIRECT_NONE : DIRECT_FAILED);
+#else
+   (void)unused;
+   SDL_AtomicSet(&direct_state, DIRECT_FAILED);
+#endif
+   SDL_AtomicSet(&direct_gone, 1);
+   return 0;
+}
+
+/* stop the direct output; a child that does not take the last block is killed, which
+ * frees the thread from its write */
+static void direct_stop(void)
+{
+   int i, pid;
+   if (SDL_AtomicGet(&direct_gone)) { SDL_AtomicSet(&direct_state, DIRECT_NONE); return; }
+   SDL_AtomicSet(&direct_quit, 1);
+   for (i = 0; i < 25 && !SDL_AtomicGet(&direct_gone); i++) SDL_Delay(20);
+   if (!SDL_AtomicGet(&direct_gone) && (pid = SDL_AtomicGet(&direct_pid)) > 0) kill(pid, SIGKILL);
+   for (i = 0; i < 100 && !SDL_AtomicGet(&direct_gone); i++) SDL_Delay(20);
+   if (!SDL_AtomicGet(&direct_gone)) logf_("music: the direct output did not stop: left behind");
+   SDL_AtomicSet(&direct_state, DIRECT_NONE);
+}
+
+/* Move the sound to another output while running (Settings > Sound > Audio output, a
+ * Bluetooth headset that connects or goes). alsa_dev "" or NULL = the default (HDMI, through
+ * SDL, open since start); a name = that ALSA device, through the sink above, with alsa_conf
+ * as its ALSA_CONFIG_PATH (NULL = the system's). Returns at once: a named output is opened
+ * in the background and the default keeps playing until it is ready (music_output_state).
+ * What was playing goes on: the sources are not touched. -1 with no audio at all. */
+int music_reopen(const char *alsa_dev, const char *alsa_conf)
+{
+   SDL_Thread *th;
+   if (!dev) return -1;   /* no audio since start */
+   logf_("music: moving the output to %s", alsa_dev && *alsa_dev ? alsa_dev : "default");
+   if (SDL_AtomicGet(&direct_state) != DIRECT_NONE) direct_stop();
+   if (!alsa_dev || !*alsa_dev) return 0;
+   snprintf(direct_name, sizeof(direct_name), "%s", alsa_dev);
+   snprintf(direct_conf, sizeof(direct_conf), "%s", alsa_conf ? alsa_conf : "");
+   SDL_AtomicSet(&direct_quit, 0); SDL_AtomicSet(&direct_gone, 0); SDL_AtomicSet(&direct_state, DIRECT_OPENING);
+   if ((th = SDL_CreateThread(direct_main, "audio-out", NULL))) SDL_DetachThread(th);
+   else { SDL_AtomicSet(&direct_state, DIRECT_FAILED); SDL_AtomicSet(&direct_gone, 1); }
+   return 0;
+}
+
+/* the named output: 0 none (the default plays), 1 opening, 2 playing, -1 it failed or its
+ * device went away (the default plays again; music_reopen clears it) */
+int music_output_state(void)
+{
+   switch (SDL_AtomicGet(&direct_state))
+   {
+      case DIRECT_OPENING: return 1;
+      case DIRECT_RUNNING: return 2;
+      case DIRECT_FAILED:  return -1;
+      default:             return 0;
+   }
+}
+
 void music_play(const char *path, float fade_s)
 {
    int k;
@@ -605,7 +821,7 @@ void music_play(const char *path, float fade_s)
    if (!strcmp(path, target)) return;        /* before reap: no audio lock per frame */
    reap();
    snprintf(target, sizeof target, "%s", path);
-   SDL_LockAudioDevice(dev);
+   mix_lock();
    id = ++cur_id;
    for (k = 0; k < NV; k++)
       if (vo[k].used)
@@ -613,7 +829,7 @@ void music_play(const char *path, float fade_s)
          vo[k].target = 0;
          vo[k].gstep = fade_s > 0 ? 1.0f / (fade_s * dev_rate) : 1;
       }
-   SDL_UnlockAudioDevice(dev);
+   mix_unlock();
    SDL_LockMutex(req_mx);
    if (*path)
    {
@@ -634,9 +850,9 @@ void music_set_volume(float v)
    v = v < 0 ? 0 : v > 1 ? 1 : v;
    if (v == vol_c) return;
    vol_c = v;
-   SDL_LockAudioDevice(dev);
+   mix_lock();
    mvol_t = v;
-   SDL_UnlockAudioDevice(dev);
+   mix_unlock();
 }
 
 void music_duck(float amount)
@@ -645,18 +861,18 @@ void music_duck(float amount)
    amount = amount < 0 ? 0 : amount > 1 ? 1 : amount;
    if (amount == duck_c) return;
    duck_c = amount;
-   SDL_LockAudioDevice(dev);
+   mix_lock();
    duck_t = amount;
-   SDL_UnlockAudioDevice(dev);
+   mix_unlock();
 }
 
 void music_shutdown(void)
 {
    int k;
    if (!dev) return;
-   SDL_LockAudioDevice(dev);
+   mix_lock();
    mvol_t = 0;                                 /* ramp to silence (0.2 s) instead of a click */
-   SDL_UnlockAudioDevice(dev);
+   mix_unlock();
    SDL_Delay(220);
    SDL_LockMutex(req_mx);
    quit = 1;
@@ -664,7 +880,8 @@ void music_shutdown(void)
    SDL_UnlockMutex(req_mx);
    SDL_WaitThread(loader, NULL);               /* waits out an in-flight file read */
    loader = NULL;
-   SDL_CloseAudioDevice(dev);                  /* callback no longer runs */
+   if (SDL_AtomicGet(&direct_state) != DIRECT_NONE) direct_stop();
+   if (dev) SDL_CloseAudioDevice(dev);         /* callback no longer runs */
    {
       int k;
       for (k = 0; k < NFX; k++) { free(clk[k]); clk[k] = NULL; }

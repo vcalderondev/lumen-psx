@@ -17,6 +17,7 @@ static int   s_n, s_active;
 static char  s_home[256];
 static float s_col[TC_COUNT][3];
 static float s_card_alpha = 0.92f;
+static float s_radius = 1.0f;     /* corner rounding of every shape: 1 = Lumen's, 0 = square */
 
 static const char *const k_keys[TC_COUNT] = { "accent", "pill", "card", "text", "dim", "backdrop", "panel", "danger" };
 /* Lumen's own look: the colours the frontend used before themes existed */
@@ -81,6 +82,7 @@ static void read_ini(const char *id, char *name, size_t nn, int apply)
       if (!strcmp(k, "name") && name) snprintf(name, nn, "%s", v);
       if (!apply) continue;
       if (!strcmp(k, "card_alpha")) { float a = (float)atof(v); if (a > 0.2f && a <= 1.0f) s_card_alpha = a; continue; }
+      if (!strcmp(k, "radius")) { float r = (float)atof(v); s_radius = r < 0.0f ? 0.0f : r > 1.0f ? 1.0f : r; continue; }
       for (i = 0; i < TC_COUNT; i++)
          if (!strcmp(k, k_keys[i]) && !parse_rgb(v, s_col[i])) logf_("theme %s: bad colour %s = %s", id, k, v);
    }
@@ -127,6 +129,7 @@ void theme_init(const char *home)
    qsort(s_list, s_n, sizeof(s_list[0]), cmp_entry);
    memcpy(s_col, k_default, sizeof(s_col));
    s_card_alpha = 0.92f;
+   s_radius = 1.0f;
    want = settings_get("theme", "default");
    s_active = 0;
    for (i = 0; i < s_n; i++) if (!strcmp(s_list[i].id, want)) s_active = i;
@@ -141,6 +144,7 @@ const char *theme_name(int i) { return i >= 0 && i < s_n ? s_list[i].name : "LPS
 int         theme_active_index(void) { return s_active; }
 const char *theme_active_id(void) { return s_list[s_active].id; }
 float       theme_card_alpha(void) { return s_card_alpha; }
+float       theme_radius(void) { return s_radius; }
 
 void theme_color(int which, float rgb[3])
 {

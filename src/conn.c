@@ -41,6 +41,7 @@ static char    s_pass[72];                             /* typed password, until 
 static int     s_pass_ready;
 static char    s_target[64];                           /* ssid / mac of the pending question */
 static char    s_sel_key[64];                          /* the highlighted entry: kept across re-sorts */
+static char    s_recent[18];                           /* the search: the device chosen there stays listed once paired */
 static int     s_sel_gen = -1;
 
 static const net_dev_t *dev_at(int i) { return &net_state()->dev[s_map[i < s_nmap ? i : 0]]; }
@@ -84,7 +85,9 @@ static int count(void)
    {  /* the paired devices, or (the search) the ones that are not */
       int i;
       s_nmap = 0;
-      for (i = 0; i < ns->ndev; i++) if ((ns->dev[i].paired == 0) == s_bt_add) s_map[s_nmap++] = i;
+      for (i = 0; i < ns->ndev; i++)
+         if ((ns->dev[i].paired == 0) == s_bt_add || (s_bt_add && s_recent[0] && !strcmp(ns->dev[i].mac, s_recent)))
+            s_map[s_nmap++] = i;
       return s_nmap;
    }
    return s_kind == K_WIFI ? ns->naps : 0;
@@ -93,7 +96,7 @@ static int count(void)
 static void open_kind(int kind)
 {
    if (s_open) return;
-   s_kind = kind; s_open = 1; s_away = 0; s_sel = s_top = 0; s_t0 = now_s(); s_sel_key[0] = 0;
+   s_kind = kind; s_open = 1; s_away = 0; s_sel = s_top = 0; s_t0 = now_s(); s_sel_key[0] = 0; s_recent[0] = 0;
    s_pill.x = s_pill.v = s_scroll.x = s_scroll.v = 0;
    if (s_fade.x < 0.02f) { s_fade.x = 0; s_fade.v = 0; }
    if (kind == K_WIFI) net_wifi_scan();
@@ -187,10 +190,16 @@ void conn_update(const ui_nav_t *nav, double t, float dt)
             if (s_kind == K_WIFI) wifi_confirm();
             else
             {
+               /* the row itself shows "Pairing…" from this press on (net.h pair_mac): a
+                * second press on it says nothing, one on another device says to wait */
                const net_dev_t *d = dev_at(s_sel);
-               if (ns->busy) panel_toast("net.busy");
+               if (ns->pair_mac[0] || ns->busy) { if (strcmp(ns->pair_mac, d->mac)) panel_toast("net.busy"); }
                else if (d->connected) panel_toast("net.bt_already");
-               else net_bt_pair(d->mac);
+               else
+               {
+                  if (s_bt_add) snprintf(s_recent, sizeof(s_recent), "%s", d->mac);
+                  net_bt_pair(d->mac);
+               }
             }
          }
          else if (nav->options)
@@ -262,10 +271,14 @@ void conn_draw(double t)
    label_set(&s_title, g_font_title, tr(wifi ? "net.networks" : s_bt_add ? "net.bt_add" : "net.devices"));
    draw_label(&s_title, cx + PADX, cy + 42, txt);
    /* top right: what is going on */
-   if (ns->busy) label_set(&s_cap, g_font_small, tr(wifi ? "net.connecting" : "net.pairing"));
-   else if (wifi ? ns->scanning : ns->bt_scanning) label_set(&s_cap, g_font_small, tr("net.searching"));
-   else { snprintf(n1, sizeof(n1), "%d", n); label_set(&s_cap, g_font_small, trf(buf, sizeof(buf), wifi ? "net.n_networks" : "net.n_devices", "n", n1, NULL)); }
-   draw_label(&s_cap, cx + CW - PADX - s_cap.w, cy + 58, (ns->busy || (wifi ? ns->scanning : ns->bt_scanning)) ? acc : dim);
+   {
+      const int pairing = !wifi && ns->pair_mac[0], working = ns->busy || pairing || (wifi ? ns->scanning : ns->bt_scanning);
+      if (ns->busy || pairing) label_set(&s_cap, g_font_small, tr(wifi ? "net.connecting" : "net.pairing"));
+      else if (working) label_set(&s_cap, g_font_small, tr("net.searching"));
+      else { snprintf(n1, sizeof(n1), "%d", n); label_set(&s_cap, g_font_small, trf(buf, sizeof(buf), wifi ? "net.n_networks" : "net.n_devices", "n", n1, NULL)); }
+      draw_label(&s_cap, cx + CW - PADX - s_cap.w, cy + 58, working ? acc : dim);
+      if (working) draw_dots(cx + CW - PADX - s_cap.w - 34, cy + 58 + s_cap.h * 0.5f, t, acc);   /* it is alive */
+   }
    draw_2d(0, cx + PADX, cy + 96, CW - 2 * PADX, 1, sep, 0);
 
    if (!n)
@@ -288,7 +301,7 @@ void conn_draw(double t)
    for (i = (int)(s_scroll.x / ROW) - 1; i < n; i++)
    {
       float y, c[4], vx;
-      int k, on;
+      int k, on, busy_row = 0;
       if (i < 0) continue;
       y = ly + i * ROW - s_scroll.x;
       if (y >= ly + lh - 1) break;
@@ -307,14 +320,17 @@ void conn_draw(double t)
       {
          const net_dev_t *d = dev_at(i);
          on = d->connected;
-         row_texts(i, d->name, tr(on ? "net.bt_connected" : d->paired ? "net.bt_paired_s" : dev_kind(d)));
+         busy_row = !strcmp(d->mac, ns->pair_mac);
+         row_texts(i, d->name, tr(busy_row ? "net.pairing" : on ? "net.bt_connected" : d->paired ? "net.bt_paired_s" : dev_kind(d)));
+         if (busy_row) on = 0;
       }
       memcpy(c, txt, sizeof(c));
       if (i != s_sel) c[3] *= 0.86f;
       draw_label(&s_rl[k], lx + 20, y + (ROW - s_rl[k].h) * 0.5f, c);
       vx = lx + LIST_W - 20 - s_rv[k].w;
-      draw_label(&s_rv[k], vx, y + (ROW - s_rv[k].h) * 0.5f, on ? acc : dim);
+      draw_label(&s_rv[k], vx, y + (ROW - s_rv[k].h) * 0.5f, on || busy_row ? acc : dim);
       if (on) draw_round_rect(vx - 24, y + ROW * 0.5f - 6, 12, 12, 6, acc, 0.0f);
+      if (busy_row) draw_dots(vx - 34, y + ROW * 0.5f, t, acc);   /* this one is being paired */
    }
    glDisable(GL_SCISSOR_TEST);
    if (n > VIS)

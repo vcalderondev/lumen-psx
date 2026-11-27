@@ -89,6 +89,34 @@ suspend)
     echo 0 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null; echo +20 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null
     say "suspend: RTC wake in 20 s ($(cat /sys/class/rtc/rtc0/wakealarm 2>/dev/null))"
   fi
+  # EXPERIMENT, <home>/debug/bt-wake: let a Bluetooth device wake the console. The USB
+  # Bluetooth adapter and every hub and host controller above it are allowed to wake the
+  # system; whether it works depends on the console keeping the port powered while it sleeps
+  # and on the adapter: not known yet, hence the switch. Every step is logged.
+  if [ -f "${HOME_DIR}/debug/bt-wake" ]; then
+    # in the background and for 3 s at most: a sysfs write that blocks must never hold the
+    # suspend (Sony's power manager waits for this script); each step is logged before it
+    # is tried, so a step that hangs is the last line
+    (
+      for h in /sys/class/bluetooth/hci*; do
+        [ -e "$h" ] || continue
+        d=$(cd "$h/device" 2>/dev/null && pwd -P)
+        n=0
+        while [ -n "$d" ] && [ "$d" != / ] && [ "$d" != /sys/devices ] && [ $n -lt 12 ]; do
+          if [ -f "$d/power/wakeup" ]; then
+            say "suspend: bt-wake: enabling ${d#/sys/devices/}"
+            echo enabled > "$d/power/wakeup" 2>/dev/null
+            say "suspend: bt-wake:   wakeup=$(cat "$d/power/wakeup" 2>/dev/null)"
+          fi
+          d=$(dirname "$d"); n=$((n + 1))
+        done
+      done
+      say "suspend: bt-wake: done"
+    ) &
+    bw=$!
+    i=0; while kill -0 "$bw" 2>/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+    kill -0 "$bw" 2>/dev/null && { kill -9 "$bw" 2>/dev/null; say "suspend: bt-wake: STUCK, given up after 3 s"; }
+  fi
   if [ -d "${RUN}" ]; then
     # nothing of ours may be left on the stick: say who is, write the logs out, pause the
     # copiers, unmount (lazily if someone still holds it: the files are synced either way)

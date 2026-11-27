@@ -22,6 +22,7 @@ typedef struct {
    int  wifi_cap, bt_cap, eth_cap, stock_kernel;
    int  wifi_on, wifi;                    /* setting; NET_* */
    char ssid[64], ip[20];
+   int  rssi;                             /* dBm of the network Wi-Fi is connected to, 0 = unknown */
    int  eth;                              /* NET_* */
    char eth_ip[20];
    int  bt_on, bt;                        /* setting; NET_OFF / NET_NOADAPTER / NET_CONNECTED (on) */
@@ -33,6 +34,7 @@ typedef struct {
    int  ndev, bt_scanning, paired, connected;
    net_dev_t dev[NET_MAX_DEVS];
    int  busy;                             /* a connect / pair is running */
+   char pair_mac[18];                     /* the device being paired, from the press on it until it is done ("" none) */
    int  bt_present;                       /* a USB Bluetooth adapter is plugged in (even with Bluetooth off) */
    int  ap_state;                         /* NET_AP_*: pairing the first controller found, unattended */
    char ap_name[64];                      /* the controller being paired / just paired */
@@ -40,6 +42,12 @@ typedef struct {
 } net_state_t;
 
 void net_init(void);                      /* after settings: capabilities, then what is switched on */
+int  net_supported(void);                 /* net.sh is installed: connections can work at all */
+/* what the modules allow (docs/modules.md): a radio not allowed stays off, its switch kept */
+enum { NET_ALLOW_WIFI, NET_ALLOW_BT, NET_ALLOW_ETH, NET_ALLOW_COUNT };
+void net_allow(int what, int on);         /* before net_init too */
+int  net_allowed(int what);
+void net_status_watch(int on);            /* refresh the status every 10 s (the status bar) */
 void net_poll(void);                      /* each frame: takes the worker's news */
 const net_state_t *net_state(void);
 const char *net_take_toast(void);         /* a tr key the worker wants shown, once */

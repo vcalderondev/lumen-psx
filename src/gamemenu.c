@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "lumen.h"
+#include "module.h"
 #include "music.h"
 #include "gamemenu.h"
 #include "collections.h"
@@ -19,9 +20,10 @@
 #define BH      52.0f
 #define SH      46.0f    /* folder row pitch (dropped)   */
 #define PADX    28.0f
-#define MAXR    (6 + COLL_MAX_FOLDERS + 1)
+#define MAXR    (6 + MOD_MENU_MAX + COLL_MAX_FOLDERS + 1)
 
-enum { R_PLAY, R_FAV, R_FOLDERS, R_FOLDER, R_NEWFOLDER, R_RESUME, R_RESTART };
+enum { R_PLAY, R_FAV, R_FOLDERS, R_FOLDER, R_NEWFOLDER, R_RESUME, R_RESTART, R_MOD };
+/* folder: the folder (R_FOLDER) or the module entry's handle (R_MOD, module.h "menu.game") */
 typedef struct { int type, folder, sub; } mrow_t;
 
 static int     s_open, s_mode, s_gi = -1, s_result, s_sel, s_expanded;
@@ -47,6 +49,10 @@ static void rows_build(void)
    }
    s_rows[s_n++] = (mrow_t){ R_PLAY, -1, 0 };
    s_rows[s_n++] = (mrow_t){ R_FAV, -1, 0 };
+   {  /* the modules' entries for this game, after Lumen's own (docs/modules.md, "menu.game") */
+      int h[MOD_MENU_MAX], n = mod_menu_list(s_gi, h, MOD_MENU_MAX), k;
+      for (k = 0; k < n; k++) s_rows[s_n++] = (mrow_t){ R_MOD, h[k], 0 };
+   }
    s_rows[s_n++] = (mrow_t){ R_FOLDERS, -1, 0 };
    for (f = 0; f < coll_nfolders() && s_n < MAXR - 1; f++) s_rows[s_n++] = (mrow_t){ R_FOLDER, f, 1 };
    s_rows[s_n++] = (mrow_t){ R_NEWFOLDER, -1, 1 };
@@ -114,6 +120,13 @@ static void activate(const mrow_t *r)
       break;
    }
    case R_NEWFOLDER: panel_osk("osk.folder_name", "", accept_new_folder); break;
+   case R_MOD:
+   {  /* the menu closes first: the module may open a card of its own */
+      const int gi = s_gi;
+      close_menu(GM_NONE);
+      mod_menu_invoke(r->folder, gi);
+      break;
+   }
    }
 }
 
@@ -166,6 +179,7 @@ static const char *row_text(const mrow_t *r, const char **value)
    case R_NEWFOLDER: return tr("gm.folder_new");
    case R_RESUME:    return tr("gm.resume_continue");
    case R_RESTART:   return tr("gm.resume_restart");
+   case R_MOD:       return mod_menu_label(r->folder);
    }
    return "";
 }

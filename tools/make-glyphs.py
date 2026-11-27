@@ -19,6 +19,7 @@ EXPORT = 2              # export scale -> 64 px
 SS = 8                  # supersampling while drawing
 N = LOGICAL * SS        # drawing canvas (256)
 W = (255, 255, 255, 255)
+DIM = (255, 255, 255, 82)   # the unlit part of a level glyph (wifi-0 .. wifi-3)
 STROKE = 2.4            # logical stroke width
 FONT = os.environ.get("LUMEN_FONT", os.path.join(os.path.dirname(__file__), "..", "..", "device-dump",
                       "sysroot", "usr", "share", "fonts", "ttf", "LiberationSans-Bold.ttf"))
@@ -143,6 +144,33 @@ def network():
     return im
 
 
+def wifi(level):
+    """Wi-Fi signal for the status bar (the wifi module): `level` of the three arcs lit,
+    the rest drawn faint, so the shape never changes width as the signal moves"""
+    im, d = canvas()
+    for i, r in enumerate((4.2, 8.6, 13)):
+        col = W if i < level else DIM
+        d.arc((u(16 - r), u(25 - r), u(16 + r), u(25 + r)), 225, 315, fill=col, width=int(u(STROKE)))
+    disc(d, 16, 24.5, 1.9)
+    return im
+
+
+def bluetooth():
+    im, d = canvas()
+    # the rune: a vertical stroke with the two crossing arrowheads
+    line(d, [(10.5, 11), (21.5, 21), (16, 26), (16, 6), (21.5, 11), (10.5, 21)])
+    return im
+
+
+def ethernet():
+    im, d = canvas()
+    # an RJ45 socket: the body, the latch notch and three contacts
+    line(d, [(6, 25), (6, 11), (11, 11), (11, 7), (21, 7), (21, 11), (26, 11), (26, 25), (6, 25)])
+    for x in (12, 16, 20):
+        line(d, [(x, 16), (x, 20.5)])
+    return im
+
+
 def clock():
     im, d = canvas()
     ring(d, 16, 16, 12)
@@ -220,6 +248,9 @@ GLYPHS = {
     "pad": pad, "network": network, "clock": clock,
     "info": info, "gallery": gallery, "settings": settings,
     "disc": disc_badge, "cartridge": cartridge, "coin": coin,
+    # status bar glyphs of the built-in modules (docs/modules.md, "status")
+    "wifi-0": lambda: wifi(0), "wifi-1": lambda: wifi(1), "wifi-2": lambda: wifi(2), "wifi-3": lambda: wifi(3),
+    "bluetooth": bluetooth, "ethernet": ethernet,
 }
 
 
