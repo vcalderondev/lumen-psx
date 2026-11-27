@@ -27,6 +27,7 @@ void  panel_osk(const char *title_key, const char *initial, const char *(*accept
 void  panel_keyboard(const char *title_text, int max_chars, int password, const char *(*accept)(const char *));
 void  panel_confirm(const char *message, const char *yes_key, void (*on_yes)(void));
 int   panel_modal_open(void);
+void  panel_audio_route(double t);       /* each frame: moves the sound to the chosen output when it is there (no restart) */
 int   panel_connections_page(void);      /* the Connections page is the one open */
 
 /* callbacks implemented in main.c */

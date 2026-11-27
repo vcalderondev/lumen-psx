@@ -23,6 +23,10 @@ enum { SFX_MOVE_NEXT, SFX_MOVE_PREV, SFX_FOCUS, SFX_PAGE_NEXT, SFX_PAGE_PREV,
        SFX_SYSTEM_NEXT, SFX_SYSTEM_PREV, SFX_OPEN, SFX_BACK, SFX_CONFIRM, SFX_PLAY, SFX_COUNT };
 void music_sfx(int id);
 void music_sfx_level(float v);                  /* 0..1; the Sound page: switch x volume */
+int  music_reopen(const char *alsa_dev, const char *alsa_conf);   /* move the sound to another ALSA output, live ("" = the default); returns at once */
+int  music_bt_libs(void);                      /* the Bluetooth audio plugin's libraries, loaded once: 1 ok */
+int  music_sink_main(const char *name, const char *conf, int rate);   /* "lumen --audio-sink": plays stdin on an ALSA device */
+int  music_output_state(void);                 /* the named output: 0 none, 1 opening, 2 playing, -1 failed / gone */
 void music_shutdown(void);                      /* stop, close the device, join the loader (before exit) */
 
 #endif

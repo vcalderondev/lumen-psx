@@ -32,13 +32,15 @@ case "$1 $2" in
     while read -r m; do
       case "$m" in A0:5A:5C:11:22:33) printf '%s\t1\t1\tDualSense Wireless Controller\tinput-gaming\n' "$m" ;;
                    E4:17:D8:44:55:66) printf '%s\t1\t0\tPro Controller\tinput-gaming\n' "$m" ;;
+                   00:1A:7D:12:34:56) printf '%s\t1\t1\tWH-1000XM4\taudio-headset\n' "$m" ;;
                    *) printf '%s\t1\t1\tWireless Controller\tinput-gaming\n' "$m" ;; esac
     done < "$S/paired"
     grep -q 4C:B9:9B "$S/paired" || printf '4C:B9:9B:77:88:99\t0\t0\tWireless Controller\tinput-gaming\n'
     grep -q 00:1A:7D "$S/paired" || printf '00:1A:7D:12:34:56\t0\t0\tWH-1000XM4\taudio-headset\n'
     grep -q 34:88:5D "$S/paired" || printf '34:88:5D:AB:CD:EF\t0\t0\tK380 Keyboard\tinput-keyboard\n'
     grep -q E4:17:D8:AA "$S/paired" || printf 'E4:17:D8:AA:BB:CC\t0\t0\t8BitDo SN30 Pro\tinput-gaming\n' ;;
-  "bt pair") sleep 2; echo "$3" >> "$S/paired"; echo paired ;;
+  # SIM_BT_NOCONN=1: the device pairs but does not connect (net.sh answers "paired")
+  "bt pair") sleep "${SIM_BT_PAIR_S:-2}"; echo "$3" >> "$S/paired"; [ -n "${SIM_BT_NOCONN}" ] && echo paired || echo connected ;;
   "bt remove") grep -v "$3" "$S/paired" > "$S/p2"; mv "$S/p2" "$S/paired"; echo removed ;;
   "time "*) date -u '+%F %T' ;;
   # software update: releases from $LUMEN_SIM_REL when set (release.json for lpsx.dev,

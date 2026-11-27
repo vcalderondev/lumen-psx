@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +22,7 @@
 #include "settings.h"
 
 enum { J_CAPS, J_WIFI_ON, J_WIFI_OFF, J_WIFI_SCAN, J_WIFI_CONNECT, J_WIFI_SELECT, J_WIFI_FORGET, J_BT_ON, J_BT_OFF,
-       J_BT_PAIR, J_BT_REMOVE, J_ETH_ON, J_TIME, J_COUNT };
+       J_BT_PAIR, J_BT_REMOVE, J_ETH_ON, J_ETH_OFF, J_TIME, J_COUNT };
 typedef struct { int kind; char a[96]; char pass[72]; } job_t;
 
 #define QMAX 16
@@ -34,6 +35,10 @@ static net_state_t  s_ui;              /* the UI's copy */
 static const char  *w_toast;           /* under s_mx */
 static int          w_watch_page, w_watch_wifi, w_watch_bt;   /* under s_mx */
 static int          w_watch_pad, w_autopair;                  /* under s_mx: net_pad_watch */
+/* what the modules allow (docs/modules.md: wifi, bluetooth, ethernet), under s_mx. A radio
+ * that is not allowed stays off whatever its own switch says; the switch is kept. */
+static int          w_allow[NET_ALLOW_COUNT];
+static int          w_watch_status;                           /* under s_mx: net_status_watch */
 static char         s_script[300];
 static int          s_started;
 
@@ -60,11 +65,24 @@ static void push(int kind, const char *a, const char *pass)
 
 /* run "sh net.sh <args...>"; stdin_text goes in on stdin; the output (cut at n - 1) in out.
  * Returns the exit status, -1 when it could not run. */
-static int run(const char *const *args, const char *stdin_text, char *out, size_t n)
+/* longest a net.sh command may take; past it the command and everything it started
+ * (bluetoothctl...) are killed, so one command that hangs cannot stop every later one: the
+ * worker runs them one at a time. Actions (drivers loading, a pairing, a connection) get
+ * RUN_TIMEOUT_S; the status and lists that refresh every few seconds get RUN_QUICK_S */
+#define RUN_TIMEOUT_S 90
+#define RUN_QUICK_S   20
+
+/* set around a search: it is given up the moment a request is waiting in the queue (a
+ * press on a device must not wait for the end of a 6 s search) */
+static int s_run_yield, s_run_yielded;
+static int queue_waiting(void);
+
+static int run_t(const char *const *args, const char *stdin_text, char *out, size_t n, int secs)
 {
-   int po[2], pi[2], st = 0;
+   int po[2], pi[2], st = 0, timed_out = 0;
    pid_t pid;
    size_t got = 0;
+   const double deadline = now_s() + secs;
    const char *argv[12];
    int k = 0, i;
    if (n) out[0] = 0;
@@ -78,6 +96,7 @@ static int run(const char *const *args, const char *stdin_text, char *out, size_
    if (pid == 0)
    {
       int nul = open("/dev/null", O_WRONLY);
+      setpgid(0, 0);   /* its own group: a timeout kills what it started too */
       dup2(pi[0], 0); dup2(po[1], 1);
       if (nul >= 0) dup2(nul, 2);
       close(po[0]); close(po[1]); close(pi[0]); close(pi[1]);
@@ -91,7 +110,25 @@ static int run(const char *const *args, const char *stdin_text, char *out, size_
    for (;;)
    {
       char buf[512];
-      ssize_t r = read(po[0], buf, sizeof(buf));
+      ssize_t r;
+      struct pollfd pf = { po[0], POLLIN, 0 };
+      int left = (int)((deadline - now_s()) * 1000.0), pr;
+      if (s_run_yield && queue_waiting())
+      {
+         kill(-pid, SIGKILL); kill(pid, SIGKILL);
+         s_run_yielded = 1;
+         break;
+      }
+      if (left > 0 && s_run_yield && left > 200) left = 200;   /* look at the queue 5 times a second */
+      if (left <= 0)
+      {
+         kill(-pid, SIGKILL); kill(pid, SIGKILL);
+         timed_out = 1;
+         break;
+      }
+      if ((pr = poll(&pf, 1, left)) == 0) continue;   /* the deadline is checked at the top */
+      if (pr < 0) { if (errno == EINTR) continue; break; }
+      r = read(po[0], buf, sizeof(buf));
       if (r < 0 && errno == EINTR) continue;
       if (r <= 0) break;
       if (n && got < n - 1)
@@ -102,7 +139,16 @@ static int run(const char *const *args, const char *stdin_text, char *out, size_
    }
    close(po[0]);
    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+   if (timed_out)
+   {
+      logf_("net: net.sh %s %s timed out after %d s: killed", args[0] ? args[0] : "", args[0] && args[1] ? args[1] : "", secs);
+      return -1;
+   }
    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+static int run(const char *const *args, const char *stdin_text, char *out, size_t n)
+{
+   return run_t(args, stdin_text, out, n, RUN_TIMEOUT_S);
 }
 
 static const char *kv(const char *text, const char *key, char *val, size_t n)
@@ -167,7 +213,7 @@ static void status_wifi(void)
    char out[400], v[64];
    const char *a[] = { "wifi", "status", NULL };
    int st;
-   run(a, NULL, out, sizeof(out));
+   run_t(a, NULL, out, sizeof(out), RUN_QUICK_S);
    kv(out, "state", v, sizeof(v));
    st = !strcmp(v, "noadapter") ? NET_NOADAPTER : !strcmp(v, "off") || !v[0] ? NET_OFF :
         !strcmp(v, "COMPLETED") ? NET_CONNECTED :
@@ -177,6 +223,8 @@ static void status_wifi(void)
    kv(out, "ssid", w_st.ssid, sizeof(w_st.ssid));
    kv(out, "ip", w_st.ip, sizeof(w_st.ip));
    if (st != NET_CONNECTED) w_st.ip[0] = 0;
+   kv(out, "signal", v, sizeof(v));
+   w_st.rssi = st == NET_CONNECTED && v[0] ? atoi(v) : 0;
    bump();
    SDL_UnlockMutex(s_mx);
 }
@@ -186,7 +234,7 @@ static void status_eth(void)
    char out[200], v[32];
    const char *a[] = { "eth", "status", NULL };
    int st;
-   run(a, NULL, out, sizeof(out));
+   run_t(a, NULL, out, sizeof(out), RUN_QUICK_S);
    kv(out, "state", v, sizeof(v));
    st = !strcmp(v, "connected") ? NET_CONNECTED : !strcmp(v, "connecting") ? NET_CONNECTING :
         !strcmp(v, "nocable") ? NET_NOCABLE : !strcmp(v, "off") ? NET_OFF : NET_NOADAPTER;
@@ -211,8 +259,8 @@ static void scan_wifi(void)
    int n = 0;
    char *line, *save = NULL;
    SDL_LockMutex(s_mx); w_st.scanning = 1; bump(); SDL_UnlockMutex(s_mx);
-   run(a, NULL, out, sizeof(out));
-   run(b, NULL, saved, sizeof(saved));
+   run_t(a, NULL, out, sizeof(out), RUN_QUICK_S);
+   run_t(b, NULL, saved, sizeof(saved), RUN_QUICK_S);
    for (line = strtok_r(out, "\n", &save); line && n < NET_MAX_APS; line = strtok_r(NULL, "\n", &save))
    {  /* signal \t security \t ssid */
       char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
@@ -252,11 +300,29 @@ static int cmp_dev(const void *a, const void *b)
    return strcmp(x->name, y->name);
 }
 
+/* BlueZ names a device it knows no name of after its address, "22-22-41-E8-CF-AA": beacons
+ * and phones passing by, nothing anyone pairs */
+static int unnamed(const net_dev_t *d)
+{
+   int i;
+   if (strlen(d->name) != 17) return 0;
+   for (i = 0; i < 17; i++)
+      if (i % 3 == 2 ? d->name[i] != '-' : d->name[i] != d->mac[i]) return 0;
+   return 1;
+}
+
+/* Devices found by a search and not paired stay listed for a while after BlueZ drops them
+ * (it forgets them 30 s after a search ends): the list must not empty and fill again
+ * between two searches, or while a pairing runs. */
+#define BT_KEEP_S 45.0
+static struct { net_dev_t d; double t; } s_seen[NET_MAX_DEVS];
+static int s_nseen;
+
 static void list_bt(int scan_seconds)
 {
    static char out[4096];
    net_dev_t dev[NET_MAX_DEVS];
-   int n = 0, paired = 0, conn = 0;
+   int n = 0, paired = 0, conn = 0, i, k;
    char *line, *save = NULL;
    if (scan_seconds > 0)
    {
@@ -264,11 +330,18 @@ static void list_bt(int scan_seconds)
       const char *a[] = { "bt", "scan", secs, NULL };
       snprintf(secs, sizeof(secs), "%d", scan_seconds);
       SDL_LockMutex(s_mx); w_st.bt_scanning = 1; bump(); SDL_UnlockMutex(s_mx);
-      run(a, NULL, out, sizeof(out));
+      s_run_yield = 1; s_run_yielded = 0;
+      run_t(a, NULL, out, sizeof(out), scan_seconds + RUN_QUICK_S);
+      s_run_yield = 0;
+      if (s_run_yielded)
+      {  /* a request came in: the search is given up, the list stays as it is */
+         SDL_LockMutex(s_mx); w_st.bt_scanning = 0; bump(); SDL_UnlockMutex(s_mx);
+         return;
+      }
    }
    {
       const char *a[] = { "bt", "devices", NULL };
-      run(a, NULL, out, sizeof(out));
+      run_t(a, NULL, out, sizeof(out), RUN_QUICK_S);
    }
    for (line = strtok_r(out, "\n", &save); line && n < NET_MAX_DEVS; line = strtok_r(NULL, "\n", &save))
    {  /* mac \t paired \t connected \t name [\t icon] */
@@ -281,17 +354,48 @@ static void list_bt(int scan_seconds)
       dev[n].paired = atoi(f[1]); dev[n].connected = atoi(f[2]);
       snprintf(dev[n].name, sizeof(dev[n].name), "%s", f[3]);
       if (k > 4) snprintf(dev[n].icon, sizeof(dev[n].icon), "%s", f[4]);
+      if (!dev[n].paired && unnamed(&dev[n])) continue;
       paired += dev[n].paired; conn += dev[n].connected;
       n++;
    }
+   {  /* remember the unpaired ones, and bring back those seen a moment ago */
+      const double now = now_s();
+      for (i = 0; i < n; i++)
+      {
+         if (dev[i].paired) continue;
+         for (k = 0; k < s_nseen; k++) if (!strcmp(s_seen[k].d.mac, dev[i].mac)) break;
+         if (k == s_nseen && s_nseen < NET_MAX_DEVS) s_nseen++;
+         if (k < s_nseen) { s_seen[k].d = dev[i]; s_seen[k].t = now; }
+      }
+      for (k = 0; k < s_nseen; )
+      {
+         for (i = 0; i < n; i++) if (!strcmp(s_seen[k].d.mac, dev[i].mac)) break;
+         if (i < n && dev[i].paired) { s_seen[k] = s_seen[--s_nseen]; continue; }   /* paired now */
+         if (now - s_seen[k].t > BT_KEEP_S) { s_seen[k] = s_seen[--s_nseen]; continue; }
+         if (i == n && n < NET_MAX_DEVS) dev[n++] = s_seen[k].d;
+         k++;
+      }
+   }
    qsort(dev, (size_t)n, sizeof(dev[0]), cmp_dev);
+   {  /* what BlueZ answered, in the log whenever it changes: a paired controller missing
+       * from the list (or an empty answer from bluetoothctl) shows up here */
+      static int last_n = -1, last_p = -1, last_c = -1;
+      if (n != last_n || paired != last_p || conn != last_c)
+      {
+         logf_("net: bt devices: %d listed, %d paired, %d connected%s", n, paired, conn,
+               n == 0 ? " (bluetoothctl listed nothing)" : "");
+         last_n = n; last_p = paired; last_c = conn;
+      }
+   }
    SDL_LockMutex(s_mx);
    memcpy(w_st.dev, dev, sizeof(dev[0]) * (size_t)n);
    w_st.ndev = n; w_st.paired = paired; w_st.connected = conn; w_st.bt_scanning = 0; bump();
    SDL_UnlockMutex(s_mx);
 }
 
+static double s_scan_hold;   /* no Bluetooth search before this time */
 static void toast(const char *key) { SDL_LockMutex(s_mx); w_toast = key; SDL_UnlockMutex(s_mx); }
+static int queue_waiting(void) { int n; SDL_LockMutex(s_mx); n = s_qn; SDL_UnlockMutex(s_mx); return n > 0; }
 
 static void busy(int on);
 
@@ -480,21 +584,25 @@ static void do_job(const job_t *j)
       break;
    }
    case J_BT_OFF:
-   { const char *a[] = { "bt", "off", NULL }; run(a, NULL, out, sizeof(out)); SDL_LockMutex(s_mx); w_st.bt = NET_OFF; w_st.ndev = 0; bump(); SDL_UnlockMutex(s_mx); break; }
+   { const char *a[] = { "bt", "off", NULL }; run(a, NULL, out, sizeof(out)); s_nseen = 0; SDL_LockMutex(s_mx); w_st.bt = NET_OFF; w_st.ndev = 0; w_st.pair_mac[0] = 0; bump(); SDL_UnlockMutex(s_mx); break; }
    case J_BT_PAIR:
    {
       const char *a[] = { "bt", "pair", j->a, NULL };
       int rc;
       busy(1);
       rc = run(a, NULL, out, sizeof(out));
-      busy(0);
-      toast(rc == 0 ? "net.bt_paired" : "net.bt_failed");
+      logf_("net: bt pair %s: %s", j->a, rc == 0 ? (strstr(out, "connected") ? "connected" : "paired, not connected") : "failed");
+      /* paired and connected, paired only (a headset that did not answer), or not at all */
+      toast(rc != 0 ? "net.bt_failed" : strstr(out, "connected") ? "net.bt_connected_ok" : "net.bt_paired_noconn");
       list_bt(0);
+      SDL_LockMutex(s_mx); w_st.pair_mac[0] = 0; w_st.busy = 0; bump(); SDL_UnlockMutex(s_mx);
+      s_scan_hold = now_s() + 12.0;   /* let the new connection settle before searching again */
       break;
    }
    case J_BT_REMOVE:
    { const char *a[] = { "bt", "remove", j->a, NULL }; run(a, NULL, out, sizeof(out)); toast("net.bt_removed"); list_bt(0); break; }
    case J_ETH_ON: { const char *a[] = { "eth", "on", NULL }; run(a, NULL, out, sizeof(out)); status_eth(); break; }
+   case J_ETH_OFF: { const char *a[] = { "eth", "off", NULL }; run(a, NULL, out, sizeof(out)); status_eth(); break; }
    case J_TIME: time_job(); break;
    }
 }
@@ -502,16 +610,20 @@ static void do_job(const job_t *j)
 static int worker(void *unused)
 {
    double next = 0, eth_retry = 0, next_present = 0, bt_retry = 0, wifi_retry = 0;
+   int was_shown = 0;   /* a connections page or card was on screen at the last round */
+   int eth_dirty = 0;   /* the USB devices changed: look for a cable adapter again */
    (void)unused;
    for (;;)
    {
       job_t j;
-      int have = 0, page, wifi_card, bt_card, pad, autopair;
+      int have = 0, page, wifi_card, bt_card, pad, autopair, a_wifi, a_bt, a_eth, st_watch;
       SDL_LockMutex(s_mx);
       if (!s_qn) SDL_CondWaitTimeout(s_cv, s_mx, 500);
       if (s_qn) { j = s_q[0]; memmove(s_q, s_q + 1, sizeof(s_q[0]) * (size_t)--s_qn); have = 1; }
       page = w_watch_page; wifi_card = w_watch_wifi; bt_card = w_watch_bt;
       pad = w_watch_pad; autopair = w_autopair;
+      a_wifi = w_allow[NET_ALLOW_WIFI]; a_bt = w_allow[NET_ALLOW_BT]; a_eth = w_allow[NET_ALLOW_ETH];
+      st_watch = w_watch_status;
       SDL_UnlockMutex(s_mx);
       if (have) { do_job(&j); continue; }
       if (now_s() >= next_present)
@@ -523,9 +635,9 @@ static int worker(void *unused)
          int p = usb_bt_present();
          usb_list(usb, sizeof(usb));
          int usb_changed = strcmp(usb, last_usb) != 0;
-         if (usb_changed) { logf_("net: USB devices: %s", usb[0] ? usb : "none"); snprintf(last_usb, sizeof(last_usb), "%s", usb); wifi_retry = 0; }
+         if (usb_changed) { logf_("net: USB devices: %s", usb[0] ? usb : "none"); snprintf(last_usb, sizeof(last_usb), "%s", usb); wifi_retry = 0; eth_dirty = 1; }
          if (p != w_st.bt_present) { SDL_LockMutex(s_mx); w_st.bt_present = p; bump(); SDL_UnlockMutex(s_mx); logf_("net: Bluetooth adapter %s", p ? "plugged in" : "gone"); }
-         if (w_st.bt_on && w_st.bt == NET_NOADAPTER && p && now_s() >= bt_retry)
+         if (a_bt && w_st.bt_on && w_st.bt == NET_NOADAPTER && p && now_s() >= bt_retry)
          {
             job_t r; memset(&r, 0, sizeof(r)); r.kind = J_BT_ON;
             logf_("net: a Bluetooth adapter is there now: starting Bluetooth again");
@@ -533,7 +645,7 @@ static int worker(void *unused)
          }
          /* Wi-Fi: its driver is only loaded for the adapter plugged in, so try again when the
           * USB devices changed (once per change), or when an interface is already there */
-         if (w_st.wifi_on && w_st.wifi == NET_NOADAPTER && (usb_changed || wlan_present()) && now_s() >= wifi_retry)
+         if (a_wifi && w_st.wifi_on && w_st.wifi == NET_NOADAPTER && (usb_changed || wlan_present()) && now_s() >= wifi_retry)
          {
             job_t r; memset(&r, 0, sizeof(r)); r.kind = J_WIFI_ON;
             logf_("net: the USB devices changed: starting Wi-Fi again");
@@ -548,18 +660,26 @@ static int worker(void *unused)
          if (w_st.bt == NET_NOADAPTER && w_st.ap_state != NET_AP_NOADAPTER) ap_set(NET_AP_NOADAPTER, NULL);
       }
       else if (w_st.ap_state != NET_AP_IDLE) ap_set(NET_AP_IDLE, "");
-      if (now_s() >= next && (page || wifi_card || bt_card))
+      /* the status: every 3 s while a connections page or card is shown, every 10 s for
+       * the status bar (net_status_watch: a module shows the signal); a page or card that
+       * has just opened is refreshed at once, not at the end of a 10 s wait */
+      if ((page || wifi_card || bt_card) && !was_shown) next = 0;
+      was_shown = page || wifi_card || bt_card;
+      if (now_s() >= next && (page || wifi_card || bt_card || st_watch))
       {
          int was_online = w_st.wifi == NET_CONNECTED || w_st.eth == NET_CONNECTED;
-         if (w_st.wifi_on) status_wifi();
-         status_eth();
-         /* an adapter plugged in after the start: bring it up (loads nothing twice) */
-         if (w_st.eth == NET_NOADAPTER && now_s() >= eth_retry) { const char *a[] = { "eth", "on", NULL }; char o[64]; run(a, NULL, o, sizeof(o)); eth_retry = now_s() + 10; }
+         if (a_wifi && w_st.wifi_on) status_wifi();
+         if (a_eth) status_eth();
+         /* an adapter plugged in after the start: bring it up. Only when the USB devices
+          * changed: "eth on" takes several seconds on the console to find that there is none,
+          * and every 10 s it kept the worker from everything else (searches, pairing) */
+         if (a_eth && w_st.eth == NET_NOADAPTER && eth_dirty && now_s() >= eth_retry)
+         { const char *a[] = { "eth", "on", NULL }; char o[64]; eth_dirty = 0; run(a, NULL, o, sizeof(o)); eth_retry = now_s() + 10; status_eth(); }
          if (!was_online && (w_st.wifi == NET_CONNECTED || w_st.eth == NET_CONNECTED) && w_st.time_on && !w_st.time_ok) time_job();
          if (wifi_card && w_st.wifi_on && now_s() - w_st.scan_age > 20) scan_wifi();
-         if (bt_card && w_st.bt == NET_CONNECTED) list_bt(6);   /* searching while the card is open */
-         else if (page && w_st.bt == NET_CONNECTED) list_bt(0);
-         next = now_s() + 3.0;
+         if (bt_card && w_st.bt == NET_CONNECTED) list_bt(now_s() >= s_scan_hold ? 6 : 0);   /* searching while the card is open */
+         else if ((page || st_watch) && w_st.bt == NET_CONNECTED) list_bt(0);
+         next = now_s() + (page || wifi_card || bt_card ? 3.0 : 10.0);
       }
    }
    return 0;
@@ -584,10 +704,69 @@ void net_init(void)
    SDL_DetachThread(th);
    s_started = 1;
    push(J_CAPS, NULL, NULL);
-   if (w_st.wifi_on) push(J_WIFI_ON, NULL, NULL);
-   if (w_st.bt_on) push(J_BT_ON, NULL, NULL);
-   push(J_ETH_ON, NULL, NULL);   /* a USB Ethernet adapter needs nothing: DHCP when there is one */
+   if (w_st.wifi_on && w_allow[NET_ALLOW_WIFI]) push(J_WIFI_ON, NULL, NULL);
+   if (w_st.bt_on && w_allow[NET_ALLOW_BT]) push(J_BT_ON, NULL, NULL);
+   /* a USB Ethernet adapter needs nothing: DHCP when there is one */
+   if (w_allow[NET_ALLOW_ETH]) push(J_ETH_ON, NULL, NULL);
    s_ui = w_st;
+}
+
+/* asked by the modules every second and by the Modules page every frame: the file is
+ * looked for once per session (a question to the stick can block for hundreds of ms while
+ * it is busy, and net.sh does not come or go while Lumen runs) */
+int net_supported(void)
+{
+   static int known = -1;
+   if (known < 0)
+   {
+      const char *o = getenv("LUMEN_NET_SH");
+      char p[300];
+      snprintf(p, sizeof(p), "%s", o && *o ? o : "");
+      if (!p[0]) snprintf(p, sizeof(p), "%s/net.sh", g_home);
+      known = access(p, R_OK) == 0;
+   }
+   return known;
+}
+
+/* a module allows or blocks a radio (docs/modules.md). Before net_init it only sets what
+ * net_init starts; after, it switches the radio as its own switch says, or off. */
+void net_allow(int what, int on)
+{
+   int was;
+   if (what < 0 || what >= NET_ALLOW_COUNT) return;
+   on = on ? 1 : 0;
+   if (!s_started) { w_allow[what] = on; return; }
+   SDL_LockMutex(s_mx);
+   was = w_allow[what];
+   w_allow[what] = on;
+   if (!on && what == NET_ALLOW_WIFI) { w_st.wifi = NET_OFF; w_st.ip[0] = 0; w_st.rssi = 0; bump(); }
+   if (!on && what == NET_ALLOW_ETH) { w_st.eth = NET_OFF; w_st.eth_ip[0] = 0; bump(); }
+   SDL_UnlockMutex(s_mx);
+   if (was == on) return;
+   switch (what)
+   {
+   case NET_ALLOW_WIFI: if (!on) push(J_WIFI_OFF, NULL, NULL); else if (w_st.wifi_on) push(J_WIFI_ON, NULL, NULL); break;
+   case NET_ALLOW_BT:   if (!on) push(J_BT_OFF, NULL, NULL); else if (w_st.bt_on) push(J_BT_ON, NULL, NULL); break;
+   case NET_ALLOW_ETH:  push(on ? J_ETH_ON : J_ETH_OFF, NULL, NULL); break;
+   }
+}
+
+int net_allowed(int what)
+{
+   int on;
+   if (what < 0 || what >= NET_ALLOW_COUNT) return 0;
+   if (!s_started) return w_allow[what];
+   SDL_LockMutex(s_mx); on = w_allow[what]; SDL_UnlockMutex(s_mx);
+   return on;
+}
+
+void net_status_watch(int on)
+{
+   if (!s_started) { w_watch_status = on ? 1 : 0; return; }
+   SDL_LockMutex(s_mx);
+   if (on && !w_watch_status) SDL_CondSignal(s_cv);
+   w_watch_status = on ? 1 : 0;
+   SDL_UnlockMutex(s_mx);
 }
 
 void net_poll(void)
@@ -636,6 +815,7 @@ void net_wifi_set(int on)
 {
    if (!s_started) return;
    set_flag(&w_st.wifi_on, "wifi", on);
+   if (!net_allowed(NET_ALLOW_WIFI)) return;
    push(on ? J_WIFI_ON : J_WIFI_OFF, NULL, NULL);
    if (on) push(J_WIFI_SCAN, NULL, NULL);
 }
@@ -643,6 +823,7 @@ void net_bt_set(int on)
 {
    if (!s_started) return;
    set_flag(&w_st.bt_on, "bluetooth", on);
+   if (!net_allowed(NET_ALLOW_BT)) return;
    push(on ? J_BT_ON : J_BT_OFF, NULL, NULL);
 }
 void net_time_set(int on)
@@ -655,5 +836,15 @@ void net_wifi_scan(void) { push(J_WIFI_SCAN, NULL, NULL); }
 void net_wifi_connect(const char *ssid, const char *password) { push(J_WIFI_CONNECT, ssid, password); }
 void net_wifi_select(const char *ssid) { push(J_WIFI_SELECT, ssid, NULL); }
 void net_wifi_forget(const char *ssid) { push(J_WIFI_FORGET, ssid, NULL); }
-void net_bt_pair(const char *mac) { push(J_BT_PAIR, mac, NULL); }
+void net_bt_pair(const char *mac)
+{
+   if (!s_started || !mac || !*mac) return;
+   SDL_LockMutex(s_mx);
+   if (w_st.pair_mac[0]) { SDL_UnlockMutex(s_mx); return; }   /* one at a time */
+   snprintf(w_st.pair_mac, sizeof(w_st.pair_mac), "%s", mac);
+   bump();
+   SDL_UnlockMutex(s_mx);
+   push(J_BT_PAIR, mac, NULL);
+   SDL_LockMutex(s_mx); SDL_CondSignal(s_cv); SDL_UnlockMutex(s_mx);
+}
 void net_bt_remove(const char *mac) { push(J_BT_REMOVE, mac, NULL); }

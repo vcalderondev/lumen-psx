@@ -46,6 +46,10 @@ chmod +x "${LUMEN_HOME}/lumen" 2>/dev/null
 [ -z "${XDG_RUNTIME_DIR}" ] && export XDG_RUNTIME_DIR=/run/user/0
 
 slog() { echo "$*" >> "${LOG}/session.log"; }
+# SDL (the frontend, homebrew apps) must leave a DualSense / DualShock 4 on Bluetooth in its
+# simple report mode: "enhanced reports" switch the pad to a report this kernel cannot read,
+# and RetroArch then gets no input from it until it reconnects.
+export SDL_JOYSTICK_ENHANCED_REPORTS=0
 
 # lumen_parse_launch FILE: sets L_CORE L_CONTENT L_SYSTEM L_TITLE L_PROFILE L_MODE
 # L_DEMO_SECONDS L_GRAPHICS L_OPT_CORE_NAME L_CRT; writes the opt.* pairs to /tmp/lumen-opt.kv
@@ -174,9 +178,14 @@ lumen_merge_opt() {
 # falls back to the default. Sets LUMEN_AUDIO_DEV ("plughw:CARD=<id>,DEV=0",
 # "bluealsa:DEV=<mac>,PROFILE=a2dp" or empty) for the frontend (AUDIODEV, SDL's ALSA backend)
 # and RetroArch (audio_device), and ALSA_CONFIG_PATH for Bluetooth.
+# bluez-alsa's ALSA plugin needs the Bluetooth package's own libraries (GLib...): its RUNPATH
+# does not reach what its libraries need in turn, so a program that opens the Bluetooth
+# output (RetroArch, a native port, the frontend) gets them on LD_LIBRARY_PATH.
+LUMEN_LD_BASE="${LD_LIBRARY_PATH:-}"
 lumen_audio_dev() {
   LUMEN_AUDIO_DEV=""; LUMEN_AUDIO_BT=""
   unset ALSA_CONFIG_PATH
+  if [ -n "${LUMEN_LD_BASE}" ]; then export LD_LIBRARY_PATH="${LUMEN_LD_BASE}"; else unset LD_LIBRARY_PATH; fi
   ao=$(sed -n 's/^[[:space:]]*audio_out[[:space:]]*=[[:space:]]*\([A-Za-z0-9_]*\).*/\1/p' "${LUMEN_HOME}/settings.ini" 2>/dev/null | tail -1)
   case "${ao}" in
     ""|auto) return 0 ;;
@@ -184,6 +193,7 @@ lumen_audio_dev() {
           if [ -f /tmp/lumen-bt/asound-bluealsa.conf ] && sh "${LUMEN_HOME}/net.sh" bt audio "${mac}" >/dev/null 2>&1; then
             LUMEN_AUDIO_DEV="bluealsa:DEV=${mac},PROFILE=a2dp"; LUMEN_AUDIO_BT=1
             export ALSA_CONFIG_PATH="/usr/share/alsa/alsa.conf:/tmp/lumen-bt/asound-bluealsa.conf"
+            export LD_LIBRARY_PATH="${LUMEN_LD_BASE:+${LUMEN_LD_BASE}:}/tmp/lumen-bt/lib"
           else slog "audio: Bluetooth ${mac} not connected, default output"; fi
           return 0 ;;
   esac
@@ -196,6 +206,13 @@ lumen_build_ra_extra() {
   [ -n "${LUMEN_AUDIO_DEV}" ] && echo "audio_device = \"${LUMEN_AUDIO_DEV}\"" >> "${LUMEN_RA_EXTRA}"
   # A2DP buffers more than HDMI: a larger RetroArch buffer avoids crackles
   [ -n "${LUMEN_AUDIO_BT}" ] && echo 'audio_latency = "128"' >> "${LUMEN_RA_EXTRA}"
+  # PlayStation: ports 1 and 2 are DualShocks (PCSX-ReARMed device 517), so the sticks of a
+  # DualSense / DualShock 4 / USB pad are analog in the games that read them. Like the real
+  # pad it starts in digital mode: the console's own pad and digital-only games are as before.
+  if [ "$L_SYSTEM" = psx ]; then
+    echo 'input_libretro_device_p1 = "517"' >> "${LUMEN_RA_EXTRA}"
+    echo 'input_libretro_device_p2 = "517"' >> "${LUMEN_RA_EXTRA}"
+  fi
   LUMEN_RA_SHADER=""
   if [ -n "$L_CRT" ]; then
     if [ -f "${LUMEN_HOME}/shaders/crt-lumen-${L_CRT}.glslp" ]; then

@@ -5,6 +5,10 @@
  * frame into fixed buffers (plain string copies, no heap), and every text on screen is a
  * label_t that re-renders only when its string changes. The keyboard renders its key
  * glyphs once when it opens and frees them when it has faded out. */
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +29,7 @@
 #include "audit.h"
 #include "stats.h"
 #include "net.h"
+#include "module.h"
 #include "conn.h"
 #include "kern.h"
 #include "update.h"
@@ -41,7 +46,7 @@
 #define RAIL_X  70.0f
 #define RAIL_Y  172.0f
 #define RAIL_W  320.0f
-#define RAIL_H  46.0f        /* the seven sections of the rail, from y 172 */
+#define RAIL_H  46.0f        /* the sections of the rail (up to eight), from y 172 */
 #define RAIL_P  50.0f        /* rail pitch */
 #define CARD_X  420.0f
 #define CARD_Y  108.0f
@@ -85,20 +90,46 @@ static void draw_label(const label_t *l, float x, float y, const float c[4])
 /* Pages. The rail holds the categories (1 .. P_RAIL_END - 1); a category's card lists its
  * settings and the sub-pages it opens (a row with ›), which open in the same card with the
  * category as their kicker; Circle goes back up one level, to the row it came from. */
-enum { P_ROOT, P_PROFILE, P_DISPLAY, P_SOUND, P_NETWORK, P_BLUETOOTH, P_LIBRARY, P_SYSTEM,
-       P_GRAPHICS, P_SCREENSAVER, P_THEME, P_AUDIO_OUT, P_LANGUAGE, P_UPDATE, P_DATETIME, P_ABOUT, P_COUNT };
+enum { P_ROOT, P_PROFILE, P_DISPLAY, P_SOUND, P_NETWORK, P_BLUETOOTH, P_LIBRARY, P_MODULES, P_SYSTEM,
+       P_GRAPHICS, P_SCREENSAVER, P_THEME, P_AUDIO_OUT, P_LANGUAGE, P_UPDATE, P_DATETIME, P_ABOUT, P_MODULE, P_COUNT };
 #define P_RAIL_END P_GRAPHICS
 static const char *const k_page_key[P_COUNT] = {
    "panel.title", "section.profile", "section.display", "section.sound", "section.network", "section.bluetooth",
-   "section.library", "section.system",
+   "section.library", "section.modules", "section.system",
    "section.graphics", "section.screensaver", "section.theme", "section.audio_out", "section.language",
-   "section.update", "section.datetime", "section.about"
+   "section.update", "section.datetime", "section.about", "section.modules"
 };
 static const int k_parent[P_COUNT] = {
    [P_GRAPHICS] = P_DISPLAY, [P_SCREENSAVER] = P_DISPLAY, [P_THEME] = P_DISPLAY, [P_AUDIO_OUT] = P_SOUND,
-   [P_LANGUAGE] = P_SYSTEM, [P_UPDATE] = P_SYSTEM, [P_DATETIME] = P_SYSTEM, [P_ABOUT] = P_SYSTEM
+   [P_LANGUAGE] = P_SYSTEM, [P_UPDATE] = P_SYSTEM, [P_DATETIME] = P_SYSTEM, [P_ABOUT] = P_SYSTEM,
+   [P_MODULE] = P_MODULES
 };
 static int rail_of(int page) { while (page > 0 && page < P_COUNT && k_parent[page]) page = k_parent[page]; return page; }
+
+/* modules (docs/modules.md): a category of the rail shows only while a module behind it is
+ * switched on; Network for wifi / ethernet, Bluetooth for bluetooth */
+static int mod_on(const char *id) { return module_switch(module_index(id)); }
+static int rail_shown(int page)
+{
+   if (page == P_NETWORK) return mod_on("wifi") || mod_on("ethernet");
+   if (page == P_BLUETOOTH) return mod_on("bluetooth");
+   return page >= 1 && page < P_RAIL_END;
+}
+/* place of a category in the rail, counting only the ones shown */
+static int rail_pos(int page)
+{
+   int i, n = 0;
+   for (i = 1; i < page && i < P_RAIL_END; i++) n += rail_shown(i);
+   return n;
+}
+/* the next category shown from `page` in direction dir (+1 / -1), or page itself */
+static int rail_step(int page, int dir)
+{
+   int p;
+   for (p = page + dir; p >= 1 && p < P_RAIL_END; p += dir) if (rail_shown(p)) return p;
+   return page;
+}
+static int s_mod_sel;   /* the module of the P_MODULE page (module.h index) */
 
 enum { R_ACTION, R_CHOICE, R_INFO };
 enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_RENAME, ID_PROFILE_COLOR, ID_PROFILE_DELETE,
@@ -108,7 +139,8 @@ enum { ID_LANG = 100, ID_PROFILE_ACTIVE = 200, ID_PROFILE_CREATE, ID_PROFILE_REN
        ID_DSP_OUTPUT = 700, ID_DSP_COMP, ID_DSP_SCANOUT, ID_DSP_RESTART, ID_DSP_THEME, ID_DSP_THEME_APPLY, ID_DSP_CRT, ID_INFO = 900,
        ID_NET_WIFI = 1000, ID_NET_WIFI_LIST, ID_NET_BT, ID_NET_BT_LIST, ID_NET_ETH, ID_NET_TIME, ID_NET_BT_ADD, ID_NET_IP,
        ID_KERNEL = 1100, ID_UPD_CHECK = 1200, ID_UPD_GET, ID_UPD_CANCEL, ID_UPD_INSTALL, ID_UPD_AUTO,
-       ID_SYS_REBOOT = 1300, ID_AUDIO_OUT = 1400, ID_AUDIO_BT = 1500 };
+       ID_SYS_REBOOT = 1300, ID_AUDIO_OUT = 1400, ID_AUDIO_BT = 1500,
+       ID_MOD_SWITCH = 1600, ID_MOD_STATE, ID_MOD_VERSION, ID_MOD_SOURCE, ID_MOD = 1700 };
 
 /* ---- Display page: output resolution (and direct scanout), applied by boot.sh at the
  * next boot (settings display / scanout). The compositor is not a choice: boot.sh runs
@@ -151,8 +183,9 @@ static void restart_yes(void) { ui_request_reboot(); }
 static void update_yes(void) { ui_request_update(); }
 
 /* ---- Sound > Audio output: the ALSA cards (/proc/asound/cards, read when the page opens:
- * a USB headset or DAC can come and go). run.sh hands the choice to Lumen (AUDIODEV) and
- * RetroArch (audio_device), so a change restarts Lumen. "auto" = ALSA's default (HDMI). */
+ * a USB headset or DAC can come and go). run.sh hands the choice to RetroArch (audio_device)
+ * and to Lumen at its start (AUDIODEV); while Lumen runs, panel_audio_route() moves the
+ * sound itself, with no restart. "auto" = ALSA's default (HDMI). */
 #define AO_MAX 8
 static struct { char id[20], name[64]; } s_ao[AO_MAX];
 static int s_nao;
@@ -189,14 +222,103 @@ static void bt_out_id(char *out, size_t n, const char *mac)
    for (; *mac && o + 1 < n; mac++) if (*mac != ':') out[o++] = *mac;
    out[o] = 0;
 }
-/* what Lumen runs on now (run.sh exported it at start) */
+/* ---- the audio route: where the sound goes now, following the setting and what is there.
+ * A Bluetooth headset chosen as the output is used from the moment it is connected (at
+ * power-on Bluetooth comes up after Lumen) and the sound goes back to the default when it
+ * leaves; a USB card likewise. Nothing restarts: music_reopen() moves the device. */
+#define BT_ALSA_CONF "/tmp/lumen-bt/asound-bluealsa.conf"
+static char s_route[72];          /* the ALSA device in use ("" = the default, where Lumen starts) */
+
+/* the ALSA device the setting asks for and that can be opened now ("" = the default) */
+static void audio_target(char *out, size_t n)
+{
+   const char *w = audio_out();
+   const net_state_t *ns = net_state();
+   char id[24];
+   int i;
+   out[0] = 0;
+   if (!strcmp(w, "auto") || !*w) return;
+   if (!strncmp(w, "bt_", 3))
+   {
+      if (ns->bt != NET_CONNECTED) return;
+      for (i = 0; i < ns->ndev; i++)
+      {
+         bt_out_id(id, sizeof(id), ns->dev[i].mac);
+         if (!strcmp(id, w) && ns->dev[i].connected) { snprintf(out, n, "bluealsa:DEV=%s,PROFILE=a2dp", ns->dev[i].mac); return; }
+      }
+      return;
+   }
+   audio_scan();   /* /proc/asound/cards: a few lines of RAM */
+   for (i = 0; i < s_nao; i++) if (!strcmp(s_ao[i].id, w)) { snprintf(out, n, "plughw:CARD=%s,DEV=0", w); return; }
+}
+
+/* the chosen output is not the one in use (it is not connected or plugged in) */
 static int audio_out_pending(void)
 {
-   const char *d = getenv("AUDIODEV"), *want = audio_out();
-   char cur[40] = "auto";
-   if (d && !strncmp(d, "plughw:CARD=", 12)) { snprintf(cur, sizeof(cur), "%s", d + 12); cur[strcspn(cur, ",")] = 0; }
-   else if (d && !strncmp(d, "bluealsa:DEV=", 13)) { char mac[18]; snprintf(mac, sizeof(mac), "%.17s", d + 13); bt_out_id(cur, sizeof(cur), mac); }
-   return strcmp(cur, want) != 0;
+   char t[72];
+   if (!strcmp(audio_out(), "auto")) return 0;
+   audio_target(t, sizeof(t));
+   return !t[0];
+}
+
+/* Follows the setting and what is connected, twice a second. A named output is opened in
+ * the background by music.c while the TV keeps playing, so an output that never answers
+ * costs a toast, not a frozen dashboard. */
+void panel_audio_route(double t)
+{
+   static double next, since, retry_at;
+   static char want[72], failed[72], pending[72];
+   char now[72];
+   int bt, st;
+   if (t < next) return;
+   next = t + 0.5;
+   st = music_output_state();
+   if (pending[0])
+   {  /* the answer of the output asked for */
+      if (st == 1) return;
+      bt = !strncmp(pending, "bluealsa:", 9);
+      if (st == 2)
+      {
+         snprintf(s_route, sizeof(s_route), "%s", pending);
+         failed[0] = 0;
+         panel_toast(bt ? "audio.toast_bt" : "audio.toast_card");
+      }
+      else
+      {  /* say so once, try again later */
+         music_reopen(NULL, NULL);
+         if (strcmp(pending, failed)) panel_toast("audio.toast_failed");
+         snprintf(failed, sizeof(failed), "%s", pending);
+         retry_at = t + 20.0;
+      }
+      logf_("panel: audio route %s -> %s", pending, st == 2 ? "ok" : "failed");
+      pending[0] = 0;
+      ui_sound_changed();
+      return;
+   }
+   if (s_route[0] && st != 2)
+   {  /* the output in use went away under us (the headset was switched off) */
+      logf_("panel: audio: %s stopped, back to the default", s_route);
+      music_reopen(NULL, NULL);
+      snprintf(failed, sizeof(failed), "%s", s_route);
+      retry_at = t + 5.0;
+      s_route[0] = 0;
+      ui_sound_changed();
+   }
+   audio_target(now, sizeof(now));
+   if (strcmp(now, want)) { snprintf(want, sizeof(want), "%s", now); since = t; }
+   if (!strcmp(want, s_route)) return;
+   /* a headset that has just connected needs a moment before its audio link is up; an
+    * output that failed is tried again after 20 s */
+   if (t - since < (want[0] ? 2.0 : 0.3)) return;
+   if (!strcmp(want, failed) && t < retry_at) return;
+   bt = !strncmp(want, "bluealsa:", 9);
+   if (bt && access(BT_ALSA_CONF, R_OK) != 0) return;
+   if (music_reopen(want, bt ? "/usr/share/alsa/alsa.conf:" BT_ALSA_CONF : NULL) < 0) { retry_at = t + 20.0; snprintf(failed, sizeof(failed), "%s", want); return; }
+   if (want[0]) { snprintf(pending, sizeof(pending), "%s", want); return; }
+   s_route[0] = 0;
+   panel_toast("audio.toast_default");
+   ui_sound_changed();
+   logf_("panel: audio route default -> ok");
 }
 static const char *audio_out_name(void)
 {
@@ -209,7 +331,6 @@ static const char *audio_out_name(void)
    for (i = 0; i < ns->ndev; i++) { bt_out_id(id, sizeof(id), ns->dev[i].mac); if (!strcmp(id, w)) return ns->dev[i].name; }
    return !strncmp(w, "bt_", 3) ? "Bluetooth" : w;
 }
-static void audio_restart_yes(void) { ui_request_restart(); }
 
 /* a connection to the internet: Wi-Fi joined or the cable up */
 static int net_online(void) { const net_state_t *ns = net_state(); return ns->wifi == NET_CONNECTED || ns->eth == NET_CONNECTED; }
@@ -266,9 +387,16 @@ static long    s_free_mb = -1;         /* in MB below 1 GB; measured when the pa
 
 static label_t s_title, s_ptitle, s_lt, s_gt, s_kick, s_cap, s_rail_l[16];
 static label_t s_rl[MAX_ROWS], s_rv[MAX_ROWS], s_rvf[MAX_ROWS];   /* label, value, value cut to fit */
-static label_t s_help[2];          /* the help line: the current text and the one fading out */
-static int     s_help_cur;
-static spring  s_help_a;           /* 0..1: the current help text fading in */
+/* The help line shows one text at a time: when the focus moves, the text on screen fades
+ * out, and the new one fades in only once the focus has rested (HELP_REST_S) and the old
+ * one is gone. Two texts are never drawn over each other, and moving fast through the rows
+ * does not flash every description on the way. */
+#define HELP_REST_S 0.14
+static label_t s_help;             /* the text on screen */
+static char    s_help_want[400];   /* the text of the focus */
+static double  s_help_want_t;      /* since when */
+static float   s_help_target = 1.0f;
+static spring  s_help_a;           /* 0..1: its opacity */
 static double  s_sel_t;            /* when the focused row last changed (the marquee starts over) */
 static int     s_sel_page = -1, s_sel_row = -1, s_sel_card = -1;
 
@@ -391,7 +519,7 @@ static const char *row_desc(int id)
 /* what each category of the rail holds, while the focus is on the rail */
 static const char *const k_rail_desc[P_RAIL_END] = {
    NULL, "desc.rail_profile", "desc.rail_display", "desc.rail_sound", "desc.rail_network", "desc.rail_bluetooth",
-   "desc.rail_library", "desc.rail_system"
+   "desc.rail_library", "desc.rail_modules", "desc.rail_system"
 };
 
 static row_t *row_add(int type, int id, const char *label, const char *value)
@@ -404,6 +532,23 @@ static row_t *row_add(int type, int id, const char *label, const char *value)
    snprintf(r->label, sizeof(r->label), "%s", label);
    snprintf(r->value, sizeof(r->value), "%s", value ? value : "");
    return r;
+}
+
+/* a module's state in words (Settings > Modules): On, Off, Needs <module>, After restart,
+ * or why it cannot run */
+static const char *mod_state_text(int i, char *buf, size_t n)
+{
+   const char *b;
+   switch (module_state(i))
+   {
+   case MOD_ON:      return tr("mods.state_on");
+   case MOD_OFF:     return tr("mods.state_off");
+   case MOD_RESTART: return tr("mods.state_restart");
+   case MOD_BLOCKED:
+      if (!(b = module_blocker(i))) return tr("mods.missing_dep");
+      return trf(buf, n, "mods.state_needs", "name", tr(module_name_key(module_index(b))), NULL);
+   default:          return tr(module_why(i) ? module_why(i) : "mods.unavailable");
+   }
 }
 
 static int lang_active_index(void)
@@ -576,22 +721,23 @@ static void page_build(void)
    case P_NETWORK:
    {  /* lumen-design, settings-connections.html: the Wi-Fi switch and its network, the cable */
       const net_state_t *ns = net_state();
-      if ((r = row_add(R_CHOICE, ID_NET_WIFI, tr("net.wifi"), tr(ns->wifi_on ? "value.on" : "value.off"))))
+      const int m_wifi = mod_on("wifi"), m_eth = mod_on("ethernet");
+      if (m_wifi && (r = row_add(R_CHOICE, ID_NET_WIFI, tr("net.wifi"), tr(ns->wifi_on ? "value.on" : "value.off"))))
       {
          r->at_lo = !ns->wifi_on; r->at_hi = ns->wifi_on;
          if (ns->wifi_cap == NET_CAP_NO && !ns->wifi_on) { r->enabled = 0; r->dim = 1; r->why = "net.wifi_nokernel"; }
       }
       /* the networks only once Wi-Fi is on and a USB adapter answers (a console's settings do
        * not offer what cannot work); without one, the row says what is missing */
-      if (ns->wifi_on && ns->wifi == NET_NOADAPTER)
+      if (m_wifi && ns->wifi_on && ns->wifi == NET_NOADAPTER)
          row_add(R_INFO, ID_INFO, tr("net.network"), tr("net.noadapter"));
-      else if (ns->wifi_on && (r = row_add(R_ACTION, ID_NET_WIFI_LIST, tr("net.network"),
+      else if (m_wifi && ns->wifi_on && (r = row_add(R_ACTION, ID_NET_WIFI_LIST, tr("net.network"),
                        ns->wifi == NET_CONNECTED ? ns->ssid : ns->wifi == NET_CONNECTING ? tr("net.connecting") : tr("net.notconnected"))))
       { r->enter = 1; r->check = ns->wifi == NET_CONNECTED; }
-      row_add(R_INFO, ID_NET_ETH, tr("net.cable"),
+      if (m_eth) row_add(R_INFO, ID_NET_ETH, tr("net.cable"),
               ns->eth == NET_CONNECTED ? ns->eth_ip : ns->eth == NET_CONNECTING ? tr("net.connecting") :
               ns->eth == NET_NOCABLE ? tr("net.nocable") : tr("net.noadapter"));
-      if (ns->wifi == NET_CONNECTED && ns->ip[0]) row_add(R_INFO, ID_NET_IP, tr("net.ip"), ns->ip);
+      if (m_wifi && ns->wifi == NET_CONNECTED && ns->ip[0]) row_add(R_INFO, ID_NET_IP, tr("net.ip"), ns->ip);
       snprintf(s_foot, sizeof(s_foot), "%s", tr("net.note"));
       break;
    }
@@ -616,6 +762,35 @@ static void page_build(void)
       }
       else if (ns->bt_on) row_add(R_INFO, ID_INFO, tr("net.adapter"), tr("net.connecting"));
       snprintf(s_foot, sizeof(s_foot), "%s", tr("net.bt_page_note"));
+      break;
+   }
+   case P_MODULES:
+   {  /* every module, its state as the value; the help line shows its description */
+      for (i = 0; i < modules_count() && i < MAX_ROWS - 2; i++)
+         if ((r = row_add(R_ACTION, ID_MOD + i, tr(module_name_key(i)), mod_state_text(i, v, sizeof(v)))))
+         { r->enter = 1; r->desc = module_desc_key(i); r->check = module_state(i) == MOD_ON; }
+      if (modules_restart_pending()) row_add(R_ACTION, ID_SYS_REBOOT, tr("mods.restart"), NULL);
+      snprintf(s_foot, sizeof(s_foot), "%s", tr("mods.note"));
+      break;
+   }
+   case P_MODULE:
+   {
+      const lumen_module_t *m = module_at(s_mod_sel);
+      int on = module_switch(s_mod_sel);
+      if (!m) break;
+      if ((r = row_add(R_CHOICE, ID_MOD_SWITCH, tr("mods.switch"), tr(on ? "value.on" : "value.off"))))
+      {
+         r->at_lo = !on; r->at_hi = on; r->desc = module_desc_key(s_mod_sel);
+         if (m->flags & MOD_F_REQUIRED) { r->enabled = 0; r->dim = 1; r->why = "mods.required"; }
+      }
+      {  /* the state is under the title; this row only says why it is not plainly on or off */
+         const int st = module_state(s_mod_sel);
+         if (st != MOD_ON && st != MOD_OFF) row_add(R_INFO, ID_MOD_STATE, tr("mods.state"), mod_state_text(s_mod_sel, v, sizeof(v)));
+      }
+      row_add(R_INFO, ID_MOD_VERSION, tr("mods.version"), m->version ? m->version : "-");
+      row_add(R_INFO, ID_MOD_SOURCE, tr("mods.source"), tr("mods.builtin"));
+      if (modules_restart_pending()) row_add(R_ACTION, ID_SYS_REBOOT, tr("mods.restart"), NULL);
+      snprintf(s_foot, sizeof(s_foot), "%s", tr(module_desc_key(s_mod_sel)));
       break;
    }
    case P_LIBRARY:
@@ -755,7 +930,7 @@ static void rows_snap(void)
 {
    s_hl.x = s_sel > 0 ? s_sel * ROW_H : 0.0f; s_hl.v = 0;
    s_scroll.x = 0; s_scroll.v = 0;
-   s_rail.x = (rail_of(s_page) - 1) * RAIL_P; s_rail.v = 0;
+   s_rail.x = rail_pos(rail_of(s_page)) * RAIL_P; s_rail.v = 0;
 }
 
 static void page_enter(int page, int dir)
@@ -861,20 +1036,22 @@ static void sub_back(void)
 {
    int from = s_page;
    page_enter(k_parent[s_page], -1);
-   select_row(from);
+   select_row(from == P_MODULE ? ID_MOD + s_mod_sel : from);   /* a module's row is ID_MOD + its index */
    s_hl.x = s_sel > 0 ? s_sel * ROW_H : 0.0f; s_hl.v = 0;
 }
 
 static void row_action(const row_t *r)
 {
    if (r->id > P_ROOT && r->id < P_COUNT) { sub_enter(r->id); return; }
+   if (r->id >= ID_MOD && r->id < ID_MOD + modules_count()) { s_mod_sel = r->id - ID_MOD; sub_enter(P_MODULE); return; }
    if (r->id >= ID_AUDIO_BT && r->id < ID_AUDIO_BT + NET_MAX_DEVS)
    {
       char id[24];
       bt_out_id(id, sizeof(id), net_state()->dev[r->id - ID_AUDIO_BT].mac);
       settings_set("audio_out", id);
       logf_("panel: audio_out %s", id);
-      if (audio_out_pending()) confirm_open_ex(tr("audio.restart_confirm"), NULL, "confirm.restart", audio_restart_yes);
+      /* paired but not connected: connect it now; the sound moves when it is (panel_audio_route) */
+      if (!net_state()->dev[r->id - ID_AUDIO_BT].connected) net_bt_pair(net_state()->dev[r->id - ID_AUDIO_BT].mac);
       return;
    }
    if (r->id >= ID_AUDIO_OUT && r->id <= ID_AUDIO_OUT + AO_MAX)
@@ -884,7 +1061,6 @@ static void row_action(const row_t *r)
       snprintf(keep, sizeof(keep), "%s", id);
       settings_set("audio_out", keep);
       logf_("panel: audio_out %s", keep);
-      if (audio_out_pending()) confirm_open_ex(tr("audio.restart_confirm"), NULL, "confirm.restart", audio_restart_yes);
       return;
    }
    if (r->id >= ID_LANG && r->id < ID_LANG + I18N_MAX_LANGS)
@@ -1028,6 +1204,13 @@ static void row_change(const row_t *r, int dir)
    case ID_NET_WIFI: net_wifi_set(dir > 0); break;
    case ID_NET_BT:   net_bt_set(dir > 0); break;
    case ID_NET_TIME: net_time_set(dir > 0); break;
+   case ID_MOD_SWITCH:
+   {  /* also what it requires (on) / what requires it (off): the toast says so */
+      int more = module_set(s_mod_sel, dir > 0);
+      if (more > 0) panel_toast(dir > 0 ? "mods.toast_more_on" : "mods.toast_more_off");
+      else if (more == 0 && (module_at(s_mod_sel)->flags & MOD_F_RESTART)) panel_toast("mods.toast_restart");
+      break;
+   }
    case ID_UPD_AUTO: settings_set_int("update_auto", dir > 0); break;
    case ID_DSP_CRT:
       i = crt_level() + dir;
@@ -1089,7 +1272,7 @@ static void page_input(const ui_nav_t *nav)
    const row_t *r = row_selectable(s_sel) ? &s_rows[s_sel] : NULL;
    if (!s_in_card)
    {  /* the rail: Up / Down change the section shown in the card, Cross / Right enter it */
-      int to = s_page + (nav->down ? 1 : 0) - (nav->up ? 1 : 0);
+      int to = nav->down ? rail_step(s_page, 1) : nav->up ? rail_step(s_page, -1) : s_page;
       if (to != s_page && to >= 1 && to < P_RAIL_END) page_enter(to, 0);
       else if ((nav->confirm || nav->right) && first_selectable() >= 0) s_in_card = 1;
       else if (nav->back || nav->options) panel_close();
@@ -1446,7 +1629,11 @@ void panel_open(void)
    music_sfx(SFX_OPEN);
    if (s_slide.x > SLIDE_OFF - 20.0f) { s_slide.x = SLIDE_OFF; s_slide.v = 0; }
    s_in_card = 0;
-   page_enter(s_page >= 1 && s_page < P_RAIL_END ? s_page : rail_of(s_page) >= 1 ? rail_of(s_page) : P_PROFILE, 0);
+   {  /* back where it was left, unless a module took that category away */
+      int pg = s_page >= 1 && s_page < P_RAIL_END ? s_page : rail_of(s_page) >= 1 ? rail_of(s_page) : P_PROFILE;
+      if (!rail_shown(pg)) pg = P_PROFILE;
+      page_enter(pg, 0);
+   }
    rows_snap();
    logf_("panel: open");
 }
@@ -1519,7 +1706,7 @@ void panel_update(const ui_nav_t *nav, double t, float dt)
    page_build();
    if (s_sel >= s_nrows || (s_sel >= 0 && !row_selectable(s_sel))) s_sel = first_selectable();
    spring_step(&s_px, 0.0f, 170, 18, dt);
-   spring_step(&s_help_a, 1.0f, 140, 20, dt);
+   spring_step(&s_help_a, s_help_target, 260, 30, dt);
    if (s_sel != s_sel_row || s_page != s_sel_page || s_in_card != s_sel_card)
    { s_sel_row = s_sel; s_sel_page = s_page; s_sel_card = s_in_card; s_sel_t = t; }
    spring_step(&s_pa, 1.0f, 120, 16, dt);
@@ -1535,7 +1722,7 @@ void panel_update(const ui_nav_t *nav, double t, float dt)
       if (target < 0) target = 0;
       spring_step(&s_hl, y, 220, 22, dt);
       spring_step(&s_scroll, target, 220, 22, dt);
-      spring_step(&s_rail, (rail_of(s_page) - 1) * RAIL_P, 260, 26, dt);
+      spring_step(&s_rail, rail_pos(rail_of(s_page)) * RAIL_P, 260, 26, dt);
    }
 
    /* modal */
@@ -1637,9 +1824,10 @@ void panel_draw(double t)
    for (i = 1; i < P_RAIL_END; i++)
    {
       label_t *l = &s_rail_l[i];
+      if (!rail_shown(i)) continue;
       label_set(l, g_font_sub, tr(k_page_key[i]));
       col(c, C_TXT, a * (i == rail_of(s_page) ? 1.0f : 0.86f));
-      draw_label(l, RAIL_X + 20, RAIL_Y + rise + (i - 1) * RAIL_P + (RAIL_H - l->h) * 0.5f, c);
+      draw_label(l, RAIL_X + 20, RAIL_Y + rise + rail_pos(i) * RAIL_P + (RAIL_H - l->h) * 0.5f, c);
    }
 
    /* the card: a header that gives the section a face, then its rows */
@@ -1647,6 +1835,11 @@ void panel_draw(double t)
    {
       float hx = cx + PAD;
       const char *title = tr(k_page_key[s_page]), *kick = tr(k_page_key[k_parent[s_page]]), *cap = "";
+      if (s_page == P_MODULE)
+      {  /* a module: its name, and its state under it */
+         title = tr(module_name_key(s_mod_sel));
+         cap = mod_state_text(s_mod_sel, buf, sizeof(buf));
+      }
       if (s_page == P_PROFILE)
       {
          int played = stats_games_played();
@@ -1709,22 +1902,28 @@ void panel_draw(double t)
       const char *help = !s_in_card ? (k_rail_desc[rail_of(s_page)] ? tr(k_rail_desc[rail_of(s_page)]) : "")
                          : fr && fr->desc ? tr(fr->desc) : s_foot;
       const float room = help_room(), hy = cy + CARD_H - room + 6.0f, ha = clampf(s_help_a.x, 0.0f, 1.0f);
-      label_t *cur = &s_help[s_help_cur], *old = &s_help[1 - s_help_cur];
+      label_t *cur = &s_help;
       size_t kn = sizeof(cur->key) - 1;
-      int same = strlen(help) >= kn ? !strncmp(cur->key, help, kn) : !strcmp(cur->key, help);
-      if (!same)
-      {  /* the new text takes the other slot; the old one fades from where it is */
-         s_help_cur = 1 - s_help_cur;
-         cur = &s_help[s_help_cur]; old = &s_help[1 - s_help_cur];
-         wlabel_set(cur, g_font_small, help, (int)(CARD_W - 2 * PAD - 12));
-         if (!cur->tex) snprintf(cur->key, sizeof(cur->key), "%s", help);
-         s_help_a.x = 0.0f; s_help_a.v = 0.0f;
+      int same;
+      if (strncmp(s_help_want, help, sizeof(s_help_want) - 1))
+      { snprintf(s_help_want, sizeof(s_help_want), "%s", help); s_help_want_t = t; }
+      same = strlen(s_help_want) >= kn ? !strncmp(cur->key, s_help_want, kn) : !strcmp(cur->key, s_help_want);
+      if (same) s_help_target = 1.0f;
+      else
+      {  /* out first; the new text only when the old one is gone and the focus has rested */
+         s_help_target = 0.0f;
+         if ((ha < 0.03f || !cur->tex) && t - s_help_want_t >= HELP_REST_S)
+         {
+            wlabel_set(cur, g_font_small, s_help_want, (int)(CARD_W - 2 * PAD - 12));
+            if (!cur->tex) snprintf(cur->key, sizeof(cur->key), "%s", s_help_want);
+            s_help_a.x = 0.0f; s_help_a.v = 0.0f;
+            s_help_target = 1.0f;
+         }
       }
       col(f, (const float[3]){ 1, 1, 1 }, 0.08f * ca);
       draw_2d(0, CARD_X + PAD, hy - 10.0f, CARD_W - 2 * PAD, 1, f, 0);
-      if (old->tex && ha < 0.999f) { col(c, C_DIM, ca * (1.0f - ha)); draw_label(old, cx + PAD + 6, hy, c); }
       col(c, C_DIM, ca * ha);
-      draw_label(cur, cx + PAD + 6, hy + (1.0f - ha) * 6.0f, c);
+      draw_label(cur, cx + PAD + 6, hy + (1.0f - ha) * 4.0f, c);
       bottom = hy - 18.0f;
    }
 
