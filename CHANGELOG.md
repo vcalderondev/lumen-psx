@@ -49,8 +49,9 @@ console, and the draw cost is not measured there.
   glass, for more contrast under text. Buttons and rows have a 14 px radius; pills are kept
   for chips and keycaps.
 - Interface sounds: the console's own instead of gliding sines. Plastic button tocks for
-  moves and pages, a heavier switch for systems and back, and a glassy tone that fades in
-  for open, confirm and Play. Still built at start from damped sines, no files, no noise.
+  moves and pages, a heavier switch for systems, open (latch, then the lid: two dry sounds) and back, and a
+  glassy tone that fades in for confirm (a glint) and Play. Still built at start from
+  damped sines, no files, no noise.
 - One glyph language: every button is an outline (L1 / R1 / L2 / R2 were filled blocks next
   to outlined Select / Start), labels use the UI font (Outfit) instead of Liberation Sans,
   the settings cog is outlined like the rest.

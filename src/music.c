@@ -231,7 +231,7 @@ static void fx_strike(float *b, int n, float at, float f, const partial_t *mat, 
 
 static void sfx_make(int id)
 {
-   static const float len_s[SFX_COUNT] = { 0.08f, 0.08f, 0.08f, 0.20f, 0.20f, 0.22f, 0.22f, 0.55f, 0.22f, 0.30f, 1.00f };
+   static const float len_s[SFX_COUNT] = { 0.08f, 0.08f, 0.08f, 0.20f, 0.20f, 0.22f, 0.22f, 0.22f, 0.22f, 0.30f, 1.00f };
    const int n = (int)(len_s[id] * dev_rate);
    float *b = calloc(n, sizeof(float)), peak = 0, want;
    int i;
@@ -248,8 +248,9 @@ static void sfx_make(int id)
    /* a system: the big switch, press and release; brighter for the next system */
    case SFX_SYSTEM_NEXT: fx_strike(b, n, 0, 470, k_switch, 1, 0.001f, 0.8f); fx_strike(b, n, 0.070f, 610, k_switch, 0.45f, 0.001f, 0.3f); break;
    case SFX_SYSTEM_PREV: fx_strike(b, n, 0, 410, k_switch, 1, 0.001f, 0.8f); fx_strike(b, n, 0.070f, 530, k_switch, 0.45f, 0.001f, 0.3f); break;
-   /* open: a button, then the light comes on; back: the lid shuts */
-   case SFX_OPEN:      fx_strike(b, n, 0, 1050, k_plastic, 0.7f, 0.001f, 0.3f); fx_strike(b, n, 0.03f, 740, k_light, 1, 0.060f, 0); break;
+   /* open: the lid's latch gives and the lid lands open, two dry sounds rising (no tone: a
+    * tone here read as a notification); back: the lid shuts, one low one */
+   case SFX_OPEN:      fx_strike(b, n, 0, 430, k_switch, 0.85f, 0.001f, 0.7f); fx_strike(b, n, 0.060f, 760, k_plastic, 1, 0.001f, 0.35f); break;
    case SFX_BACK:      fx_strike(b, n, 0, 360, k_switch, 1, 0.002f, 0.9f); break;
    /* confirm: the button and a short glint of the light */
    case SFX_CONFIRM:   fx_strike(b, n, 0, 1180, k_plastic, 0.9f, 0.001f, 0.3f); fx_strike(b, n, 0.01f, 1110, k_light, 0.55f, 0.020f, 0); break;
