@@ -77,6 +77,10 @@ void   ui_shadow(float x, float y, float w, float h, float radius, float blur, f
 void   ui_glass_card(float x, float y, float w, float h, float radius, const float rgba[4], float border_alpha,
                      float blur, float dy, float sh_a);   /* a glass card (draw_round_rect) on its shadow */
 /* flat rounded rectangle: filled (stroke 0) or a ring of `stroke` px inside its edge */
+/* a glyph of assets/glyphs (or the theme's) by name, h logical px tall, tinted with c;
+ * glyph_w: its width at that height, 0 when the file is missing */
+void   glyph_draw(const char *name, float x, float y, float h, const float c[4]);
+float  glyph_w(const char *name, float h);
 void   ui_shape(float x, float y, float w, float h, float radius, float stroke, const float rgba[4]);
 GLuint tex_from_surface(SDL_Surface *s);   /* mipmapped RGBA texture; the surface stays the caller's */
 /* image (tw x th texels) cover-fitted into a rounded rectangle; ends in another program:

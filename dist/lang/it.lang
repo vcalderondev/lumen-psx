@@ -643,3 +643,7 @@ mod.ethernet.name = Cavo di rete
 mod.ethernet.description = Collega la console con un adattatore Ethernet USB e un cavo.
 mod.bluetooth.name = Bluetooth
 mod.bluetooth.description = Controller, tastiere e cuffie senza fili con un adattatore Bluetooth USB.
+
+fact.year = Anno
+fact.players = Giocatori
+fact.played = Giocato

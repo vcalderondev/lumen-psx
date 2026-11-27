@@ -53,16 +53,13 @@
 #define CARD_W  776.0f
 #define CARD_H  528.0f
 #define HEAD_H  138.0f       /* card header: kicker, title, caption, hairline */
-#define ROW_H   54.0f        /* row pitch; the pill is ROW_H - 4 high */
+#define ROW_H   54.0f        /* row pitch; the pill is ROW_H - 14 high, its ring fills the pitch */
 #define PAD     28.0f
 #define SLIDE_OFF 560.0f     /* s_slide when closed: drives the open/close motion */
 #define MAX_ROWS 20
 
-/* the active theme's (theme.h), set in panel_init; these are Lumen's own */
-static float C_TXT[3] = { 0.96f, 0.96f, 0.98f };
-static float C_DIM[3] = { 0.62f, 0.63f, 0.70f };
-static float C_ACC[3] = { 0.36f, 0.55f, 1.00f };
-static float C_RED[3] = { 1.00f, 0.42f, 0.42f };
+/* the active theme's (theme.h), set in panel_init */
+static float C_TXT[3], C_DIM[3], C_ACC[3], C_RED[3];
 
 static void col(float out[4], const float rgb[3], float a) { out[0] = rgb[0]; out[1] = rgb[1]; out[2] = rgb[2]; out[3] = a; }
 
@@ -367,6 +364,8 @@ typedef struct {
    int type, id, enabled, dim, check, enter, at_lo, at_hi;
    int swatch;                  /* profile colour drawn left of the value, -1 none */
    int swatches;                /* colour row: draw the 8 swatches, this one selected */
+   int sw;                      /* a switch instead of "< value >": 1 on, 0 off, -1 not a switch */
+   int themes;                  /* theme row: a swatch per theme, this index + 1 selected; 0 not it */
    int avatar;                  /* the active profile's picture drawn left of the value */
    const char *why;             /* disabled row: tr key shown as a toast on Cross */
    const char *desc;            /* what the row does: tr key shown in the help line, NULL none */
@@ -517,6 +516,8 @@ static const char *row_desc(int id)
    return NULL;
 }
 /* what each category of the rail holds, while the focus is on the rail */
+/* the glyph of each section of the rail (assets/glyphs) */
+static const char *const k_rail_glyph[P_RAIL_END] = { NULL, "user", "screen", "sound", "network", "bluetooth", "library", "modules", "system" };
 static const char *const k_rail_desc[P_RAIL_END] = {
    NULL, "desc.rail_profile", "desc.rail_display", "desc.rail_sound", "desc.rail_network", "desc.rail_bluetooth",
    "desc.rail_library", "desc.rail_modules", "desc.rail_system"
@@ -528,9 +529,17 @@ static row_t *row_add(int type, int id, const char *label, const char *value)
    if (s_nrows >= MAX_ROWS) return NULL;
    r = &s_rows[s_nrows++];
    memset(r, 0, sizeof(*r));
-   r->type = type; r->id = id; r->enabled = 1; r->swatch = -1; r->desc = row_desc(id);
+   r->type = type; r->id = id; r->enabled = 1; r->swatch = -1; r->sw = -1; r->desc = row_desc(id);
    snprintf(r->label, sizeof(r->label), "%s", label);
    snprintf(r->value, sizeof(r->value), "%s", value ? value : "");
+   return r;
+}
+
+/* an on / off row: it draws as a switch (the value stays for the log and the modules) */
+static row_t *row_switch(int id, const char *label, int on)
+{
+   row_t *r = row_add(R_CHOICE, id, label, tr(on ? "value.on" : "value.off"));
+   if (r) r->sw = on ? 1 : 0;
    return r;
 }
 
@@ -616,7 +625,7 @@ static void page_build(void)
       int hd = out_1080(), sc = settings_get_int("scanout", 1, 0, 1);
       if ((r = row_add(R_CHOICE, ID_DSP_OUTPUT, tr("display.output"), hd ? "1080p" : "720p")))
       { r->at_lo = !hd; r->at_hi = hd; }
-      if ((r = row_add(R_CHOICE, ID_DSP_SCANOUT, tr("display.scanout"), tr(sc ? "value.on" : "value.off"))))
+      if ((r = row_switch(ID_DSP_SCANOUT, tr("display.scanout"), sc)))
       {
          r->at_lo = !sc; r->at_hi = sc;
          if (comp_in_use() == 0) { r->enabled = 0; r->dim = 1; r->why = "display.scanout_stock"; }
@@ -642,7 +651,7 @@ static void page_build(void)
    {  /* chosen here, applied by restarting Lumen (fonts and art load at start) */
       int ti = theme_setting_index();
       if ((r = row_add(R_CHOICE, ID_DSP_THEME, tr("display.theme"), theme_name(ti))))
-      { r->at_lo = ti <= 0; r->at_hi = ti >= theme_count() - 1; if (theme_count() < 2) { r->enabled = 0; r->dim = 1; r->why = "display.no_themes"; } }
+      { r->themes = ti + 1; r->at_lo = ti <= 0; r->at_hi = ti >= theme_count() - 1; if (theme_count() < 2) { r->enabled = 0; r->dim = 1; r->why = "display.no_themes"; } }
       if ((r = row_add(R_ACTION, ID_DSP_THEME_APPLY, tr("display.theme_apply"), NULL)) && ti == theme_active_index())
       { r->enabled = 0; r->dim = 1; r->why = "display.theme_in_use"; }
       snprintf(s_foot, sizeof(s_foot), "%s", tr("display.theme_note"));
@@ -656,7 +665,7 @@ static void page_build(void)
       minutes_text(v, sizeof(v), k_minutes[m]);
       if ((r = row_add(R_CHOICE, ID_SS_AFTER, tr("ss.after"), v)))
       { r->at_lo = m == 0; r->at_hi = m == NELEM(k_minutes) - 1; }
-      if ((r = row_add(R_CHOICE, ID_SS_DEMOS, tr("ss.demos"), tr(demos ? "value.on" : "value.off"))))
+      if ((r = row_switch(ID_SS_DEMOS, tr("ss.demos"), demos)))
       { r->at_lo = !demos; r->at_hi = demos; }
       snprintf(num, sizeof(num), "%d", k_seconds[s]);
       trf(v, sizeof(v), "ss.seconds", "n", num, NULL);
@@ -684,14 +693,14 @@ static void page_build(void)
    {
       int on = music_on(), vol = music_volume();
       if ((r = row_add(R_ACTION, P_AUDIO_OUT, tr("section.audio_out"), audio_out_name()))) r->enter = 1;
-      if ((r = row_add(R_CHOICE, ID_SND_MUSIC, tr("sound.music"), tr(on ? "value.on" : "value.off"))))
+      if ((r = row_switch(ID_SND_MUSIC, tr("sound.music"), on)))
       { r->at_lo = !on; r->at_hi = on; }
       snprintf(num, sizeof(num), "%d", vol);
       trf(v, sizeof(v), "sound.vol_value", "n", num, NULL);
       if ((r = row_add(R_CHOICE, ID_SND_VOLUME, tr("sound.volume"), v)))
       { r->at_lo = vol <= 0; r->at_hi = vol >= 100; }
       on = settings_get_int("ui_sounds", 1, 0, 1);
-      if ((r = row_add(R_CHOICE, ID_SND_UI, tr("sound.ui"), tr(on ? "value.on" : "value.off"))))
+      if ((r = row_switch(ID_SND_UI, tr("sound.ui"), on)))
       { r->at_lo = !on; r->at_hi = on; }
       snprintf(s_foot, sizeof(s_foot), "%s", tr("sound.note"));
       break;
@@ -722,7 +731,7 @@ static void page_build(void)
    {  /* lumen-design, settings-connections.html: the Wi-Fi switch and its network, the cable */
       const net_state_t *ns = net_state();
       const int m_wifi = mod_on("wifi"), m_eth = mod_on("ethernet");
-      if (m_wifi && (r = row_add(R_CHOICE, ID_NET_WIFI, tr("net.wifi"), tr(ns->wifi_on ? "value.on" : "value.off"))))
+      if (m_wifi && (r = row_switch(ID_NET_WIFI, tr("net.wifi"), ns->wifi_on)))
       {
          r->at_lo = !ns->wifi_on; r->at_hi = ns->wifi_on;
          if (ns->wifi_cap == NET_CAP_NO && !ns->wifi_on) { r->enabled = 0; r->dim = 1; r->why = "net.wifi_nokernel"; }
@@ -745,7 +754,7 @@ static void page_build(void)
    {  /* the switch, the devices paired with the console, and the search for new ones */
       const net_state_t *ns = net_state();
       char cnt[16], cnt2[16];
-      if ((r = row_add(R_CHOICE, ID_NET_BT, tr("net.bt"), tr(ns->bt_on ? "value.on" : "value.off"))))
+      if ((r = row_switch(ID_NET_BT, tr("net.bt"), ns->bt_on)))
       {
          r->at_lo = !ns->bt_on; r->at_hi = ns->bt_on;
          if (ns->bt_cap == NET_CAP_NO && !ns->bt_on) { r->enabled = 0; r->dim = 1; r->why = "net.bt_nokernel"; }
@@ -778,7 +787,7 @@ static void page_build(void)
       const lumen_module_t *m = module_at(s_mod_sel);
       int on = module_switch(s_mod_sel);
       if (!m) break;
-      if ((r = row_add(R_CHOICE, ID_MOD_SWITCH, tr("mods.switch"), tr(on ? "value.on" : "value.off"))))
+      if ((r = row_switch(ID_MOD_SWITCH, tr("mods.switch"), on)))
       {
          r->at_lo = !on; r->at_hi = on; r->desc = module_desc_key(s_mod_sel);
          if (m->flags & MOD_F_REQUIRED) { r->enabled = 0; r->dim = 1; r->why = "mods.required"; }
@@ -836,7 +845,7 @@ static void page_build(void)
       if (u->state != UPD_READY && (r = row_add(R_ACTION, ID_UPD_CHECK, tr("update.check"), NULL)) && (busy || !online))
       { r->enabled = 0; r->dim = 1; r->why = busy ? "update.busy" : "update.need_net"; }
       i = settings_get_int("update_auto", 1, 0, 1);
-      if ((r = row_add(R_CHOICE, ID_UPD_AUTO, tr("update.auto"), tr(i ? "value.on" : "value.off"))))
+      if ((r = row_switch(ID_UPD_AUTO, tr("update.auto"), i)))
       { r->at_lo = !i; r->at_hi = i; }
       if (u->last_check > 0)
       {
@@ -852,7 +861,7 @@ static void page_build(void)
    case P_DATETIME:
    {
       const net_state_t *ns = net_state();
-      if ((r = row_add(R_CHOICE, ID_NET_TIME, tr("net.time"), tr(ns->time_on ? "value.on" : "value.off"))))
+      if ((r = row_switch(ID_NET_TIME, tr("net.time"), ns->time_on)))
       { r->at_lo = !ns->time_on; r->at_hi = ns->time_on; }
       row_add(R_INFO, ID_INFO, tr("time.now"), ns->time_ok ? ns->time_text : tr("time.not_set"));
       snprintf(s_foot, sizeof(s_foot), "%s", tr("time.note"));
@@ -1486,8 +1495,10 @@ static void osk_draw(double t, float a)
 {
    float ox = (W - OSK_W) * 0.5f, oy = (H - OSK_H) * 0.5f, x, y, w;
    float c[4];
-   const float black[3] = { 0, 0, 0 }, white[3] = { 1, 1, 1 }, ink[4] = { 0.043f, 0.047f, 0.063f, a };
+   const float black[3] = { 0, 0, 0 };
+   float white[3], prim[3], ink[4];   /* the theme's glass, the main key and its text */
    int k, r;
+   theme_color(TC_GLASS, white); theme_color(TC_PRIMARY, prim); theme_color(TC_ON_PRIMARY, ink); ink[3] = a;
    ui_card(mx(ox), my(oy), OSK_W, OSK_H, a);
    ui_kicker(&s_ktitle, s_ktitle_txt, mx(ox + 28), my(oy + 22), a);
    ui_fill(mx(ox + 24), my(oy + 50), OSK_W - 48, 48, 14, black, 0.30f * a);
@@ -1495,14 +1506,14 @@ static void osk_draw(double t, float a)
    col(c, C_TXT, a);
    m_label(&s_ktext, ox + 42, oy + 74 - s_ktext.h * 0.5f, c);
    if (fmod(t, 1.0) < 0.55) ui_fill(mx(ox + 44 + s_ktext.w), my(oy + 61), 2, 26, 1, C_ACC, a);
-   /* keys: glass, the last one (Done) is the white primary */
+   /* keys: glass, the last one (Done) is the primary */
    for (r = 0; r < 5; r++)
       for (k = 0; k < (r < 4 ? 10 : 4); k++)
       {
          const label_t *l;
          const int primary = r == 4 && k == OK_OK;
          osk_key_rect(r, k, &x, &y, &w);
-         if (primary) ui_fill(mx(x), my(y), w, 36, 10, white, a);
+         if (primary) ui_fill(mx(x), my(y), w, 36, 10, prim, a);
          else ui_fill(mx(x), my(y), w, 36, 10, white, ((r == 4 && k == OK_SHIFT && (!s_lower || s_sym)) ? UI_SELECTED : UI_REST) * a);
          if (r < 4) l = s_sym ? &s_ksym[r * 10 + k] : (s_lower && s_klo[r * 10 + k].tex) ? &s_klo[r * 10 + k] : &s_kup[r * 10 + k];
          else l = &s_kact[k];
@@ -1584,11 +1595,8 @@ void panel_init(void)
    label_set(&s_gt, g_font_sub, "\xE2\x80\xBA");   /* › */
    s_slide.x = SLIDE_OFF;
    s_page = P_PROFILE;
-   if (theme_active_index() > 0)
-   {
-      theme_color(TC_TEXT, C_TXT); theme_color(TC_DIM, C_DIM);
-      theme_color(TC_ACCENT, C_ACC); theme_color(TC_DANGER, C_RED);
-   }
+   theme_color(TC_TEXT, C_TXT); theme_color(TC_DIM, C_DIM);
+   theme_color(TC_ACCENT, C_ACC); theme_color(TC_DANGER, C_RED);
 }
 
 /* the keyboard or a question for a card over the panel (conn.c): the card steps aside
@@ -1819,15 +1827,23 @@ void panel_draw(double t)
    label_set(&s_title, g_font_title, tr("panel.title"));
    col(c, C_TXT, a);
    draw_label(&s_title, TITLE_X, TITLE_Y + rise, c);
-   if (s_in_card) ui_rest(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, RAIL_H * 0.5f, a);   /* you are here */
+   if (s_in_card)
+   {  /* you are here: resting glass and the light's mark left of it */
+      float lit[4];
+      if (!theme_lit(lit)) theme_color(TC_ACCENT, lit);
+      lit[3] = a;
+      ui_rest(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, RAIL_H * 0.5f, a);
+      draw_round_rect(RAIL_X - 10, RAIL_Y + rise + s_rail.x + 12, 3, RAIL_H - 24, 1.5f, lit, 0.0f);
+   }
    else ui_focus(RAIL_X, RAIL_Y + rise + s_rail.x, RAIL_W, RAIL_H, RAIL_H * 0.5f, a);
    for (i = 1; i < P_RAIL_END; i++)
    {
       label_t *l = &s_rail_l[i];
       if (!rail_shown(i)) continue;
       label_set(l, g_font_sub, tr(k_page_key[i]));
-      col(c, C_TXT, a * (i == rail_of(s_page) ? 1.0f : 0.86f));
-      draw_label(l, RAIL_X + 20, RAIL_Y + rise + rail_pos(i) * RAIL_P + (RAIL_H - l->h) * 0.5f, c);
+      col(c, C_TXT, a * (i == rail_of(s_page) ? 1.0f : 0.70f));
+      if (k_rail_glyph[i]) glyph_draw(k_rail_glyph[i], RAIL_X + 16, RAIL_Y + rise + rail_pos(i) * RAIL_P + (RAIL_H - 24) * 0.5f, 24, c);
+      draw_label(l, RAIL_X + 16 + 24 + 14, RAIL_Y + rise + rail_pos(i) * RAIL_P + (RAIL_H - l->h) * 0.5f, c);
    }
 
    /* the card: a header that gives the section a face, then its rows */
@@ -1931,7 +1947,7 @@ void panel_draw(double t)
    top = cy + HEAD_H;
    glEnable(GL_SCISSOR_TEST);
    gl_scissor(CARD_X + 2, top - 8, CARD_W - 4, bottom - top + 16);
-   if (s_sel >= 0 && s_in_card) ui_focus(cx + 14, top + s_hl.x - s_scroll.x + 2, CARD_W - 28, ROW_H - 4, (ROW_H - 4) * 0.5f, ca);
+   if (s_sel >= 0 && s_in_card) ui_focus(cx + 14, top + s_hl.x - s_scroll.x + 7, CARD_W - 28, ROW_H - 14, UI_CTL_R, ca);   /* pill + ring (7 px a side) = the row pitch: it never covers a neighbour */
    for (i = 0; i < s_nrows; i++)
    {
       const row_t *r = &s_rows[i];
@@ -1944,10 +1960,52 @@ void panel_draw(double t)
       }
       label_set(&s_rv[i], g_font_sub, r->value);
       if (y + ROW_H < top - 8 || y > bottom + 8) continue;
+      {  /* a row leaving the list fades out: it is never shown cut in half at full strength */
+         const float vis = fminf(clampf((y + ROW_H - top + 8.0f) / ROW_H, 0.0f, 1.0f), clampf((bottom + 8.0f - y) / ROW_H, 0.0f, 1.0f));
+         la *= vis * vis;
+      }
       col(c, C_TXT, la);
       draw_label(&s_rl[i], cx + 14 + 20, y + (ROW_H - s_rl[i].h) * 0.5f, c);
       lend = cx + 14 + 20 + s_rl[i].w + 28.0f;   /* nothing of the value left of here */
-      if (r->type == R_CHOICE)
+      if (r->type == R_CHOICE && r->sw >= 0)
+      {  /* a switch: the track in the accent when on, the knob always light */
+         const float tw = 46, th = 26, tx = xr - tw, ty = y + (ROW_H - th) * 0.5f, kd = 20;
+         float tc[4], kc[4] = { 1, 1, 1, la };
+         if (r->sw) { col(tc, C_ACC, la); if (C_ACC[0] + C_ACC[1] + C_ACC[2] > 2.4f) { kc[0] = kc[1] = kc[2] = 0.05f; } }
+         else { theme_color(TC_GLASS, tc); tc[3] = 0.18f * la; }
+         draw_round_rect(tx, ty, tw, th, th * 0.5f, tc, 0.0f);
+         draw_round_rect(tx + (r->sw ? tw - kd - 3 : 3), ty + 3, kd, kd, kd * 0.5f, kc, 0.0f);
+      }
+      else if (r->type == R_CHOICE && r->themes)
+      {  /* a swatch per theme: its card, a bar of its light, two covers; the chosen one ringed */
+         const float sw_ = 48, sh_ = 30;
+         const int nt = theme_count() > 6 ? 6 : theme_count(), first = r->themes - 1 >= nt ? r->themes - nt : 0;
+         int k;
+         for (k = first + nt - 1; k >= first; k--)
+         {
+            const float sx = xr - sw_, sy = y + (ROW_H - sh_) * 0.5f;
+            float card[4], lit[4], ed[4] = { 1, 1, 1, 0.22f * la }, cv[4] = { 1, 1, 1, 0.85f * la };
+            theme_preview(k, card, lit); card[3] = la; lit[3] = la;
+            if (k == r->themes - 1)
+            {
+               float fr[4];
+               theme_color(TC_FOCUS, fr); fr[3] = 0.95f * la;
+               ui_shape(sx - 3, sy - 3, sw_ + 6, sh_ + 6, 9, 2.0f, fr);
+            }
+            draw_round_rect(sx, sy, sw_, sh_, 6, card, 0.0f);
+            ui_shape(sx, sy, sw_, sh_, 6, 1.0f, ed);
+            draw_round_rect(sx + 6, sy + 6, 16, 3, 1.5f, lit, 0.0f);
+            draw_round_rect(sx + 6, sy + 13, 8, 11, 2, cv, 0.0f);
+            cv[3] *= 0.5f;
+            draw_round_rect(sx + 17, sy + 16, 7, 8, 2, cv, 0.0f);
+            draw_round_rect(sx + 27, sy + 16, 7, 8, 2, cv, 0.0f);
+            xr -= sw_ + 10;
+         }
+         /* the chosen theme by name, left of the swatches */
+         col(c, C_DIM, la);
+         if (s_rv[i].tex) draw_label(&s_rv[i], xr - 6 - s_rv[i].w, y + (ROW_H - s_rv[i].h) * 0.5f, c);
+      }
+      else if (r->type == R_CHOICE)
       {
          col(c, C_DIM, la * (r->at_hi ? 0.35f : 1.0f));
          draw_label(&s_gt, xr - s_gt.w, y + (ROW_H - s_gt.h) * 0.5f, c);
