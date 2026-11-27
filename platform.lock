@@ -1,3 +1,3 @@
 # psc-platform release whose assets go into every Lumen PSX release
 # (github.com/vcalderondev/psc-platform/releases): compositor, RetroArch, cores.
-PSC_PLATFORM=v2.7.0
+PSC_PLATFORM=v2.8.0
