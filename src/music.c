@@ -231,7 +231,7 @@ static void fx_strike(float *b, int n, float at, float f, const partial_t *mat, 
 
 static void sfx_make(int id)
 {
-   static const float len_s[SFX_COUNT] = { 0.08f, 0.08f, 0.08f, 0.20f, 0.20f, 0.22f, 0.22f, 0.22f, 0.22f, 0.30f, 1.00f };
+   static const float len_s[SFX_COUNT] = { 0.08f, 0.08f, 0.08f, 0.20f, 0.20f, 0.22f, 0.22f, 0.22f, 0.22f, 0.14f, 1.00f };
    const int n = (int)(len_s[id] * dev_rate);
    float *b = calloc(n, sizeof(float)), peak = 0, want;
    int i;
@@ -252,8 +252,9 @@ static void sfx_make(int id)
     * tone here read as a notification); back: the lid shuts, one low one */
    case SFX_OPEN:      fx_strike(b, n, 0, 430, k_switch, 0.85f, 0.001f, 0.7f); fx_strike(b, n, 0.060f, 760, k_plastic, 1, 0.001f, 0.35f); break;
    case SFX_BACK:      fx_strike(b, n, 0, 360, k_switch, 1, 0.002f, 0.9f); break;
-   /* confirm: the button and a short glint of the light */
-   case SFX_CONFIRM:   fx_strike(b, n, 0, 1180, k_plastic, 0.9f, 0.001f, 0.3f); fx_strike(b, n, 0.01f, 1110, k_light, 0.55f, 0.020f, 0); break;
+   /* confirm: a button pressed home, the tock with the switch under it: fuller and lower than
+    * a move, and quieter (with a glint of the light on top it shouted) */
+   case SFX_CONFIRM:   fx_strike(b, n, 0, 860, k_plastic, 0.8f, 0.0015f, 0.45f); fx_strike(b, n, 0.004f, 520, k_switch, 0.6f, 0.002f, 0.3f); break;
    /* play: the light blooms, partial after partial, on one pitch; then the launch's click */
    case SFX_PLAY:      fx_strike(b, n, 0, 185, k_light, 0.9f, 0.12f, 0); fx_strike(b, n, 0.10f, 370, k_light, 0.8f, 0.14f, 0);
                        fx_strike(b, n, 0.22f, 555, k_light, 0.6f, 0.16f, 0); fx_strike(b, n, 0.34f, 740, k_light, 0.5f, 0.18f, 0); break;
@@ -269,7 +270,7 @@ static void sfx_make(int id)
       if (fabsf(b[i]) > peak) peak = fabsf(b[i]);
    }
    /* peaks: a tick about -18 dBFS, the air a little under, the notes a little over */
-   want = id <= SFX_FOCUS ? 0.125f : 0.15f;
+   want = id <= SFX_FOCUS ? 0.125f : id == SFX_CONFIRM ? 0.11f : 0.15f;   /* confirm repeats on every value: the quietest */
    for (i = 0; i < n; i++) b[i] *= want * 32767.0f / (peak > 0 ? peak : 1);
    clk[NCLICK + id] = b; clk_len[NCLICK + id] = n;
 }
