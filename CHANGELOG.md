@@ -50,7 +50,7 @@ console, and the draw cost is not measured there.
   for chips and keycaps.
 - Interface sounds: the console's own instead of gliding sines. Plastic button tocks for
   moves and pages, a heavier switch for systems, open (latch, then the lid: two dry sounds) and back, and a
-  glassy tone that fades in for confirm (a glint) and Play. Still built at start from
+  glassy tone that fades in for Play only; confirm is a fuller, quieter tock. Still built at start from
   damped sines, no files, no noise.
 - One glyph language: every button is an outline (L1 / R1 / L2 / R2 were filled blocks next
   to outlined Select / Start), labels use the UI font (Outfit) instead of Liberation Sans,
