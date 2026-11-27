@@ -7,9 +7,11 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 
 ## [0.25.0] - 2026-11-27
 
-Home and surfaces follow the lumen-design proposal "Lumen 2: lit by the game"
-(`mockups/proposals/lumen-2`). Checked in psc-sim with the four themes and with a mirrored stick; not yet verified on a
-console, and the draw cost is not measured there.
+A new look, "Lumen 2: lit by the game" (lumen-design, `mockups/proposals/lumen-2`): the
+Home, the game menu, the settings and the pause dialog are redrawn, with one glyph set, more
+theme tokens, a third theme and the console's own interface sounds. Checked in psc-sim with
+the four looks and with the contents of a real stick; not yet verified on a console, and the
+draw cost is not measured there.
 
 ### Added
 - Home, the light: the focused cover glows in the accent of its own game (the cover's
