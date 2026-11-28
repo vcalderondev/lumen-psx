@@ -2461,6 +2461,98 @@ static const char *pad_icon(const char *name)
    return name;
 }
 
+/* The controllers' batteries, for the status bar, every 5 s: the kernel's own (power_supply
+ * with scope "Device": hid-sony, hid-nintendo... give the exact percent) when there are as
+ * many as controllers, else SDL's level per controller (empty, low, medium, full, wired).
+ * LUMEN_FAKE_BATTERY=<percent>[c] shows one controller with that battery (psc-sim). */
+typedef struct { int pct, exact, charging; } pad_batt_t;   /* pct -1: unknown */
+static pad_batt_t g_batt[4];
+static int        g_nbatt;   /* controllers listed in g_batt */
+static int read_small(const char *path, char *buf, size_t n)
+{
+   FILE *f = fopen(path, "r");
+   size_t r;
+   if (!f) return -1;
+   r = fread(buf, 1, n - 1, f); fclose(f);
+   buf[r] = 0; buf[strcspn(buf, "\r\n")] = 0;
+   return 0;
+}
+static int cmp_str(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+static void pad_battery_poll(double t)
+{
+   static double next;
+   const char *fake = getenv("LUMEN_FAKE_BATTERY");
+   char names[4][64], p[200], v[32];
+   int nb = 0, nj = 0, i;
+   SDL_JoystickID ids[4];
+   DIR *d;
+   struct dirent *e;
+   if (t < next) return;
+   next = t + 5.0;
+   if (fake && *fake)
+   {
+      g_nbatt = 1; g_batt[0].pct = atoi(fake); g_batt[0].exact = 1; g_batt[0].charging = strchr(fake, 'c') != NULL;
+      return;
+   }
+   if ((d = opendir("/sys/class/power_supply")))
+   {
+      while ((e = readdir(d)) && nb < 4)
+      {
+         if (e->d_name[0] == '.') continue;
+         snprintf(p, sizeof(p), "/sys/class/power_supply/%s/scope", e->d_name);
+         if (read_small(p, v, sizeof(v)) == 0 && !strcmp(v, "Device")) snprintf(names[nb++], sizeof(names[0]), "%s", e->d_name);
+      }
+      closedir(d);
+      qsort(names, nb, sizeof(names[0]), cmp_str);
+   }
+   for (i = 0; i < in_nstyle && nj < 4; i++)   /* the controllers still there, in the order they came */
+   {
+      SDL_Joystick *j = SDL_JoystickFromInstanceID(in_style_id[i]);
+      if (j && SDL_JoystickGetAttached(j)) ids[nj++] = in_style_id[i];
+   }
+   g_nbatt = nj;
+   for (i = 0; i < nj; i++)
+   {
+      pad_batt_t *b = &g_batt[i];
+      b->pct = -1; b->exact = 0; b->charging = 0;
+      if (nb == nj)
+      {
+         snprintf(p, sizeof(p), "/sys/class/power_supply/%s/capacity", names[i]);
+         if (read_small(p, v, sizeof(v)) == 0) { b->pct = atoi(v); b->exact = 1; }
+         snprintf(p, sizeof(p), "/sys/class/power_supply/%s/status", names[i]);
+         if (read_small(p, v, sizeof(v)) == 0) b->charging = !strcmp(v, "Charging") || !strcmp(v, "Full");
+      }
+      if (b->pct < 0)
+         switch (SDL_JoystickCurrentPowerLevel(SDL_JoystickFromInstanceID(ids[i])))
+         {
+         case SDL_JOYSTICK_POWER_EMPTY:  b->pct = 5; break;
+         case SDL_JOYSTICK_POWER_LOW:    b->pct = 20; break;
+         case SDL_JOYSTICK_POWER_MEDIUM: b->pct = 55; break;
+         case SDL_JOYSTICK_POWER_FULL:   b->pct = 100; break;
+         case SDL_JOYSTICK_POWER_WIRED:  b->charging = 1; break;
+         default: break;
+         }
+   }
+}
+
+/* a battery in the status bar, its right edge at xr, centred on cy: the outline, its nub and
+ * the charge (the danger colour at 20 % and below; the accent while charging); returns its width */
+static float draw_battery(float xr, float cy, const pad_batt_t *b, const float c[4], int pass)
+{
+   const float bw = 20.0f, bh = 11.0f, x = xr - bw - 2.0f;
+   if (!pass) return bw + 2.0f;
+   draw_shape(x, cy - bh * 0.5f, bw, bh, 3.0f, 1.5f, c);
+   draw_shape(x + bw, cy - 2.5f, 2.0f, 5.0f, 1.0f, 0, c);
+   if (b->pct >= 0 || b->charging)
+   {
+      const float k = b->pct >= 0 ? clampf(b->pct / 100.0f, 0.08f, 1.0f) : 1.0f;
+      float f[4];
+      theme_color(b->charging ? TC_ACCENT : b->pct <= 20 ? TC_DANGER : TC_TEXT, f); f[3] = c[3];
+      draw_shape(x + 3.0f, cy - bh * 0.5f + 3.0f, (bw - 6.0f) * k, bh - 6.0f, 1.5f, 0, f);
+   }
+   return bw + 2.0f;
+}
+
 static int in_is_ctrl(SDL_JoystickID id)
 {
    int i;
@@ -3906,7 +3998,10 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       float x = 0, ink[4], edge[4], sw[4], fa;
       int np = SDL_NumJoysticks(), pass;
       static spring pf;
+      static label_t l_bpct[4];
       if (np > 4) np = 4;
+      pad_battery_poll(now_s());
+      if (getenv("LUMEN_FAKE_BATTERY") && np == 0) np = 1;   /* psc-sim: one pretend controller */
       if (g_avatar_dirty || strcmp(g_avatar.id, ap->id)) { g_avatar_dirty = 0; avatar_load(ap); }
       spring_step(&pf, g_focus == FOCUS_PROFILE ? 1.0f : 0.0f, 200, 22, 1.0f / 60.0f);
       fa = clampf(pf.x, 0.0f, 1.0f);
@@ -3953,7 +4048,24 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          if (pass) { const float dv[4] = { edge[0], edge[1], edge[2], 0.24f * ua }; draw_2d(0, floorf(x), cy - 11, 1, 22, dv, 0); }
          x -= 2;
          for (k = (np > 0 ? np : 1) - 1; k >= 0; k--)   /* no pad: one dim glyph */
-         {
+         {  /* each controller, its battery after it (and the percent when it is exact) */
+            if (k < g_nbatt && k < np && (g_batt[k].pct >= 0 || g_batt[k].charging))
+            {
+               const pad_batt_t *b = &g_batt[k];
+               x -= 14;
+               if (b->exact)
+               {
+                  char pc[8];
+                  const float tc[4] = { on[0], on[1], on[2], on[3] };
+                  snprintf(pc, sizeof(pc), "%d%%", b->pct);
+                  label_set(&l_bpct[k], g_font_small, pc);
+                  x -= l_bpct[k].w;
+                  if (pass) draw_text(&l_bpct[k], x, cy - l_bpct[k].h * 0.5f, tc);
+                  x -= 6;
+               }
+               x -= draw_battery(x, cy, b, on, pass);
+               x += 8;   /* the battery sits close to its controller */
+            }
             x -= 14 + glyph_w("pad", gh);
             if (pass) glyph_draw("pad", x, cy - gh * 0.5f, gh, np > 0 ? on : off);
          }
