@@ -5226,7 +5226,7 @@ int main(int argc, char **argv)
             theme_color(TC_BACKDROP, fold_c);
             if (!blackout && play_t < 0 && g_scrim_fold)
             {
-               if (pa0 > 0.003f) { fold = 1; fold_a = ui_scrim_alpha() * pa0; }
+               if (pa0 > 0.003f) { fold = 1; fold_a = ui_scrim_settings() * pa0; }
                else if (ga0 > 0.003f) { fold = 2; fold_a = ui_scrim_alpha() * ga0; }
             }
             if (fold) dim_fold(fold_c, fold_a); else dim_none();
@@ -5278,7 +5278,7 @@ int main(int argc, char **argv)
             if (fold == 1) dim_none();   /* scrim.menu, folded: what follows is over it */
             else if (pa > 0.003f && !panel_cleared)
             {
-               ui_scrim(pa);   /* scrim.menu: the art and the status row stay, quieter */
+               ui_scrim(pa * ui_scrim_settings() / ui_scrim_alpha());   /* scrim.menu: the art and the status row stay, much quieter */
             }
             {  /* help bar: the set follows the panel, crossfading over 0.15 s; while the
                 * panel is open it is centred in the free space left of it */

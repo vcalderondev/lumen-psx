@@ -19,6 +19,7 @@ void ui_scrim_skip(int on) { s_scrim_skip = on; }
 /* Lumen's own look (opaque cards): a menu sits on flat black, the welcome screen's, not on
  * the dimmed art; a translucent theme keeps the art showing through */
 float ui_scrim_alpha(void) { return theme_card_alpha() >= 1.0f ? 1.0f : UI_SCRIM; }
+float ui_scrim_settings(void) { return theme_card_alpha() >= 1.0f ? UI_SCRIM_SETTINGS : UI_SCRIM; }
 
 void ui_scrim(float a)
 {
