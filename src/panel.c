@@ -671,21 +671,17 @@ static void page_build(void)
             r->nseg = k; r->seg_sel = cl;
          }
       }
-      if ((r = row_add(R_ACTION, P_THEME, tr("section.theme"), theme_name(theme_setting_index())))) r->enter = 1;
+      {  /* theme: a swatch per theme in the row (lumen-2 mockup, "Settings"); fonts and art load
+          * at start, so a theme other than the one in use offers the restart right under it */
+         int ti = theme_setting_index();
+         if ((r = row_add(R_CHOICE, ID_DSP_THEME, tr("display.theme"), theme_name(ti))))
+         { r->themes = ti + 1; r->at_lo = ti <= 0; r->at_hi = ti >= theme_count() - 1; if (theme_count() < 2) { r->enabled = 0; r->dim = 1; r->why = "display.no_themes"; } }
+         if (ti != theme_active_index()) row_add(R_ACTION, ID_DSP_THEME_APPLY, tr("display.theme_apply"), NULL);
+      }
       if ((r = row_add(R_ACTION, P_GRAPHICS, tr("section.graphics"), NULL))) r->enter = 1;
       minutes_text(v, sizeof(v), settings_get_int("screensaver_minutes", 5, 0, 60));
       if ((r = row_add(R_ACTION, P_SCREENSAVER, tr("section.screensaver"), v))) r->enter = 1;
       snprintf(s_foot, sizeof(s_foot), "%s", tr("display.note"));
-      break;
-   }
-   case P_THEME:
-   {  /* chosen here, applied by restarting Lumen (fonts and art load at start) */
-      int ti = theme_setting_index();
-      if ((r = row_add(R_CHOICE, ID_DSP_THEME, tr("display.theme"), theme_name(ti))))
-      { r->themes = ti + 1; r->at_lo = ti <= 0; r->at_hi = ti >= theme_count() - 1; if (theme_count() < 2) { r->enabled = 0; r->dim = 1; r->why = "display.no_themes"; } }
-      if ((r = row_add(R_ACTION, ID_DSP_THEME_APPLY, tr("display.theme_apply"), NULL)) && ti == theme_active_index())
-      { r->enabled = 0; r->dim = 1; r->why = "display.theme_in_use"; }
-      snprintf(s_foot, sizeof(s_foot), "%s", tr("display.theme_note"));
       break;
    }
    case P_SCREENSAVER:

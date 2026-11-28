@@ -16,8 +16,20 @@ verified on a console.
   filter, graphics per system): every option in sight, the chosen one filled.
 - Home: the number of games after the name of the open system's tab.
 - Pause dialog: "Disc 1 of 2" under the game's title.
+- Settings, Display: the theme is chosen from its swatches in the Look group (the Theme
+  sub-page is gone); "Apply the theme" appears under it only when the chosen theme is not
+  the one in use, since fonts and pictures still load at start.
 
 ### Changed
+- Menus are black: in Lumen's own look the cards, the game sheet and the dialogs are one
+  opaque flat colour, the black of the welcome screen (the card colour was a translucent
+  dark blue lit from the top). `card_alpha` defaults to 1; a theme below 1 keeps the glass.
+  Mono's cards are pure black now.
+- Pause dialog: the discs are one row, "Change disc", whose value is the disc to put in
+  (Left / Right pick it, starting on the next one; Cross switches), instead of a row per
+  disc.
+- Game menu: its help bar is at the foot of the sheet, with Accept and Close, instead of
+  centred beside it.
 - The controls of a row are shared components (`src/ui.c`: `ui_switch`, `ui_segmented`,
   `ui_stepper`, `ui_slider`, `ui_chevron`, `ui_mark`, `ui_group`); Settings no longer draws
   its own. With them: Volume is a slider; "Built-in games" is a segmented control; choices of

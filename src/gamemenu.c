@@ -216,7 +216,7 @@ void gamemenu_draw(double t)
    gs = stats_get(g->content);
    col4(txt, TC_TEXT, a); col4(dim, TC_DIM, a); col4(acc, TC_ACCENT, a);
    col4(white, TC_PRIMARY, a); col4(ink, TC_ON_PRIMARY, a);   /* the main button and its text */
-   col4(card, TC_CARD, 0.94f * a); col4(edge, TC_GLASS, 0.20f * a);
+   col4(card, TC_CARD, (theme_card_alpha() >= 1.0f ? 1.0f : 0.94f) * a); col4(edge, TC_GLASS, 0.20f * a);
 
    /* the facts that are known (guidelines/08: never "unknown") */
    if (g->year[0]) { fk[nf] = "fact.year"; fv[nf++] = g->year; }

@@ -27,11 +27,11 @@ void ui_scrim(float a)
 
 void ui_card(float x, float y, float w, float h, float a)
 {
-   /* ink: the theme's card colour at 86 % in Lumen's own look (a theme's card_alpha moves
-    * it, 1 = an opaque card) under a breath of the glass tint, as one flat fill */
+   /* the theme's card colour as one flat fill: opaque in Lumen's own look (card_alpha 1, the
+    * welcome's black); a translucent theme (card_alpha < 1) gets a breath of the glass tint */
    const float ca = theme_card_alpha();
    const float base = ca >= 0.92f ? 0.86f + (ca - 0.92f) * (0.14f / 0.08f) : 0.86f * ca / 0.92f;
-   const float tint = 0.03f, cover = 1.0f - (1.0f - base) * (1.0f - tint);
+   const float tint = ca >= 1.0f ? 0.0f : 0.03f, cover = 1.0f - (1.0f - base) * (1.0f - tint);
    float c[4], g[3];
    int i;
    if (a <= 0.003f) return;

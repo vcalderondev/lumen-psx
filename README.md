@@ -262,7 +262,8 @@ off ones a switch. The foot of the card holds the rest of the focused row's desc
 the page's note.
 
 **Profile** (switch, create, rename, colour, avatar, delete), **Display** (output after a
-restart, CRT filter live; sub-pages **Theme**, **Graphics**: per-system presets, empty
+restart, CRT filter live, the theme as a swatch per theme with "Apply the theme" (restart)
+when another one is chosen; sub-pages **Graphics**: per-system presets, empty
 until a system declares them, and **Screensaver**: start after Never/1–30 min, game demos
 on/off, length of each demo, preview), **Sound** (menu music, its volume, interface
 sounds; sub-page **Audio output**: HDMI, a USB audio card or paired Bluetooth headphones;

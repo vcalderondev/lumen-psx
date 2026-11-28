@@ -30,7 +30,8 @@ glass      = #FFE4D2          ; tint of the glass shapes: buttons, tabs, keys, t
 primary    = #FF9F45          ; fill of the main button: Play, the keyboard's OK (default: white)
 on_primary = #2A1206          ; text on the main button (default: near black)
 card       = #2A1A1E          ; menu / dialog card
-card_alpha = 0.94             ; how solid the card colour is under the glass: 0.2 .. 1 (1 = opaque)
+card_alpha = 0.94             ; how solid the card colour is: 0.2 .. 1 (default 1: opaque, one flat colour;
+                              ; below 1 the card is glass, lit from the top)
 radius     = 1                ; corner rounding of every shape: 1 = Lumen's, 0 = square corners
 text       = #FFF6EE          ; primary text
 dim        = #E2C3B4          ; secondary text

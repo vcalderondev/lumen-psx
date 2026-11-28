@@ -1107,15 +1107,15 @@ static const char *FS_2D =
    "                    highp float d2 = length(max(q2, 0.0)) + min(max(q2.x, q2.y), 0.0) - r; k *= clamp(d2 + 0.5, 0.0, 1.0); }\n"
    "                  frag = vec4(0.0, 0.0, 0.0, color.a * k); return; }\n"
    /* 11: the inside of a glass card and its shadow under it as one layer (ui_glass_card):
-    *     mode 5's fill, times aux0.x, at opacity aux0.y */
-   "  if (mode==11) { vec3 fill = clamp(color.rgb + vec3(mix(0.06, -0.04, v_uv.y)), 0.0, 1.0);\n"
+    *     mode 5's fill, times aux0.x, at opacity aux0.y; aux0.z = 1 a flat fill (no glass light) */
+   "  if (mode==11) { vec3 fill = clamp(color.rgb + vec3(mix(0.06, -0.04, v_uv.y)) * (1.0 - aux0.z), 0.0, 1.0);\n"
    "                  frag = vec4(fill * aux0.x, aux0.y); return; }\n"
    "  if (mode==5) { highp vec2 hs = rect.xy * 0.5; highp float r = min(rect.z, min(hs.x, hs.y));\n"
    "                 highp vec2 q = abs((v_uv - 0.5) * rect.xy) - (hs - vec2(r));\n"
    "                 highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
    "                 float edge = clamp(0.5 - d, 0.0, 1.0);\n"
    "                 float bw = clamp(d + aux0.x, 0.0, 1.0) * rect.w;\n"
-   "                 vec3 fill = color.rgb + vec3(mix(0.06, -0.04, v_uv.y));\n"
+   "                 vec3 fill = color.rgb + vec3(mix(0.06, -0.04, v_uv.y)) * (1.0 - aux0.z);\n"
    "                 float a = bw + color.a * (1.0 - bw);\n"
    "                 vec3 c = (vec3(bw) + fill * color.a * (1.0 - bw)) / max(a, 0.001);\n"
    "                 frag = vec4(c, a * edge); return; }\n"
@@ -1985,6 +1985,7 @@ void ui_glass_card(float x, float y, float w, float h, float radius, const float
    const float ix1 = floorf((x + w - inset) * k) / k, iy1 = floorf((y + h - inset) * k) / k;
    const float qx = x - blur, qy = y - blur + dy, qw = w + 2 * blur, qh = h + 2 * blur;
    const float sc[4] = { 0, 0, 0, sh_a };
+   const float flat = theme_card_alpha() >= 1.0f ? 1.0f : 0.0f;   /* an opaque theme card is one flat colour: no glass light */
    shadow_key_t q;
    GLuint tex = 0;
    int i;
@@ -1996,7 +1997,9 @@ void ui_glass_card(float x, float y, float w, float h, float radius, const float
    if (!tex)
    {
       draw_shadow_ex(x, y, w, h, radius, blur, dy, sh_a, 0);
-      draw_round_rect(x, y, w, h, radius, rgba, border_alpha);
+      glUniform4f(u2_rect, w * k, h * k, radius * g_rk * k, border_alpha);
+      glUniform4f(u2_aux0, 2.0f * k, 0.0f, flat, 0.0f);
+      draw_sdf(0, x, y, w, h, rgba, 5);
       return;
    }
    /* the shadow's frame: its quad without the inside */
@@ -2017,7 +2020,7 @@ void ui_glass_card(float x, float y, float w, float h, float radius, const float
    glUseProgram(g_prog_2d);
    /* the card's frame (rounded corners, border; 1 px more outside for the edge's fade) */
    glUniform4f(u2_rect, w * k, h * k, radius * g_rk * k, border_alpha);
-   glUniform4f(u2_aux0, 2.0f * k, 0.0f, 0.0f, 0.0f);
+   glUniform4f(u2_aux0, 2.0f * k, 0.0f, flat, 0.0f);
    for (i = 0; i < 4; i++)
    {
       const float sx = i < 2 ? x - p : (i == 2 ? x - p : ix1), sy = i == 0 ? y - p : (i == 1 ? iy1 : iy0);
@@ -2028,7 +2031,7 @@ void ui_glass_card(float x, float y, float w, float h, float radius, const float
    {  /* the inside: fill and shadow as one layer */
       const float s = sh_a, kf = rgba[3], a = 1.0f - (1.0f - s) * (1.0f - kf);
       glUniform4f(u2_uvw, (ix0 - x) / w, (iy0 - y) / h, (ix1 - ix0) / w, (iy1 - iy0) / h);
-      glUniform4f(u2_aux0, kf / a, a, 0.0f, 0.0f);
+      glUniform4f(u2_aux0, kf / a, a, flat, 0.0f);
       draw_2d(0, ix0, iy0, ix1 - ix0, iy1 - iy0, rgba, 11);
    }
    glUniform4f(u2_uvw, 0.0f, 0.0f, 1.0f, 1.0f);
@@ -2604,8 +2607,7 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "start" },    "btn.start",        "hint.options" },
       { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
       { { "select" },   "btn.select",       "hint.settings" } },
-   [HINTS_GAMEMENU] = {
-      { { "dpad" },     "btn.dpad",         "hint.move" },
+   [HINTS_GAMEMENU] = {   /* lumen-2 mockup "Game menu": Accept and Close, inside the sheet */
       { { "cross" },    "btn.cross",        "hint.select" },
       { { "circle" },   "btn.circle",       "hint.close" } },
    [HINTS_GAMEMENU_FOLDERS] = {
@@ -2705,6 +2707,7 @@ static int    g_nicons;
 typedef struct { const icon_t *icon[3]; int have_icons; GLuint fb, txt; int fbw, fbh, tw, th; } hint_gl_t;
 static hint_gl_t g_hint_gl[HINTS_COUNT][SET_HINTS];
 static float     g_hint_cx = W * 0.5f;   /* horizontal centre of the help bar */
+static float     g_hint_w = 0.0f;        /* width it may take; 0: centred in [0, 2 * g_hint_cx] */
 
 /* the icon's picture from the stick (theme's glyphs/ or icons/ first, then the flat
  * glyphs, the pixel-art icons, the old layout); no GL: any thread */
@@ -2885,7 +2888,7 @@ static void hints_draw(int set, float y, float alpha)
    }
    /* the bar is centred in [0, 2 * g_hint_cx]: tighten the gaps when a long language
     * would not fit (5 hints of the keyboard in German left of the panel) */
-   avail = 2.0f * g_hint_cx - 32.0f;
+   avail = g_hint_w > 0.0f ? g_hint_w : 2.0f * g_hint_cx - 32.0f;
    if (total > avail && n > 1)
    {
       float g = gap_hint - (total - avail) / (n - 1);
@@ -4342,8 +4345,8 @@ static void dialog_launch_info(char *title, size_t tn, char *cover, size_t cn)
 static int run_dialog(SDL_Window *win, const char *kind)
 {
    enum { MAXROW = 12 };
-   label_t kicker = { 0 }, title = { 0 }, sub = { 0 }, sect = { 0 }, row_l[MAXROW], tag = { 0 }, h_ok = { 0 }, h_back = { 0 };
-   int ans[MAXROW], sect_before = -1, n = 0, sel = 0, answer = -1, i, discs = 1, cur = 1;
+   label_t kicker = { 0 }, title = { 0 }, sub = { 0 }, row_l[MAXROW], val = { 0 }, h_ok = { 0 }, h_back = { 0 };
+   int ans[MAXROW], disc_row = -1, n = 0, sel = 0, answer = -1, i, discs = 1, cur = 1, pick = 1, shown = 0;
    char gtitle[256], cover_path[700], buf[64];
    GLuint cover = 0; int cw_ = 0, chh = 0;
    const icon_t *ic_ok = icon_get(g_home, "cross"), *ic_back = icon_get(g_home, "circle");
@@ -4351,18 +4354,16 @@ static int run_dialog(SDL_Window *win, const char *kind)
    double t0 = now_s(), tp = t0;
 
    if (!strncmp(kind, "discs:", 6) && sscanf(kind + 6, "%d:%d", &discs, &cur) >= 1)
-   { if (discs < 1) discs = 1; if (discs > MAXROW - 2) discs = MAXROW - 2; if (cur < 1 || cur > discs) cur = 1; }
+   { if (discs < 1) discs = 1; if (discs > 99) discs = 99; if (cur < 1 || cur > discs) cur = 1; }
    memset(row_l, 0, sizeof(row_l));
-   /* rows: Continue, [discs], Exit */
+   /* rows: Continue, [Change disc], Save and exit, Exit. The discs are one row (lumen-2 mockup,
+    * "In-game pause"): its value is the disc to put in, Left / Right pick it, Cross switches;
+    * it starts on the next disc, the one a player is most likely to want */
    label_set(&row_l[n], g_font_name, tr("dialog.continue")); ans[n++] = 0;
    if (discs > 1)
    {
-      sect_before = n;
-      for (i = 1; i <= discs; i++)
-      {
-         snprintf(buf, sizeof(buf), "%s %d", tr("dialog.disc"), i);
-         label_set(&row_l[n], g_font_name, buf); ans[n++] = i == cur ? 0 : 10 + i;
-      }
+      disc_row = n; pick = cur % discs + 1;
+      label_set(&row_l[n], g_font_name, tr("dialog.change_disc")); ans[n++] = 10;
    }
    label_set(&row_l[n], g_font_name, tr("dialog.save_exit")); ans[n++] = 3;
    label_set(&row_l[n], g_font_name, tr("dialog.exit")); ans[n++] = 2;
@@ -4380,8 +4381,6 @@ static int run_dialog(SDL_Window *win, const char *kind)
       snprintf(n1, sizeof(n1), "%d", cur); snprintf(n2, sizeof(n2), "%d", discs);
       label_set(&sub, g_font_small, trf(sb, sizeof(sb), "dialog.disc_of", "n", n1, "m", n2, NULL));
    }
-   label_set(&sect, g_font_small, tr("dialog.change_disc"));
-   label_set(&tag, g_font_small, tr("dialog.in_use"));
    label_set(&h_ok, g_font_small, tr("dialog.choose"));
    label_set(&h_back, g_font_small, tr("dialog.back"));
    logf_("dialog %s (discs %d, current %d, cover %s)", kind, discs, cur, cover ? "yes" : "no");
@@ -4399,21 +4398,28 @@ static int run_dialog(SDL_Window *win, const char *kind)
       {
          if (nv.up && sel > 0) sel--;
          if (nv.down && sel < n - 1) sel++;
-         if (nv.confirm) answer = ans[sel];
+         if (sel == disc_row && nv.left) pick = pick > 1 ? pick - 1 : discs;
+         if (sel == disc_row && nv.right) pick = pick < discs ? pick + 1 : 1;
+         if (nv.confirm) answer = sel == disc_row ? (pick == cur ? 0 : 10 + pick) : ans[sel];
          else if (nv.back || nv.options) answer = 0;
       }
       spring_step(&fade, 1.0f, 60, 14, dt);
+      if (disc_row >= 0 && shown != pick)
+      {  /* the row's value: the disc it would put in */
+         snprintf(buf, sizeof(buf), "%s %d", tr("dialog.disc"), pick);
+         label_set(&val, g_font_small, buf); shown = pick;
+      }
       {
-         /* geometry: header 132, rows 56, a section label before the discs */
-         const float RW = n <= 6 ? 66.0f : 54.0f, BH_ = RW - 14, cwid = 480, head = 150, pad = 32;   /* a button and its ring fill the pitch */
-         float chgt = head + n * RW + (sect_before >= 0 ? 34 : 0) + pad, cx = (W - cwid) * 0.5f, cy = (H - chgt) * 0.5f - 18;
+         /* geometry: header 150, rows 66 */
+         const float RW = 66.0f, BH_ = RW - 14, cwid = 480, head = 150, pad = 32;   /* a button and its ring fill the pitch */
+         float chgt = head + n * RW + pad, cx = (W - cwid) * 0.5f, cy = (H - chgt) * 0.5f - 18;
          float a = clampf(fade.x, 0, 1), rowy[MAXROW], y = cy + head;
          float white[4] = { 1, 1, 1, a }, txt[4], dim[4], scrim[4], red[4];
          theme_color(TC_TEXT, txt); txt[3] = a;
          theme_color(TC_DIM, dim); dim[3] = a;
          theme_color(TC_BACKDROP, scrim); scrim[3] = 0.86f;
          theme_color(TC_DANGER, red); red[3] = a;
-         for (i = 0; i < n; i++) { if (i == sect_before) y += 34; rowy[i] = y; y += RW; }
+         for (i = 0; i < n; i++) { rowy[i] = y; y += RW; }
          if (t - t0 < 0.02) pill.x = rowy[sel];
          spring_step(&pill, rowy[sel], 260, 26, dt);
 
@@ -4452,15 +4458,13 @@ static int run_dialog(SDL_Window *win, const char *kind)
             }
             if (sub.tex) draw_2d(sub.tex, tx, cy + pad + 8 + kicker.h + 4 + title.h + 2, sub.w, sub.h, dim, 0);
          }
-         /* section label, selection pill, rows */
-         if (sect_before >= 0 && sect.tex) draw_2d(sect.tex, cx + pad + 18, rowy[sect_before] - 28, sect.w, sect.h, dim, 0);
          /* the actions: buttons with their glyph, the first one filled; the focus is glass and
           * the ring behind the button (ui.h), the destructive answer red text, never a block */
          ui_focus(cx + pad, pill.x + 7, cwid - 2 * pad, BH_, UI_CTL_R, a);
          for (i = 0; i < n; i++)
          {
-            const int primary = i == 0, disc_row = sect_before >= 0 && i >= sect_before && i < sect_before + discs;
-            const char *gly = primary ? "play" : disc_row ? "disc" : ans[i] == 3 ? "save" : ans[i] == 2 ? "exit" : NULL;
+            const int primary = i == 0;
+            const char *gly = primary ? "play" : i == disc_row ? "disc" : ans[i] == 3 ? "save" : ans[i] == 2 ? "exit" : NULL;
             const float by = rowy[i] + 7, lx = cx + pad + 18;
             float c[4], gc[4];
             if (primary)
@@ -4478,10 +4482,10 @@ static int run_dialog(SDL_Window *win, const char *kind)
             memcpy(gc, c, sizeof(gc)); if (!primary && ans[i] != 2) gc[3] *= 0.70f;
             if (gly) glyph_draw(gly, lx, by + (BH_ - 24) * 0.5f, 24, gc);
             if (row_l[i].tex) draw_2d(row_l[i].tex, lx + 24 + 14, by + (BH_ - row_l[i].h) * 0.5f, row_l[i].w, row_l[i].h, c, 0);
-            if (sect_before >= 0 && i == sect_before + cur - 1 && tag.tex)
-            {
-               const float tg[4] = { dim[0], dim[1], dim[2], a };
-               draw_2d(tag.tex, cx + cwid - pad - 18 - tag.w, by + (BH_ - tag.h) * 0.5f, tag.w, tag.h, tg, 0);
+            if (i == disc_row)
+            {  /* value and chevron at the right edge, as a row that changes a value */
+               const float xr = cx + cwid - pad - 18 - ui_chevron(cx + cwid - pad - 18, by + BH_ * 0.5f, a) - 8;
+               if (val.tex) draw_2d(val.tex, xr - val.w, by + (BH_ - val.h) * 0.5f, val.w, val.h, dim, 0);
             }
          }
          /* help bar */
@@ -5294,13 +5298,15 @@ int main(int argc, char **argv)
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);
                /* the game menu is a sheet on the right edge (gamemenu.c, 468 px): its help
-                * bar is centred in what is left of the screen */
-#define HINT_CX(set) ((set) == HINTS_GAMEMENU || (set) == HINTS_GAMEMENU_FOLDERS ? (W - 468.0f) * 0.5f : W * 0.5f)
-               if (h_prev >= 0 && h_mix < 1.0f) { g_hint_cx = HINT_CX(h_prev); hints_draw(h_prev, 672, ha * (1.0f - h_mix)); }
-               g_hint_cx = HINT_CX(h_cur);
+                * bar is at the foot of the sheet (lumen-2 mockup), inside its 40 px margins */
+#define HINT_GM(set) ((set) == HINTS_GAMEMENU || (set) == HINTS_GAMEMENU_FOLDERS)
+#define HINT_AT(set) (g_hint_cx = HINT_GM(set) ? W - 468.0f * 0.5f : W * 0.5f, g_hint_w = HINT_GM(set) ? 468.0f - 80.0f : 0.0f)
+               if (h_prev >= 0 && h_mix < 1.0f) { HINT_AT(h_prev); hints_draw(h_prev, 672, ha * (1.0f - h_mix)); }
+               HINT_AT(h_cur);
                hints_draw(h_cur, 672, ha * h_mix);
-               g_hint_cx = W * 0.5f;
-#undef HINT_CX
+               g_hint_cx = W * 0.5f; g_hint_w = 0.0f;
+#undef HINT_AT
+#undef HINT_GM
             }
             if (fold == 2) { dim_none(); ui_scrim_skip(1); }   /* its scrim is in the frame already */
             gamemenu_draw(t);
@@ -5308,9 +5314,9 @@ int main(int argc, char **argv)
             if (gamemenu_active())
             {  /* its scrim covered the help bar: the hints describe the focused layer, never dimmed */
                glUseProgram(g_prog_2d);
-               g_hint_cx = (W - 468.0f) * 0.5f;   /* beside the sheet */
+               g_hint_cx = W - 468.0f * 0.5f; g_hint_w = 468.0f - 80.0f;   /* at the foot of the sheet */
                hints_draw(gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU, 672, gamemenu_amount() * (1 - fade));
-               g_hint_cx = W * 0.5f;
+               g_hint_cx = W * 0.5f; g_hint_w = 0.0f;
             }
             panel_draw(t);
             filepicker_draw(t);

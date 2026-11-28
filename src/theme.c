@@ -16,7 +16,7 @@ static theme_entry_t s_list[THEME_MAX];
 static int   s_n, s_active;
 static char  s_home[256];
 static float s_col[TC_COUNT][3];
-static float s_card_alpha = 0.92f;
+static float s_card_alpha = 1.0f;    /* Lumen's own look: opaque black menus */
 static float s_lit[3];
 static int   s_has_lit;
 static float s_radius = 1.0f;     /* corner rounding of every shape: 1 = Lumen's, 0 = square */
@@ -26,7 +26,7 @@ static const char *const k_keys[TC_COUNT] = { "accent", "card", "text", "dim", "
 /* Lumen's own look (lumen-design tokens) */
 static const float k_default[TC_COUNT][3] = {
    { 0.36f, 0.60f, 1.00f },   /* accent   */
-   { 0.039f, 0.059f, 0.090f },/* card: ink */
+   { 0.016f, 0.024f, 0.031f },/* card: the welcome's black (= backdrop) */
    { 0.96f, 0.96f, 0.98f },   /* text     */
    { 0.62f, 0.63f, 0.70f },   /* dim      */
    { 0.016f, 0.024f, 0.031f },/* backdrop */
@@ -159,7 +159,7 @@ void theme_init(const char *home)
    qsort(s_list, s_n, sizeof(s_list[0]), cmp_entry);
    for (i = 0; i < s_n; i++) read_preview(&s_list[i]);
    memcpy(s_col, k_default, sizeof(s_col));
-   s_card_alpha = 0.92f;
+   s_card_alpha = 1.0f;
    s_radius = 1.0f;
    s_has_lit = 0;
    want = settings_get("theme", "default");
