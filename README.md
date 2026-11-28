@@ -19,10 +19,11 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 - per-game background image (`games/<n>/background.jpg|png`) at ~30 % opacity,
   crossfaded and decoded on a worker thread so browsing never stutters
 - launches games in RetroArch and comes back to the same game afterwards
-- small: a single <!-- lumen-size -->~441 KB<!-- /lumen-size --> binary; only covers near
+- small: a single <!-- lumen-size -->~445 KB<!-- /lumen-size --> binary; only covers near
   the selection stay in memory
 - translated UI: English (default), Spanish, Portuguese, French, German, Italian
-- game menu on Start: favourites and folders (shown as their own rows), and "Save and exit"
+- game menu on Start: favourites (shown as their own row) and folders (a tile at the start of
+  each system's row, a 2 x 2 grid of its covers: Cross opens it, Circle goes back), and "Save and exit"
   on OPEN with a "continue where you left off?" question on the next Play
 - profiles with their own memory cards and save states, and per-profile play statistics
 - settings panel laid out like a console's: profile, display (720p / 1080p, CRT filter,
@@ -32,8 +33,10 @@ made by [Víctor Calderón](https://vcalderon.dev/)
   update, date and time, Sony's stock kernel restore, about)
 - system update over Wi-Fi or cable: only what changed is downloaded and verified, installed
   at a restart, saves and settings untouched
-- with no controller connected, a card that pairs a Bluetooth controller by itself once a
-  USB Bluetooth receiver is plugged in
+- with no controller connected, a quiet screen (the logo, one line on what to do, a
+  controller in outline) that pairs a Bluetooth controller by itself when a USB Bluetooth
+  receiver is there, and leaves as soon as a controller connects by cable or over the air;
+  Bluetooth's state is its glyph in the status bar
 - CRT filter for the dashboard and the games (Off, Soft, Strong)
 - USB transfer between the Lumen stick and a second USB drive, and a library check that
   reports broken games
@@ -256,11 +259,14 @@ Backspace (back), Escape (leave).
 ## Settings panel
 
 Seven categories on the left; a row with › opens a sub-page in the same card, and Circle
-goes back to the row it came from. A help line at the foot of the card describes the
-focused option.
+goes back to the row it came from. Rows are grouped under small headers and each one says
+what it does under its label; choices of two or three values are a segmented control, on /
+off ones a switch. The foot of the card holds the rest of the focused row's description, or
+the page's note.
 
 **Profile** (switch, create, rename, colour, avatar, delete), **Display** (output after a
-restart, CRT filter live; sub-pages **Theme**, **Graphics**: per-system presets, empty
+restart, CRT filter live, the theme as a swatch per theme with "Apply the theme" (restart)
+when another one is chosen; sub-pages **Graphics**: per-system presets, empty
 until a system declares them, and **Screensaver**: start after Never/1–30 min, game demos
 on/off, length of each demo, preview), **Sound** (menu music, its volume, interface
 sounds; sub-page **Audio output**: HDMI, a USB audio card or paired Bluetooth headphones;
@@ -297,7 +303,7 @@ src/audit.c                   library check
 src/net.c, src/conn.c         Connections worker and cards
 src/kern.c                    kernel card
 src/update.c                  system update: check, download, verify, stage
-src/padwait.c                 "no controller" card: Bluetooth receiver and unattended pairing
+src/padwait.c                 "no controller" screen and unattended Bluetooth pairing
 src/module.c, src/mod_net.c   modules: registry, extension points, built-in wifi / ethernet / bluetooth (docs/modules.md)
 src/status.c                  top-right clock and network status (the modules add their items: Wi-Fi signal, cable, Bluetooth)
 src/buttons.c                 lumen-buttons: console buttons daemon, demo watcher, game watchdog

@@ -216,7 +216,7 @@ void gamemenu_draw(double t)
    gs = stats_get(g->content);
    col4(txt, TC_TEXT, a); col4(dim, TC_DIM, a); col4(acc, TC_ACCENT, a);
    col4(white, TC_PRIMARY, a); col4(ink, TC_ON_PRIMARY, a);   /* the main button and its text */
-   col4(card, TC_CARD, 0.94f * a); col4(edge, TC_GLASS, 0.20f * a);
+   col4(card, TC_CARD, theme_card_alpha() * a); col4(edge, TC_GLASS, 0.20f * a);
 
    /* the facts that are known (guidelines/08: never "unknown") */
    if (g->year[0]) { fk[nf] = "fact.year"; fv[nf++] = g->year; }
@@ -240,7 +240,7 @@ void gamemenu_draw(double t)
    spring_step(&s_pill, rowy[s_sel], 260, 26, s_dt);
 
    gl_use_2d();
-   ui_scrim(a * 0.55f);
+   ui_scrim(a);   /* the theme's scrim: flat black in Lumen's own look */
    /* the sheet: one flat ink shape to the edge of the screen, lit along its left edge */
    draw_2d(0, cx, 0, W - cx + 1, H, card, 0);
    draw_2d(0, cx, 0, 1, H, edge, 0);

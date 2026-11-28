@@ -30,7 +30,13 @@ glass      = #FFE4D2          ; tint of the glass shapes: buttons, tabs, keys, t
 primary    = #FF9F45          ; fill of the main button: Play, the keyboard's OK (default: white)
 on_primary = #2A1206          ; text on the main button (default: near black)
 card       = #2A1A1E          ; menu / dialog card
-card_alpha = 0.94             ; how solid the card colour is under the glass: 0.2 .. 1 (1 = opaque)
+card_alpha = 0.94             ; how solid the card colour is: 0.2 .. 1 (default 1: opaque)
+card_light = 1                ; the glass light down a card: 0 .. 1 (default 0: one flat colour)
+scrim      = 0.60             ; how much `backdrop` covers the screen behind the game menu, the dialogs
+                              ; and the pause dialog: 0 .. 1 (default 1: flat, nothing of the art shows)
+scrim_settings = 0.60         ; the same behind Settings (default 0.90: the dashboard just shows)
+selected   = 0.24             ; how much `glass` fills the focused row, button or key: 0 .. 1 (default 0.16)
+focus_glow = 1                ; the soft halo of `focus` around the focus ring: 0 .. 1 (default 1, 0 = none)
 radius     = 1                ; corner rounding of every shape: 1 = Lumen's, 0 = square corners
 text       = #FFF6EE          ; primary text
 dim        = #E2C3B4          ; secondary text
@@ -39,7 +45,8 @@ panel      = #1A0F12          ; settings panel background
 danger     = #FF7070          ; destructive rows (Exit the game)
 ```
 
-Colours are `#RRGGBB` or `r, g, b` (0..255, or 0..1). Missing keys keep Lumen's colours.
+Colours are `#RRGGBB` or `r, g, b` (0..255, or 0..1); amounts are 0..1. Missing keys keep
+Lumen's own look: black menus (`backdrop`), flat cards, the art hidden behind them.
 Every screen draws with the same tokens: the dashboard's tabs and focus rings, the game
 menu, the settings, the keyboard, the questions and the in-game pause dialog. Selection is
 always glass with the `focus` ring; `pill` (a filled selection) is no longer read.

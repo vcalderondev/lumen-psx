@@ -5,6 +5,119 @@ Each release zip also lists the psc-platform components it ships (`lumen/VERSION
 
 ## [Unreleased]
 
+The parts of the 0.25.0 redesign that had been left out. Checked in psc-sim; not yet
+verified on a console.
+
+### Added
+- Status bar: each controller's battery after its glyph, a small battery filled to its
+  charge (the danger colour at 20 % and below, the accent while charging) with the percent
+  when the kernel gives it (power_supply, scope Device); else SDL's level. A DualSense
+  reports it with psc-platform's `hid-dualsense.ko` from its next release (over USB and
+  Bluetooth); a DualShock 4 through the kernel's own hid-sony.
+- The help bar draws Select and Start as the controller in use has them: Create and
+  Options marks on a DualSense, SHARE and OPTIONS on a DualShock 4, SELECT and START on
+  the others. The controller is told by its vendor and product (the joystick's GUID); the
+  last one plugged in or pressed is the one in use (`LUMEN_PAD_STYLE=ds4|ds5` forces it).
+- Settings: rows are grouped under small caps headers (Display: Output, Look; Sound: Output,
+  Menu; Profile: Profiles, This profile), and every row says what it does under its label
+  (the first sentence of its description; the rest stays in the help line at the foot).
+- Settings: a segmented control for choices of two or three values (output resolution, CRT
+  filter, graphics per system): every option in sight, the chosen one filled.
+- Home: the number of games after the name of the open system's tab.
+- Pause dialog: "Disc 1 of 2" under the game's title.
+- Settings, Display: the theme is chosen from its swatches in the Look group (the Theme
+  sub-page is gone); "Apply the theme" appears under it only when the chosen theme is not
+  the one in use, since fonts and pictures still load at start.
+
+### Changed
+- Folders: instead of a row of their own each, a folder is a tile at the start of every
+  system's row that has games in it, a 2 x 2 grid of its first covers on the theme's
+  `panel` colour; the hero says its name and how many games it holds. Cross opens it (its
+  games of that system, in a row that is not a tab; the system's tab stays lit), Circle goes
+  back to the tile, L2 / R2 leave it for the next system. Favourites keep their row.
+- No controller: the two-step card ("waiting for a Bluetooth receiver", the steps, how each
+  controller pairs) is a quiet screen of its own: the theme's backdrop, the logo, one pill
+  (press PS on a paired controller, hold PS and Create to pair one, or connect one by
+  cable; while pairing, its name), and a controller in outline at the foot, fading out
+  toward its top and sides (`assets/ui/padwait.png`, made by tools/make-illustrations.sh).
+  No help bar; Circle still closes it. It leaves as soon as a controller connects.
+- Status bar: Bluetooth always shows its state: crossed out and faint with no receiver,
+  crossed out with the radio off, faint with nothing connected, "..." while a controller
+  pairs, bright with one connected (new glyph `bluetooth-off`).
+- Covers: the media mark is a white disc with its hole in the top right corner of the
+  focused cover (a cartridge or a coin on the same white disc), in the theme's `primary` /
+  `on_primary`, flat. A native port carries a chip on that disc on every cover instead of
+  the "NATIVE PORT" text.
+- The focus ring is finer: a dark keyline between the element and the ring (it stays crisp
+  over bright art), corners concentric with the element's, and a soft halo of the focus
+  colour (theme key `focus_glow`). The focused cover uses the same ring as every menu.
+- Menus are black: in Lumen's own look the cards, the game sheet and the dialogs are one
+  opaque flat colour, the black of the welcome screen (the card colour was a translucent
+  dark blue lit from the top), and so is the screen around the game menu and the dialogs;
+  behind Settings it is 90 % black, so the dashboard just shows through. The focused row,
+  button or key is filled with less white (16 % instead of 24 %); the ring still marks it.
+- All of it is the theme's: new `theme.ini` amounts `scrim`, `scrim_settings`, `selected`
+  and `card_light` (docs/themes.md), whose defaults are the look above; `card_alpha`
+  defaults to 1. Sunset and Retro declare the previous values (art behind the menus, glass
+  cards lit from the top); Mono takes the defaults, so its cards are pure black now. The
+  pause dialog's backdrop follows `scrim` (it was 86 %, with the cover behind it), and the
+  welcome screen takes the theme's colours instead of its own.
+- Pause dialog: the discs are one row, "Change disc", whose value is the disc to put in
+  (Left / Right pick it, starting on the next one; Cross switches), instead of a row per
+  disc.
+- Game menu: its help bar is at the foot of the sheet, with Accept and Close, instead of
+  centred beside it.
+- The controls of a row are shared components (`src/ui.c`: `ui_switch`, `ui_segmented`,
+  `ui_stepper`, `ui_slider`, `ui_chevron`, `ui_mark`, `ui_group`); Settings no longer draws
+  its own. With them: Volume is a slider; "Built-in games" is a segmented control; choices of
+  many values (active profile) are a stepper in a well instead of bare arrows; the profile
+  colours lose their arrows and ring the chosen one; modules and the Wi-Fi network no longer
+  carry a dot beside their state.
+- Settings: every top-level section groups its rows (Network: Wireless, Cable; Bluetooth:
+  Adapter, Pairing; Library: Games, Tools; Modules: Features; System: General, Software,
+  Power, with its rows reordered to match). The Network card is titled "Network" with its
+  state in the caption (it was titled "Online" / "Offline"). "Network cable" and "IP address"
+  say what they are; Bluetooth's Devices row gives only the count (the caption has the
+  rest). The foot of the card has no rule when it has nothing to say. A long value no longer
+  runs over the row's description.
+- Wi-Fi and Bluetooth describe what they are instead of "Turn ... on", which read wrong
+  while they were on.
+- Home: the status capsule leaves while the game menu is open (it showed through the sheet).
+- Settings layout: the title and the rail move up, the card is larger (824 x 600) and the
+  rail's rows have the 14 px radius of every control. The Home's status row leaves the
+  screen under the settings.
+- Settings, Display: what is in use now is the page's caption instead of a row; direct
+  scanout is listed only under Lumen's compositor and "Restart to apply" only when there is
+  something to apply (they were dimmed rows).
+- Theme swatches are larger (72 x 44).
+- Home: the position in the list ("3 / 16" and its track) moves to the bottom left, on the
+  help bar's line; the help bar no longer repeats L2 / R2 (they flank the tabs).
+- Home: the focused cover's glow is wider and softer (its own baked texture, still one
+  quad); the title is 68 px.
+- Pause dialog: 480 px wide, the cover with rounded corners, no hairline under the header.
+- "Pair your controller" shows four controllers, one after another with a crossfade
+  (`assets/ui/pad.png`, `pad2.png` ...: DualSense, DualShock 4, DualShock 3, Xbox 360), in one
+  look: white outlines of one weight on a dark body, the symbols in their colours. How they
+  are made: `tools/pad-lines`.
+
+### Fixed
+- Switching Wi-Fi on with a combo adapter (RTL8821CU: Wi-Fi and Bluetooth in one chip, its
+  experimental driver enabled with `debug/wifi-vendor-drivers`) cut every Bluetooth
+  controller: the Bluetooth half stopped answering once the driver was loaded, and the
+  adapter fell off the USB bus when it searched for networks. Realtek's drivers are now
+  loaded without their idle power saving and transmit at 3 dBm (`debug/wifi-txpower` sets
+  another value in mBm, or `auto`). Checked on one console with one adapter: the driver
+  loaded, a network joined and held for minutes with no USB error; a controller
+  reconnecting afterwards is still to be confirmed.
+- "Pair your controller" ran at 29 fps at 1080p on the console: the whole Home was drawn
+  under its backdrop, the backdrop was a blended pass of its own and each ripple was a shape
+  worked out per pixel. Fully open, the Home is no longer drawn and the frame is cleared to
+  the backdrop's colour; the ripples are one baked ring texture. 59 to 60 fps, measured on
+  the console.
+- "Pair your controller": the disc behind the drawing was a rounded square (the ripples
+  around it are circles), the Home showed through the backdrop and its help bar was drawn
+  under the card's own.
+
 ## [0.25.0] - 2026-11-27
 
 A new look, "Lumen 2: lit by the game" (lumen-design, `mockups/proposals/lumen-2`): the

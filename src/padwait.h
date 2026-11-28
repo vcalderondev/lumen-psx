@@ -1,11 +1,10 @@
-/* "No controller": a card over the dashboard whenever no controller is connected, in two
- * steps. 1: plug a USB Bluetooth receiver into a free port (or a wired controller). 2, as soon
- * as a receiver is there (already, or once plugged in): Bluetooth is switched on and the first
- * game controller put in pairing mode is paired with no question (net_pad_watch); the card
- * shows how the usual controllers enter pairing mode and what is going on, and closes by
- * itself once a controller is connected. For consoles whose two front ports are all they
- * have (no OTG adapter at the back): one port for the receiver, controllers over the air.
- * LUMEN_PADWAIT=0 turns it off (psc-sim, which has no controllers). */
+/* "No controller": a screen of its own whenever no controller is connected: the logo, one
+ * pill saying what to do (press PS on a paired controller, pair a new one, or plug one in by
+ * cable) and a controller in outline at the foot. With a Bluetooth receiver, Bluetooth is
+ * switched on and the first game controller put in pairing mode is paired with no question
+ * (net_pad_watch). It closes by itself as soon as a controller is connected, by cable or
+ * over the air; Circle = not now. The receiver's own state is the status bar's Bluetooth
+ * glyph. LUMEN_PADWAIT=0 turns it off (psc-sim, which has no controllers). */
 #ifndef LUMEN_PADWAIT_H
 #define LUMEN_PADWAIT_H
 #include "lumen.h"

@@ -69,7 +69,7 @@ typedef struct {
    char painted[512]; int painted_ok;   /* the cover now in the layer's hole */
    int port;                     /* this launch is a native port's (set at Play) */
    int fx;                       /* launch.ini fx: 0 none, 1 energy */
-   label_t l_kicker, l_title, l_port;   /* l_port: the chip of a native port */
+   label_t l_kicker, l_title;
 } flat_t;
 static flat_t g_flat;
 
@@ -484,15 +484,7 @@ static void flat_labels(const platform_t *pl, const game_t *g)
    int i;
    for (i = 0; pl->name[i] && i < (int)sizeof(up) - 1; i++) up[i] = (char)toupper((unsigned char)pl->name[i]);
    up[i] = 0;
-   if (g->port)
-   {  /* "PLAYSTATION · NATIVE PORT" */
-      char k[160];
-      snprintf(k, sizeof(k), "%s \xc2\xb7 %s", up, tr("badge.port"));
-      label_set(&f->l_kicker, g_font_caps, k);
-      label_set(&f->l_port, g_font_caps, tr("badge.port"));
-   }
-   else
-   label_set(&f->l_kicker, g_font_caps, up);
+   label_set(&f->l_kicker, g_font_caps, up);   /* a port says so with its mark, not a word */
    label_set(&f->l_title, g_font_title, g->title);
 }
 
@@ -693,14 +685,16 @@ static void flat_draw(float pt, const game_t *g, const platform_t *pl)
          glDisable(GL_SCISSOR_TEST);
       }
       if (on > 0.0f)
-      {  /* lit: a white edge on the frame and the chip in the cover's corner */
-         const float edge[4] = { 1, 1, 1, on }, chip[4] = { 0.04f, 0.04f, 0.06f, 0.78f * on }, tc[4] = { 1, 1, 1, on };
-         const float lw = f->l_port.w * 0.78f * s, lh = f->l_port.h * 0.78f * s, cw = lw + 22.0f * s, ch = 24.0f * s;
-         float p[4];
+      {  /* lit: a white edge on the frame and the port's mark in the cover's corner (the
+          * shelf's: the chip on a flat disc in the theme's primary colours) */
+         const float edge[4] = { 1, 1, 1, on }, dm = 26.0f * s, gs = dm * 0.64f;
+         float p[4], wc[4], ic[4];
+         theme_color(TC_PRIMARY, wc); wc[3] = 0.96f * on;
+         theme_color(TC_ON_PRIMARY, ic); ic[3] = on;
          draw_shape(r[0], r[1], r[2], r[3], 18.0f * s, 3.0f * s, edge);
          flat_rect(body, 150, 60, 10, 10, p);
-         draw_shape(p[0], p[1], cw, ch, ch * 0.5f, 0.0f, chip);
-         draw_2d(f->l_port.tex, p[0] + (cw - lw) * 0.5f, p[1] + (ch - lh) * 0.5f, lw, lh, tc, 0);
+         draw_shape(p[0], p[1], dm, dm, dm * 0.5f, 0.0f, wc);
+         glyph_draw("system", p[0] + (dm - gs) * 0.5f, p[1] + (dm - gs) * 0.5f, gs, ic);
       }
       return;
    }

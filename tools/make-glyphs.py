@@ -123,6 +123,24 @@ def pill(text, width):
     return im
 
 
+def pad_button(kind):
+    """the DualSense's Create and Options: no words on that controller, so the pill holds
+    the button's own mark, centred and in a fine stroke: three rays fanning up from one
+    point (Create), three short lines (Options)"""
+    width = 28
+    im, d = canvas(width)
+    rrect(d, 1.2, 8, width - 1.2, 24, 0 if SQUARE else 8, FRAME)
+    cx = width / 2
+    if kind == "create":
+        for ang in (-90, -155, -25):   # \ | / : apart at the foot, so it never reads as an arrow
+            c, s_ = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+            line(d, [(cx + 3.4 * c, 20.6 + 3.4 * s_), (cx + 7.4 * c, 20.6 + 7.4 * s_)], 1.4)
+    else:
+        for y in (13.4, 16, 18.6):
+            line(d, [(cx - 3.8, y), (cx + 3.8, y)], 1.4)
+    return im
+
+
 def dpad():
     im, d = canvas()
     a = 4.6
@@ -290,6 +308,19 @@ def bluetooth():
     return im
 
 
+def bluetooth_off():
+    """Bluetooth with no adapter or switched off: the rune, crossed out (a gap cut around
+    the slash so it reads as one stroke over the rune)"""
+    im, d = canvas()
+    line(d, [(10.5, 11), (21.5, 21), (16, 26), (16, 6), (21.5, 11), (10.5, 21)])
+    gap, gd = canvas()
+    line(gd, [(7.5, 6.5), (24.5, 25.5)], w=STROKE * 2)   # the cut: twice a stroke wide
+    im = Image.composite(Image.new("RGBA", im.size, (0, 0, 0, 0)), im, gap.split()[3])
+    d = ImageDraw.Draw(im)
+    line(d, [(7.5, 6.5), (24.5, 25.5)])
+    return im
+
+
 def ethernet():
     im, d = canvas()
     # an RJ45 socket: the body, the latch notch and three contacts
@@ -372,13 +403,16 @@ GLYPHS = {
     "l1": lambda: shoulder("L1"), "r1": lambda: shoulder("R1"),
     "l2": lambda: shoulder("L2"), "r2": lambda: shoulder("R2"),
     "select": lambda: pill("SELECT", 52), "start": lambda: pill("START", 46),
+    # Select and Start of the controller in use (main.c, pad_icon): DualShock 4, DualSense
+    "ds4-share": lambda: pill("SHARE", 48), "ds4-options": lambda: pill("OPTIONS", 60),
+    "ds5-create": lambda: pad_button("create"), "ds5-options": lambda: pad_button("options"),
     "dpad": dpad,
     "pad": pad, "network": network, "clock": clock,
     "info": info, "gallery": gallery, "settings": settings,
     "disc": disc_badge, "cartridge": cartridge, "coin": coin,
     # status bar glyphs of the built-in modules (docs/modules.md, "status")
     "wifi-0": lambda: wifi(0), "wifi-1": lambda: wifi(1), "wifi-2": lambda: wifi(2), "wifi-3": lambda: wifi(3),
-    "bluetooth": bluetooth, "ethernet": ethernet,
+    "bluetooth": bluetooth, "bluetooth-off": bluetooth_off, "ethernet": ethernet,
     "chevron-right": chevron, "chevron-down": lambda: chevron(True),
     "players": players, "calendar": calendar, "star": star,
     # actions of the game sheet and the pause; sections of the settings' rail

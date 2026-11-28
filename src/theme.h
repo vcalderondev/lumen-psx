@@ -23,6 +23,16 @@ enum {
    TC_COUNT
 };
 
+/* amounts a theme sets (0 .. 1, one key of theme.ini each; docs/themes.md) */
+enum {
+   TV_SCRIM,          /* "scrim": how much the backdrop colour covers the screen behind the game menu and the dialogs */
+   TV_SCRIM_SETTINGS, /* "scrim_settings": the same behind Settings                         */
+   TV_SELECTED,       /* "selected": the glass fill of the focused row, button or key        */
+   TV_CARD_LIGHT,     /* "card_light": the glass light down a card (0 = one flat colour)      */
+   TV_FOCUS_GLOW,     /* "focus_glow": the soft halo of the focus colour around the ring       */
+   TV_COUNT
+};
+
 void        theme_init(const char *home);        /* scans <home>/themes; loads settings "theme" */
 int         theme_count(void);                   /* "default" included, first */
 const char *theme_id(int i);
@@ -32,6 +42,7 @@ int         theme_active_index(void);
 const char *theme_active_id(void);
 void        theme_color(int which, float rgb[3]);
 float       theme_card_alpha(void);              /* opacity of the card colour under the glass: 0.2 .. 1 */
+float       theme_value(int which);              /* TV_*: the theme's amount, else Lumen's own */
 /* the light of the focused game (tab underline, glow, kicker bar): 1 and rgb set when the
  * theme fixes it (`lit`); 0 = Lumen's own look, the light follows each game's cover */
 int         theme_lit(float rgb[3]);
