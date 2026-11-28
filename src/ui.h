@@ -8,7 +8,7 @@
 
 #define UI_SCRIM     0.60f   /* scrim.menu                                  */
 #define UI_REST      0.08f   /* glass.rest: buttons, keys, "you are here"   */
-#define UI_SELECTED  0.24f   /* glass.selected: the focused element         */
+#define UI_SELECTED  0.16f   /* glass.selected: the focused element (the ring marks it) */
 #define UI_EDGE      0.16f   /* glass.edge                                  */
 #define UI_CARD_R    22.0f
 #define UI_CTL_R     14.0f   /* buttons and rows: a control is not a pill (chips and keycaps are) */

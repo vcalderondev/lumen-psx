@@ -26,7 +26,8 @@ verified on a console.
   dark blue lit from the top), and so is the screen around them: the dashboard's art no
   longer shows behind the game menu or the pause dialog (the scrim is opaque,
   `ui_scrim_alpha`); behind Settings it is 90 % black, so the dashboard just shows through
-  (`UI_SCRIM_SETTINGS`). `card_alpha` defaults to 1; a theme below 1 keeps the glass and the
+  (`UI_SCRIM_SETTINGS`). The focused row, button or key is filled with less white (16 %
+  instead of 24 %): on black it read as a grey slab; the white ring still marks it. `card_alpha` defaults to 1; a theme below 1 keeps the glass and the
   dimmed art. Mono's cards are pure black now.
 - Pause dialog: the discs are one row, "Change disc", whose value is the disc to put in
   (Left / Right pick it, starting on the next one; Cross switches), instead of a row per
