@@ -123,6 +123,22 @@ def pill(text, width):
     return im
 
 
+def pad_button(kind):
+    """the DualSense's Create and Options: no words on that controller, so the pill holds
+    the button's own mark, three rays (Create) or three lines (Options)"""
+    width = 26
+    im, d = canvas(width)
+    rrect(d, 1.2, 8, width - 1.2, 24, 0 if SQUARE else 8, FRAME)
+    if kind == "create":
+        for ang in (-90, -140, -40):   # three rays fanning up from a point below them
+            c, s_ = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+            line(d, [(13 + 2.6 * c, 20.5 + 2.6 * s_), (13 + 8.0 * c, 20.5 + 8.0 * s_)], 1.6)
+    else:
+        for y in (12.6, 16, 19.4):
+            line(d, [(8.5, y), (17.5, y)], 1.6)
+    return im
+
+
 def dpad():
     im, d = canvas()
     a = 4.6
@@ -385,6 +401,9 @@ GLYPHS = {
     "l1": lambda: shoulder("L1"), "r1": lambda: shoulder("R1"),
     "l2": lambda: shoulder("L2"), "r2": lambda: shoulder("R2"),
     "select": lambda: pill("SELECT", 52), "start": lambda: pill("START", 46),
+    # Select and Start of the controller in use (main.c, pad_icon): DualShock 4, DualSense
+    "ds4-share": lambda: pill("SHARE", 48), "ds4-options": lambda: pill("OPTIONS", 60),
+    "ds5-create": lambda: pad_button("create"), "ds5-options": lambda: pad_button("options"),
     "dpad": dpad,
     "pad": pad, "network": network, "clock": clock,
     "info": info, "gallery": gallery, "settings": settings,

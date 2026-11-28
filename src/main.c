@@ -2423,6 +2423,44 @@ static void in_set(int b, int down)
    in_down[b] = down;
 }
 
+/* The controller in use decides how Select and Start are drawn (pad_icon): the PlayStation
+ * Classic's SELECT / START, the DualShock 4's SHARE / OPTIONS, the DualSense's Create /
+ * Options marks. Read from the joystick's GUID (bus, vendor and product, little endian at
+ * bytes 0, 4 and 8, in SDL 2 and in SDL 3 under sdl2-compat); the last controller that was
+ * plugged in or pressed a button is the one in use. LUMEN_PAD_STYLE=ds4|ds5 forces it. */
+enum { PAD_PS, PAD_DS4, PAD_DS5 };
+static int            g_pad_style = PAD_PS;
+static SDL_JoystickID in_style_id[8];
+static int            in_style[8], in_nstyle;
+static int pad_style_of(SDL_JoystickGUID g)
+{
+   const unsigned vendor = g.data[4] | g.data[5] << 8, product = g.data[8] | g.data[9] << 8;
+   if (vendor != 0x054c) return PAD_PS;
+   if (product == 0x0ce6 || product == 0x0df2) return PAD_DS5;                    /* DualSense, Edge */
+   if (product == 0x05c4 || product == 0x09cc || product == 0x0ba0) return PAD_DS4;   /* DualShock 4, its USB adapter */
+   return PAD_PS;
+}
+static void pad_style_use(SDL_JoystickID id)
+{
+   int i;
+   for (i = 0; i < in_nstyle; i++)
+      if (in_style_id[i] == id && in_style[i] != g_pad_style)
+      {
+         g_pad_style = in_style[i];
+         logf_("controller in use: %s", g_pad_style == PAD_DS5 ? "DualSense" : g_pad_style == PAD_DS4 ? "DualShock 4" : "PlayStation style");
+      }
+}
+static const char *pad_icon(const char *name)
+{
+   static int forced = -1;
+   int st = g_pad_style;
+   if (forced < 0) { const char *e = getenv("LUMEN_PAD_STYLE"); forced = e && !strcmp(e, "ds5") ? PAD_DS5 : e && !strcmp(e, "ds4") ? PAD_DS4 : PAD_PS; }
+   if (forced != PAD_PS) st = forced;
+   if (st == PAD_DS5) { if (!strcmp(name, "select")) return "ds5-create"; if (!strcmp(name, "start")) return "ds5-options"; }
+   if (st == PAD_DS4) { if (!strcmp(name, "select")) return "ds4-share"; if (!strcmp(name, "start")) return "ds4-options"; }
+   return name;
+}
+
 static int in_is_ctrl(SDL_JoystickID id)
 {
    int i;
@@ -2430,10 +2468,17 @@ static int in_is_ctrl(SDL_JoystickID id)
    return 0;
 }
 
+static void in_style_add(SDL_JoystickID id, SDL_JoystickGUID g)
+{  /* a controller just plugged in is the one in use */
+   if (in_nstyle < 8) { in_style_id[in_nstyle] = id; in_style[in_nstyle++] = pad_style_of(g); }
+   pad_style_use(id);
+}
+
 static void in_open(int index)
 {
    char guid[64];
-   SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(index), guid, sizeof(guid));
+   const SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(index);
+   SDL_JoystickGetGUIDString(g, guid, sizeof(guid));
    if (SDL_IsGameController(index))
    {
       SDL_GameController *c = SDL_GameControllerOpen(index);
@@ -2441,13 +2486,15 @@ static void in_open(int index)
       {
          in_ctrl_ids[in_nctrl++] = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c));
          logf_("controller %d: %s (guid %s)", index, SDL_GameControllerName(c), guid);
+         in_style_add(in_ctrl_ids[in_nctrl - 1], g);
          return;
       }
    }
-   if (SDL_JoystickOpen(index))
-      logf_("joystick %d (raw): %s (guid %s)", index, SDL_JoystickNameForIndex(index), guid);
-   else
-      logf_("joystick %d failed: %s", index, SDL_GetError());
+   {
+      SDL_Joystick *j = SDL_JoystickOpen(index);
+      if (j) { logf_("joystick %d (raw): %s (guid %s)", index, SDL_JoystickNameForIndex(index), guid); in_style_add(SDL_JoystickInstanceID(j), g); return; }
+   }
+   logf_("joystick %d failed: %s", index, SDL_GetError());
 }
 
 /* Raw button layout of the PlayStation Classic pad (and most PS-style pads):
@@ -2497,6 +2544,7 @@ static void in_event(const SDL_Event *e)
    case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP:
    {
       int d = e->type == SDL_CONTROLLERBUTTONDOWN, b = -1;
+      if (d) pad_style_use(e->cbutton.which);
       switch (e->cbutton.button)
       {
       case SDL_CONTROLLER_BUTTON_DPAD_LEFT: b = IN_LEFT; break;
@@ -2526,6 +2574,7 @@ static void in_event(const SDL_Event *e)
       if (e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) in_set(IN_R2, e->caxis.value > 16000);
       break;
    case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP:
+      if (e->type == SDL_JOYBUTTONDOWN) pad_style_use(e->jbutton.which);
       if (!in_is_ctrl(e->jbutton.which))
          in_set(in_raw_button(e->jbutton.button), e->type == SDL_JOYBUTTONDOWN);
       break;
@@ -2700,7 +2749,7 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "triangle" }, "btn.triangle",     "hint.dont_show" } },
 };
 typedef struct { char name[16]; GLuint tex; int w, h; } icon_t;
-static icon_t g_icons[56];
+static icon_t g_icons[64];
 static int    g_nicons;
 typedef struct { const icon_t *icon[3]; int have_icons; GLuint fb, txt; int fbw, fbh, tw, th; } hint_gl_t;
 static hint_gl_t g_hint_gl[HINTS_COUNT][SET_HINTS];
@@ -2726,6 +2775,7 @@ static SDL_Surface *icon_file(const char *home, const char *name)
  * (157 ms and more per set on the console). */
 static struct { const char *name; SDL_Surface *sf; int done; } g_icon_pre[] = {
    { "cross" }, { "circle" }, { "square" }, { "triangle" }, { "start" }, { "select" }, { "dpad" },
+   { "ds4-share" }, { "ds4-options" }, { "ds5-create" }, { "ds5-options" },
    { "l1" }, { "r1" }, { "l2" }, { "r2" }, { "pad" }, { "network" }, { "disc" }, { "cartridge" }, { "coin" },
    { "clock" }, { "gallery" }, { "info" }, { "settings" },
    /* the status bar glyphs of the built-in modules (mod_net.c) */
@@ -2776,7 +2826,7 @@ static void hints_set_load(int s)
       h->have_icons = 1;
       for (k = 0; k < 3 && g_hints[s][i].icons[k]; k++)
       {
-         h->icon[k] = icon_get(g_hint_home, g_hints[s][i].icons[k]);
+         h->icon[k] = icon_get(g_hint_home, pad_icon(g_hints[s][i].icons[k]));
          if (!h->icon[k] || !h->icon[k]->tex || h->icon[k]->h <= 0) h->have_icons = 0;
       }
       if (!h->have_icons)
@@ -2870,7 +2920,9 @@ static void hints_draw(int set, float y, float alpha)
    const float ic[4] = { 1, 1, 1, alpha }, tc[4] = { 0.86f, 0.86f, 0.90f, alpha };
    float total = 0, x, gap_hint = 42.0f, avail;
    int i, k, n = 0;
+   static const char *drawn_for;   /* the controller's Select mark the sets were loaded for */
    if (set < 0 || set >= HINTS_COUNT || alpha <= 0.003f) return;
+   if (drawn_for != pad_icon("select")) { if (drawn_for) hints_reload(); drawn_for = pad_icon("select"); }   /* another controller: its marks */
    if (!g_hint_ready[set]) hints_set_load(set);
    while (n < SET_HINTS && g_hints[set][n].text_key) n++;
    for (i = 0; i < n; i++)

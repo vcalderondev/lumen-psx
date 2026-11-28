@@ -9,6 +9,10 @@ The parts of the 0.25.0 redesign that had been left out. Checked in psc-sim; not
 verified on a console.
 
 ### Added
+- The help bar draws Select and Start as the controller in use has them: Create and
+  Options marks on a DualSense, SHARE and OPTIONS on a DualShock 4, SELECT and START on
+  the others. The controller is told by its vendor and product (the joystick's GUID); the
+  last one plugged in or pressed is the one in use (`LUMEN_PAD_STYLE=ds4|ds5` forces it).
 - Settings: rows are grouped under small caps headers (Display: Output, Look; Sound: Output,
   Menu; Profile: Profiles, This profile), and every row says what it does under its label
   (the first sentence of its description; the rest stays in the help line at the foot).
