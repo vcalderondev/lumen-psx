@@ -17,6 +17,10 @@ typedef struct {
    char content[512], cover[512], bg[512], music[512];
    int platform;
    int port;                   /* a native port of the game (the system's [library] ports folder): runs as a program, no core */
+   /* a folder's tile at the start of a system's row (main.c, "folders"): folder = its index + 1
+    * (0: a game), fcount its games of this system, members the row's copies of the first four
+    * (their covers make the tile's 2 x 2 grid); title, art and music are its first game's */
+   int folder, fcount, nmembers, members[4];
    /* runtime */
    GLuint tex;
    int tex_state;              /* 0 none, 2 decoding, 1 loaded, -1 placeholder */
@@ -46,6 +50,11 @@ typedef struct {
    int demo_allowed, demo_seconds;
    /* runtime */
    int first, count;
+   int real_first, real_count; /* the system's own games (first / count then point at its row
+                                * with folders, copies after the folder tiles, when it has any) */
+   int nfolders;               /* folder tiles at the start of this row */
+   int folder_of;              /* a folder's own row (opened from its tile): the row it came from + 1, 0 = not */
+   int back_sel;               /* ... and the tile it came from there */
    GLuint label, logo_tex;
    int label_w, label_h, logo_w, logo_h;
 } platform_t;

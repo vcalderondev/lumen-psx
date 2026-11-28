@@ -22,7 +22,8 @@ made by [Víctor Calderón](https://vcalderon.dev/)
 - small: a single <!-- lumen-size -->~445 KB<!-- /lumen-size --> binary; only covers near
   the selection stay in memory
 - translated UI: English (default), Spanish, Portuguese, French, German, Italian
-- game menu on Start: favourites and folders (shown as their own rows), and "Save and exit"
+- game menu on Start: favourites (shown as their own row) and folders (a tile at the start of
+  each system's row, a 2 x 2 grid of its covers: Cross opens it, Circle goes back), and "Save and exit"
   on OPEN with a "continue where you left off?" question on the next Play
 - profiles with their own memory cards and save states, and per-profile play statistics
 - settings panel laid out like a console's: profile, display (720p / 1080p, CRT filter,

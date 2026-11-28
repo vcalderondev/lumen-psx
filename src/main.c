@@ -1036,6 +1036,7 @@ static void build_platform_index(void)
       if (pl->first < 0) pl->first = i;
       pl->count++;
    }
+   for (p = 0; p < g_nplat; p++) { g_plat[p].real_first = g_plat[p].first; g_plat[p].real_count = g_plat[p].count; g_plat[p].nfolders = 0; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2748,6 +2749,10 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "start" },    "btn.start",        "hint.options" },
       { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
       { { "select" },   "btn.select",       "hint.settings" } },
+   [HINTS_CAROUSEL_FOLDER] = {   /* a folder tile: Cross opens it, no game menu */
+      { { "cross" },    "btn.cross",        "hint.open" },
+      { { "l1", "r1" }, "btn.l1_r1",        "hint.page" },
+      { { "select" },   "btn.select",       "hint.settings" } },
    [HINTS_GAMEMENU] = {   /* lumen-2 mockup "Game menu": Accept and Close, inside the sheet */
       { { "cross" },    "btn.cross",        "hint.select" },
       { { "circle" },   "btn.circle",       "hint.close" } },
@@ -3430,11 +3435,16 @@ static void library_rescan(int *sel_plat, int *sel)
    logf_("library rescan: games %d, platforms %d, %.0f ms", g_ngames, g_nplat, (now_s() - t0) * 1000);
 }
 
-/* ---- collections as dashboard rows: after the systems, one row per folder, then
- * Favourites (one press Up from the first system, the rows wrap). A row repeats the
- * library's games (copies with their own textures; game_t.platform stays the game's
- * real system, so launching, art and attract use it); the media fields of the row follow
- * the selected game every frame (coll_row_follow). */
+/* ---- collections as dashboard rows: Favourites after the systems (one press Up from the
+ * first system, the rows wrap). A row repeats the library's games (copies with their own
+ * textures; game_t.platform stays the game's real system, so launching, art and attract
+ * use it); the media fields of the row follow the selected game every frame
+ * (coll_row_follow).
+ * Folders: a system that has games in folders shows, at the start of its own row, one tile
+ * per folder (a 2 x 2 grid of its first covers), then its games, all copies; the system's
+ * index stays (first / count point at that block, real_first / real_count keep its own
+ * games). Cross on a tile opens the folder's games of that system in a row of their own
+ * (folder_of, not a tab); Circle goes back to the tile. */
 static unsigned g_coll_built;   /* coll_generation() the rows were built from */
 
 static int cmp_gi_title(const void *a, const void *b)
@@ -3480,10 +3490,54 @@ static void coll_row_add(const char *id, const char *name, int folder)
    g_nplat++;
 }
 
+/* system p's row with its folders first (see above); nothing when no folder has its games */
+static void sys_row_folders(int p)
+{
+   platform_t *pl = &g_plat[p];
+   const int nf = coll_nfolders(), start = g_ngames;
+   int f, k, nt = 0;
+   for (f = 0; f < nf; f++)
+   {
+      int cnt = 0, rep_ = -1;
+      for (k = 0; k < coll_folder_count(f); k++)
+      {
+         const char *c = coll_folder_at(f, k);
+         const int gi = c ? game_by_content(c) : -1;
+         if (gi < 0 || g_games[gi].platform != p) continue;
+         if (rep_ < 0 || strcasecmp(g_games[gi].title, g_games[rep_].title) < 0) rep_ = gi;
+         cnt++;
+      }
+      if (!cnt || g_ngames >= MAX_GAMES - pl->real_count - 1) continue;
+      {  /* the tile: its first game's art, the folder's name */
+         game_t *t = &g_games[g_ngames++];
+         *t = g_games[rep_];
+         t->tex = 0; t->tex_state = 0;
+         snprintf(t->title, sizeof(t->title), "%s", coll_folder_name(f));
+         t->content[0] = 0; t->publisher[0] = t->year[0] = t->players[0] = 0; t->port = 0;
+         t->folder = f + 1; t->fcount = cnt; t->nmembers = 0;
+         nt++;
+      }
+   }
+   if (!nt) return;
+   for (k = 0; k < pl->real_count; k++)
+   {  /* then the system's games, as copies */
+      game_t *g = &g_games[g_ngames++];
+      *g = g_games[pl->real_first + k];
+      g->tex = 0; g->tex_state = 0;
+   }
+   for (k = 0; k < nt; k++)
+   {  /* each tile's grid: the row's copies of its first four games (by title, as listed) */
+      game_t *t = &g_games[start + k];
+      int j;
+      for (j = nt; j < nt + pl->real_count && t->nmembers < 4; j++)
+         if (coll_in_folder(t->folder - 1, g_games[start + j].content)) t->members[t->nmembers++] = start + j;
+   }
+   pl->first = start; pl->count = nt + pl->real_count; pl->nfolders = nt;
+}
+
 static void coll_rows_build(void)
 {
-   int i, f;
-   char id[32];
+   int i;
    /* drop the previous rows (their textures, the cover worker's results for them) */
    if (g_nreal_games || g_nreal_plat)   /* 0: first build after a scan, nothing to drop */
    {
@@ -3500,13 +3554,77 @@ static void coll_rows_build(void)
    g_ngames = g_nreal_games ? g_nreal_games : g_ngames;
    g_nplat = g_nreal_plat ? g_nreal_plat : g_nplat;
    g_nreal_games = g_ngames; g_nreal_plat = g_nplat;
+   for (i = 0; i < g_nreal_plat; i++) { g_plat[i].first = g_plat[i].real_first; g_plat[i].count = g_plat[i].real_count; g_plat[i].nfolders = 0; }
    if (g_nreal_games)
    {
-      for (f = 0; f < coll_nfolders(); f++) { snprintf(id, sizeof(id), "folder-%d", f + 1); coll_row_add(id, coll_folder_name(f), f); }
+      for (i = 0; i < g_nreal_plat; i++) sys_row_folders(i);
       coll_row_add("fav", tr("coll.favorites"), -1);
    }
    g_coll_built = coll_generation();
    logf_("collections: %d rows, %d games", g_nplat - g_nreal_plat, g_ngames - g_nreal_games);
+}
+
+/* A folder's own row: the folder's games of system row p (copies, as the row has them),
+ * appended after every other row, out of the tabs; returns its index or -1 */
+static int folder_row_open(int p, int sel)
+{
+   const platform_t *src = &g_plat[p];
+   const game_t *tile = &g_games[src->first + sel];
+   platform_t *r;
+   int k, n = 0;
+   if (!tile->folder || g_nplat >= MAX_PLATFORMS) return -1;
+   r = &g_plat[g_nplat];
+   *r = *src;
+   snprintf(r->id, sizeof(r->id), "folder-%d", tile->folder);
+   snprintf(r->name, sizeof(r->name), "%s", tile->title);
+   r->first = g_ngames; r->nfolders = 0; r->folder_of = p + 1; r->back_sel = sel;
+   r->real_first = r->real_count = 0;
+   r->logo[0] = 0; r->logo_tex = 0; r->show_name = 1;
+   for (k = src->nfolders; k < src->count && g_ngames < MAX_GAMES; k++)
+   {
+      const game_t *g = &g_games[src->first + k];
+      if (!coll_in_folder(tile->folder - 1, g->content)) continue;
+      g_games[g_ngames] = *g;
+      g_games[g_ngames].tex = 0; g_games[g_ngames].tex_state = 0;
+      g_ngames++; n++;
+   }
+   if (!n) return -1;
+   r->count = n;
+   r->label = text_tex(g_font_tab ? g_font_tab : g_font_small, r->name, &r->label_w, &r->label_h);
+   logf_("folder: %s (%d games of %s)", r->name, n, src->name);
+   return g_nplat++;
+}
+
+/* drop the folder row (the last one) and its games' textures */
+static void folder_row_close(void)
+{
+   platform_t *r;
+   int i;
+   if (g_nplat <= g_nreal_plat || !g_plat[g_nplat - 1].folder_of) return;
+   r = &g_plat[g_nplat - 1];
+   for (i = r->first; i < r->first + r->count; i++) game_free_tex(&g_games[i]);
+   if (r->label) glDeleteTextures(1, &r->label);
+   SDL_LockMutex(cv_mx);
+   cv_gen++;   /* a cover on its way is for a game that leaves */
+   if (cv_req >= 0) { cv_req = -1; cv_busy = 0; }
+   if (cv_done >= 0) { if (cv_surf) SDL_FreeSurface(cv_surf); cv_surf = NULL; cv_done = -1; cv_busy = 0; }
+   SDL_UnlockMutex(cv_mx);
+   for (i = g_nreal_games; i < g_ngames; i++) if (g_games[i].tex_state == 2) g_games[i].tex_state = 0;
+   g_ngames = r->first;
+   g_nplat--;
+}
+
+/* the next tab from row p in direction dir: a folder's row is not a tab (its system is) */
+static int tab_step(int p, int dir)
+{
+   int i;
+   if (p >= 0 && p < g_nplat && g_plat[p].folder_of) p = g_plat[p].folder_of - 1;
+   for (i = 0; i < g_nplat; i++)
+   {
+      p = (p + dir + g_nplat) % g_nplat;
+      if (!g_plat[p].folder_of) return p;
+   }
+   return p;
 }
 
 /* a collection row draws and launches like the selected game's system */
@@ -3525,14 +3643,34 @@ static void coll_row_follow(platform_t *row, int gi)
 static void coll_rows_rebuild(int *sel_plat, int *sel)
 {
    char id[32] = "", content[512] = "";
-   int p, k, was_virtual = *sel_plat >= g_nreal_plat;
+   int p, k, was_virtual = *sel_plat >= g_nreal_plat, folder = 0;
    if (*sel_plat >= 0 && *sel_plat < g_nplat)
    {
-      snprintf(id, sizeof(id), "%s", g_plat[*sel_plat].id);
-      if (*sel >= 0 && *sel < g_plat[*sel_plat].count) snprintf(content, sizeof(content), "%s", g_games[g_plat[*sel_plat].first + *sel].content);
+      const platform_t *cp = &g_plat[*sel_plat];
+      snprintf(id, sizeof(id), "%s", cp->id);
+      if (*sel >= 0 && *sel < cp->count)
+      {
+         snprintf(content, sizeof(content), "%s", g_games[cp->first + *sel].content);
+         folder = g_games[cp->first + *sel].folder;
+      }
+      if (cp->folder_of)
+      {  /* a folder's own row is dropped with the others: back to its tile in its system */
+         folder = g_games[g_plat[cp->folder_of - 1].first + cp->back_sel].folder;
+         *sel_plat = cp->folder_of - 1; was_virtual = 0; content[0] = 0;
+      }
    }
    coll_rows_build();
-   if (!was_virtual) return;   /* real rows keep their indices */
+   if (!was_virtual)
+   {  /* a system's row: the same game (or folder tile) again, its place may have moved */
+      const platform_t *cp = &g_plat[*sel_plat];
+      if (*sel >= cp->count) *sel = cp->count > 0 ? cp->count - 1 : 0;
+      for (k = 0; k < cp->count; k++)
+      {
+         const game_t *g = &g_games[cp->first + k];
+         if (content[0] ? !strcmp(g->content, content) : (folder && g->folder == folder)) { *sel = k; break; }
+      }
+      return;
+   }
    for (p = g_nreal_plat; p < g_nplat; p++)
       if (!strcmp(g_plat[p].id, id))
       {
@@ -4112,23 +4250,29 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       const float ph = 40.0f, lh = 22.0f, padx = 0.0f, tgap = 34.0f;
       const float gl[4] = { 1, 1, 1, 0.60f * ua };
       float pws[MAX_PLATFORMS], x0, x, total = 0, sx = 0, sw = 0, l1w = 0, r1w = 0, want = 0, left, right;
+      /* the tab that is lit: a folder's own row lights its system (it is not a tab) */
+      const int tab_cur = pl->folder_of ? pl->folder_of - 1 : sel_plat;
+      const int tab_n = g_plat[tab_cur].count - g_plat[tab_cur].nfolders;   /* games, not folder tiles */
+      int ntabs = 0;
+      for (i = 0; i < g_nplat; i++) ntabs += !g_plat[i].folder_of;
       for (i = 0; i < g_nplat; i++)
       {
          platform_t *p = &g_plat[i];
          float cw = 0;
+         if (p->folder_of) { pws[i] = 0; continue; }
          if (p->logo_tex) cw += lh * p->logo_w / (float)p->logo_h + (p->show_name && p->label ? 9.0f : 0.0f);
          if (p->show_name && p->label) cw += p->label_w;
-         if (i == sel_plat && n > 0)
+         if (i == tab_cur && tab_n > 0)
          {  /* how many games the open system has: a small figure after its name */
-            snprintf(num, sizeof(num), "%d", n);
+            snprintf(num, sizeof(num), "%d", tab_n);
             label_set(&l_count, g_font_caps, num);
             cw += 5 + l_count.w;
          }
          pws[i] = cw + 2 * padx;
-         if (i == sel_plat) { sx = total; sw = pws[i]; }
+         if (i == tab_cur) { sx = total; sw = pws[i]; }
          total += pws[i] + (i + 1 < g_nplat ? tgap : 0.0f);
       }
-      if (g_nplat > 1) { l1w = glyph_w("l2", 24) + 22; r1w = glyph_w("r2", 24) + 22; }
+      if (ntabs > 1) { l1w = glyph_w("l2", 24) + 22; r1w = glyph_w("r2", 24) + 22; }
       left = DASH_X + l1w; right = W - DASH_X - r1w;
       if (total > right - left)
       {
@@ -4141,7 +4285,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       spring_step(&tf, g_focus == FOCUS_TABS ? 1.0f : 0.0f, 200, 22, 1.0f / 60.0f);
       tabf = clampf(tf.x, 0.0f, 1.0f);
       x0 = left - off.x;
-      if (g_nplat > 1) glyph_draw("l2", DASH_X, TAB_Y + (ph - 24) * 0.5f, 24, gl);
+      if (ntabs > 1) glyph_draw("l2", DASH_X, TAB_Y + (ph - 24) * 0.5f, 24, gl);
       if (total > right - left)
       {
          glEnable(GL_SCISSOR_TEST);
@@ -4151,14 +4295,15 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       for (i = 0; i < g_nplat; i++)
       {
          platform_t *p = &g_plat[i];
-         const int on_ = i == sel_plat;
+         const int on_ = i == tab_cur;
          float cx, pw = pws[i];
+         if (p->folder_of) continue;
          const float c[4] = { 1, 1, 1, (on_ ? 1.0f : 0.62f) * ua };
          if (on_)
          {  /* the light's bar; with the focus on the tabs, the ring around the name */
             float bar[4];
             lit_color(n ? &g_games[pl->first + sel] : NULL, bar); bar[3] = ua;
-            draw_shape(x, TAB_Y + ph - 4, pw - (n > 0 ? 5 + l_count.w : 0), 3, 1.5f, 0, bar);
+            draw_shape(x, TAB_Y + ph - 4, pw - (tab_n > 0 ? 5 + l_count.w : 0), 3, 1.5f, 0, bar);
             if (tabf > 0.01f)
             {
                float fring[4];
@@ -4178,7 +4323,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
             draw_2d(p->label, floorf(cx), floorf(TAB_Y + (ph - p->label_h) * 0.5f), p->label_w, p->label_h, c, 0);
             cx += p->label_w;
          }
-         if (on_ && n > 0)
+         if (on_ && tab_n > 0)
          {
             const float cc[4] = { 0.87f, 0.89f, 0.93f, 0.66f * ua };
             draw_text(&l_count, floorf(cx + 5), floorf(TAB_Y + 6), cc);
@@ -4186,7 +4331,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          x += pw + tgap;
       }
       glDisable(GL_SCISSOR_TEST);
-      if (g_nplat > 1)
+      if (ntabs > 1)
          glyph_draw("r2", total > right - left ? W - DASH_X - glyph_w("r2", 24) : x + 2, TAB_Y + (ph - 24) * 0.5f, 24, gl);
    }
 
@@ -4231,7 +4376,28 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
                draw_2d(g_tile_glow, x - gb, ty - gb, sw + 2 * gb, sz + 2 * gb, gl_, 0);
             }
          }
-         if (g->tex)
+         if (g->folder)
+         {  /* a folder: its first covers in a 2 x 2 grid on the theme's panel colour */
+            const float k = sz / TILE_SEL, pd = 8.0f * k, gp = 6.0f * k;
+            const float cw = (sw - 2.0f * pd - gp) * 0.5f, chh = (sz - 2.0f * pd - gp) * 0.5f;
+            const float c[4] = { kb, kb, kb, ta };
+            float bgc[4];
+            int m;
+            theme_color(TC_PANEL, bgc); bgc[3] = 0.92f * ta;
+            draw_shape(x, ty, sw, sz, 14, 0, bgc);
+            for (m = 0; m < 4; m++)
+            {
+               const float cx_ = x + pd + (m & 1) * (cw + gp), cy_ = ty + pd + (m >> 1) * (chh + gp);
+               const game_t *mg = m < g->nmembers ? &g_games[g->members[m]] : NULL;
+               if (mg && mg->tex) draw_tile(mg->tex, mg->tex_w, mg->tex_h, cx_, cy_, cw, chh, 6, -2.0f, 0.0f, c);
+               else
+               {
+                  const float e[4] = { 1, 1, 1, (mg ? 0.08f : 0.04f) * ta };
+                  draw_shape(cx_, cy_, cw, chh, 6, 0, e);
+               }
+            }
+         }
+         else if (g->tex)
          {
             const float c[4] = { kb, kb, kb, ta };
             draw_tile(g->tex, g->tex_w, g->tex_h, x, ty, sw, sz, 14, idx == sel ? sheen : -2.0f, idx == sel ? 1.0f : 0.0f, c);
@@ -4245,7 +4411,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
          {  /* the focus ring (fades in with the title), shared with every focused element */
             ui_ring(x, ty, sw, sz, 14, 4, ta * info_a * gamef);
          }
-         if (g->port || idx == sel)
+         if ((g->port || idx == sel) && !g->folder)
          {  /* the media mark in the cover's top right corner: a disc (a white disc with its
              * hole), a cartridge or a coin on the focused cover; a native port's chip on
              * every cover, so ports stand out in the shelf (the theme's primary colours) */
@@ -4295,10 +4461,17 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       if (sc < 1.0f) draw_2d(l_title.tex, DASH_X - 2, y, l_title.w * sc, l_title.h * sc, c1, 0);
       else draw_text(&l_title, DASH_X - 2, y, c1);
       y += l_title.h * sc + 10 + info_y * 0.4f;
-      /* chips: players, time played, last played (or "not played yet") */
-      if (cg->players[0])
+      /* chips: players, time played, last played (or "not played yet"); a folder: its games */
+      if (cg->folder)
+      {
+         char nn[12];
+         snprintf(nn, sizeof(nn), "%d", cg->fcount);
+         trf(cb[nc], sizeof(cb[0]), cg->fcount == 1 ? "home.folder_games_one" : "home.folder_games", "n", nn, NULL); cgly[nc++] = "folder";
+      }
+      else if (cg->players[0])
       { trf(cb[nc], sizeof(cb[0]), strcmp(cg->players, "1") ? "card.players" : "card.players_one", "n", cg->players, NULL); cgly[nc++] = "players"; }
-      if (gs && gs->seconds > 0)
+      if (cg->folder) ;   /* a folder has no time of its own */
+      else if (gs && gs->seconds > 0)
       {
          snprintf(cb[nc], sizeof(cb[0]), "%s", stats_format_duration(a1, sizeof(a1), gs->seconds)); cgly[nc++] = "clock";
          if (gs->last_epoch > 0) { snprintf(cb[nc], sizeof(cb[0]), "%s", stats_format_date(a2, sizeof(a2), gs->last_epoch)); cgly[nc++] = "calendar"; }
@@ -4983,7 +5156,7 @@ int main(int argc, char **argv)
       if (sel_plat >= g_nplat) { sel_plat = 0; sel = 0; }
       pl = g_nplat ? &g_plat[sel_plat] : NULL;
       if (pl && sel_plat >= g_nreal_plat && pl->count) coll_row_follow(pl, pl->first + (sel < pl->count ? sel : 0));
-      int n = pl ? pl->count : 0, move = 0, plat_move = 0, page = 0, play = 0, att_swallow, restore = -1, want_menu = 0;
+      int n = pl ? pl->count : 0, move = 0, plat_move = 0, page = 0, play = 0, att_swallow, restore = -1, want_menu = 0, folder_back = 0;
       ui_nav_t fnav;   /* one navigation frame shared by the panel and the game menu (auto-repeat state) */
       int fp_open;     /* the file picker was open when this frame began */
       int open_profile = 0;   /* Cross on the focused profile */
@@ -5055,6 +5228,7 @@ int main(int argc, char **argv)
                            !att_swallow && play_t < 0;
          open_profile = 0;
          if (attract_active() || play_t >= 0 || !g_nplat) g_focus = FOCUS_GAMES;
+         else if (free_ && g_focus == FOCUS_GAMES && in_pressed[IN_BACK] && pl && pl->folder_of) folder_back = 1;
          else if (free_)
          {
             if (in_pressed[IN_UP] && g_focus < FOCUS_PROFILE) { g_focus++; music_sfx(SFX_FOCUS); }
@@ -5179,8 +5353,28 @@ int main(int argc, char **argv)
       }
       if (play_t >= 0) { move = plat_move = page = play = want_menu = 0; }
       if (att_swallow) { move = plat_move = page = play = want_menu = 0; held_dir = 0; held_next = t + 0.32; }
-      if (n && want_menu && play_t < 0) gamemenu_open(pl->first + sel);
-      if (n && play && play_t < 0 && !g_play_asked)
+      if (n && want_menu && play_t < 0 && !g_games[pl->first + sel].folder) gamemenu_open(pl->first + sel);   /* a folder tile has no game menu */
+      if (n && play && play_t < 0 && g_games[pl->first + sel].folder)
+      {  /* Cross on a folder tile: its games, in a row of their own */
+         const int r = folder_row_open(sel_plat, sel);
+         play = 0;
+         if (r >= 0)
+         {
+            sel_plat = r; pl = &g_plat[r]; n = pl->count; sel = 0; sel_t = t;
+            info_y.x = 18.0f; info_a.x = 0.0f; dpos.x = -0.6f; dpos.v = 0;
+            music_sfx(SFX_CONFIRM);
+         }
+      }
+      if (folder_back)
+      {  /* Circle in a folder: back to its tile */
+         const int par = pl->folder_of - 1, bs = pl->back_sel;
+         folder_back = 0;
+         folder_row_close();
+         sel_plat = par; pl = &g_plat[par]; n = pl->count; sel = bs < n ? bs : 0; sel_t = t;
+         info_y.x = 18.0f; info_a.x = 0.0f; dpos.x = (float)sel + 0.6f; dpos.v = 0;
+         music_sfx(SFX_BACK);
+      }
+      if (n && play && play_t < 0 && !g_play_asked && !g_games[pl->first + sel].folder)
       {  /* left with Save and exit: ask before playing (Continue / Start over) */
          g_play_resume = 0;
          if (resume_has(g_games[pl->first + sel].content)) { gamemenu_resume_open(pl->first + sel); play = 0; }
@@ -5219,8 +5413,10 @@ int main(int argc, char **argv)
       }
       if (g_nplat > 1 && plat_move)
       {
-         int np = restore >= 0 ? restore : (sel_plat + plat_move + g_nplat) % g_nplat;
+         int np = restore >= 0 ? restore : tab_step(sel_plat, plat_move);
          if (restore < 0 && !attract_active()) music_sfx(plat_move > 0 ? SFX_SYSTEM_NEXT : SFX_SYSTEM_PREV);
+         if (g_plat[sel_plat].folder_of) folder_row_close();   /* leaving a folder for another system */
+         if (np >= g_nplat) np = 0;
          sel_plat = np; sel = 0; pl = &g_plat[sel_plat]; n = pl->count; sel_t = t;
          if (restore >= 0 && home_sel < n) sel = home_sel;
          info_y.x = 18.0f; info_a.x = 0.0f; plat_x.v = plat_move * 900.0f;
@@ -5236,9 +5432,9 @@ int main(int argc, char **argv)
          flat_begin(pl, pg);
       }
       /* the launch: the system's illustration and the game's painted cover, ready before Play */
-      if (n && play_t < 0 && t - sel_t > 0.4) flat_want(pl, &g_games[pl->first + sel], 0);
+      if (n && play_t < 0 && t - sel_t > 0.4 && !g_games[pl->first + sel].folder) flat_want(pl, &g_games[pl->first + sel], 0);
       flat_poll();
-      if (n && play_t < 0 && t - sel_t > 0.4) flat_ahead(pl, &g_games[pl->first + sel]);
+      if (n && play_t < 0 && t - sel_t > 0.4 && !g_games[pl->first + sel].folder) flat_ahead(pl, &g_games[pl->first + sel]);
 
       /* background: once the selection has settled, the game's image (decoded on the
        * worker) or a background generated from its cover colours */
@@ -5311,9 +5507,17 @@ int main(int argc, char **argv)
             double bytes = 0.0;
             for (k = 0; k < (int)sizeof(order); k++)
             {
-               int gi = pl->first + ((sel + order[k]) % n + n) % n;
+               int gi = pl->first + ((sel + order[k]) % n + n) % n, m;
                game_t *g = &g_games[gi];
                g->tex_used = t;
+               for (m = 0; g->folder && m < g->nmembers; m++)
+               {  /* a folder tile: the covers of its grid, wherever they are in the row */
+                  game_t *mg = &g_games[g->members[m]];
+                  mg->tex_used = t;
+                  if (placed || mg->tex_state) continue;
+                  if (mg->has_cover) { if (!cv_busy) { mg->tex_state = 2; cover_request(g->members[m], mg->cover); } placed = 1; }
+                  else { game_placeholder(mg); placed = 1; }
+               }
                if (placed || g->tex_state) continue;
                if (g->has_cover) { if (!cv_busy) { g->tex_state = 2; cover_request(gi, g->cover); } placed = 1; }
                else { double ps = now_s(); game_placeholder(g); placed = 1; perf_stall("placeholder", ps); }
@@ -5456,7 +5660,8 @@ int main(int argc, char **argv)
                           panel_active() ? panel_hint_set() :
                           gamemenu_open_now() ? (gamemenu_folders_open() ? HINTS_GAMEMENU_FOLDERS : HINTS_GAMEMENU) :
                           (attract_active() ? HINTS_ATTRACT : g_focus == FOCUS_TABS ? HINTS_DASH_TABS :
-                           g_focus == FOCUS_PROFILE ? HINTS_DASH_PROFILE : HINTS_CAROUSEL);
+                           g_focus == FOCUS_PROFILE ? HINTS_DASH_PROFILE :
+                           n && g_games[pl->first + sel].folder ? HINTS_CAROUSEL_FOLDER : HINTS_CAROUSEL);
                const float ha = (1 - fade) * (1 - att.amount) * launch_ui * (1 - padwait_amount());   /* the "no controller" card has its own bar */
                if (want != h_cur) { h_prev = h_cur; h_cur = want; h_mix = 0.0f; }
                h_mix = clampf(h_mix + dt / 0.15f, 0.0f, 1.0f);

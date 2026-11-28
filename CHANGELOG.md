@@ -29,6 +29,11 @@ verified on a console.
   the one in use, since fonts and pictures still load at start.
 
 ### Changed
+- Folders: instead of a row of their own each, a folder is a tile at the start of every
+  system's row that has games in it, a 2 x 2 grid of its first covers on the theme's
+  `panel` colour; the hero says its name and how many games it holds. Cross opens it (its
+  games of that system, in a row that is not a tab; the system's tab stays lit), Circle goes
+  back to the tile, L2 / R2 leave it for the next system. Favourites keep their row.
 - No controller: the two-step card ("waiting for a Bluetooth receiver", the steps, how each
   controller pairs) is a quiet screen of its own: the theme's backdrop, the logo, one pill
   (press PS on a paired controller, hold PS and Create to pair one, or connect one by
