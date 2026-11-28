@@ -36,6 +36,7 @@ scrim      = 0.60             ; how much `backdrop` covers the screen behind the
                               ; and the pause dialog: 0 .. 1 (default 1: flat, nothing of the art shows)
 scrim_settings = 0.60         ; the same behind Settings (default 0.90: the dashboard just shows)
 selected   = 0.24             ; how much `glass` fills the focused row, button or key: 0 .. 1 (default 0.16)
+focus_glow = 1                ; the soft halo of `focus` around the focus ring: 0 .. 1 (default 1, 0 = none)
 radius     = 1                ; corner rounding of every shape: 1 = Lumen's, 0 = square corners
 text       = #FFF6EE          ; primary text
 dim        = #E2C3B4          ; secondary text

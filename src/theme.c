@@ -21,10 +21,10 @@ static float s_lit[3];
 static int   s_has_lit;
 static float s_radius = 1.0f;     /* corner rounding of every shape: 1 = Lumen's, 0 = square */
 static float s_val[TV_COUNT];
-static const char *const k_vkeys[TV_COUNT] = { "scrim", "scrim_settings", "selected", "card_light" };
+static const char *const k_vkeys[TV_COUNT] = { "scrim", "scrim_settings", "selected", "card_light", "focus_glow" };
 /* Lumen's own look: menus on flat black (the dashboard just showing behind Settings), a quiet
  * focus fill, flat cards */
-static const float k_vdefault[TV_COUNT] = { 1.0f, 0.90f, 0.16f, 0.0f };
+static const float k_vdefault[TV_COUNT] = { 1.0f, 0.90f, 0.16f, 0.0f, 1.0f };
 
 static const char *const k_keys[TC_COUNT] = { "accent", "card", "text", "dim", "backdrop", "panel", "danger",
                                               "focus", "glass", "primary", "on_primary" };

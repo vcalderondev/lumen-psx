@@ -3822,7 +3822,7 @@ static void lit_color(const game_t *g, float o[3])
 static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float pos, double sel_t, double t,
                       float ua, float info_a, float info_y)
 {
-   static label_t l_name, l_title, l_kick, l_clock, l_empty, l_chip[3], l_pos, l_count;
+   static label_t l_name, l_title, l_kick, l_clock, l_empty, l_chip[4], l_pos, l_count;
    float white[4] = { 0.98f, 0.98f, 0.99f, ua };
    char s[320], a1[96], a2[96], num[24];
    int i, k;
@@ -4079,29 +4079,32 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
             const float c[4] = { 0.16f, 0.16f, 0.20f, 0.7f * ta };
             draw_shape(x, ty, sw, sz, 14, 0, c);   /* (its shadow above is not cut: barely visible) */
          }
-         if (g->port)
-         {  /* a native port of the game: a chip in the cover's top left corner, on every tile */
-            static label_t l_port;
-            const float k = sz / TILE_SEL, chip[4] = { 0.04f, 0.04f, 0.06f, 0.78f * ta }, edge[4] = { 1, 1, 1, 0.22f * ta }, tc[4] = { 1, 1, 1, 0.95f * ta };
-            float lw, lh, cw, ch;
-            label_set(&l_port, g_font_caps, tr("badge.port"));
-            lw = l_port.w * 0.86f * k; lh = l_port.h * 0.86f * k; cw = lw + 24.0f * k; ch = 26.0f * k;
-            draw_shape(x + 10 * k, ty + 10 * k, cw, ch, ch * 0.5f, 0, chip);
-            draw_shape(x + 10 * k, ty + 10 * k, cw, ch, ch * 0.5f, 1.0f, edge);
-            draw_2d(l_port.tex, x + 10 * k + (cw - lw) * 0.5f, ty + 10 * k + (ch - lh) * 0.5f, lw, lh, tc, 0);
-         }
          if (idx == sel)
-         {  /* focus ring (fades in with the title) and the media badge */
-            const float badge[4] = { 0.04f, 0.04f, 0.06f, 0.70f * ta };
-            float ring[4];
-            const float bedge[4] = { 1, 1, 1, 0.22f * ta };
-            const char *mg = pl->kind == KIND_CART ? "cartridge" : (pl->kind == KIND_ARCADE ? "coin" : "disc");
-            const float gc[4] = { 1, 1, 1, 0.95f * ta };
-            theme_color(TC_FOCUS, ring); ring[3] = 0.95f * ta * info_a * gamef;
-            draw_shape(x - 7, ty - 7, sw + 14, sz + 14, 20, 3.0f, ring);
-            draw_shape(x + sw - 50, ty + sz - 50, 40, 40, 20, 0, badge);
-            draw_shape(x + sw - 50, ty + sz - 50, 40, 40, 20, 1.0f, bedge);
-            glyph_draw(mg, x + sw - 43, ty + sz - 43, 26, gc);
+         {  /* the focus ring (fades in with the title), shared with every focused element */
+            ui_ring(x, ty, sw, sz, 14, 4, ta * info_a * gamef);
+         }
+         if (g->port || idx == sel)
+         {  /* the media mark in the cover's top right corner: a disc (a white disc with its
+             * hole), a cartridge or a coin on the focused cover; a native port's chip on
+             * every cover, so ports stand out in the shelf (the theme's primary colours) */
+            const float k = sz / TILE_SEL, dm = 30.0f * k, mx = x + sw - 14.0f * k - dm, my = ty + 14.0f * k;
+            float wc[4], ic[4];
+            const float sh_[4] = { 0, 0, 0, 0.35f * ta };
+            theme_color(TC_PRIMARY, wc); wc[3] = 0.96f * ta;
+            theme_color(TC_ON_PRIMARY, ic); ic[3] = ta;
+            draw_shape(mx - 1, my + 1, dm + 2, dm + 2, (dm + 2) * 0.5f, 0, sh_);
+            draw_shape(mx, my, dm, dm, dm * 0.5f, 0, wc);
+            if (!g->port && pl->kind != KIND_CART && pl->kind != KIND_ARCADE)
+            {
+               const float hd = dm * 0.30f;
+               draw_shape(mx + (dm - hd) * 0.5f, my + (dm - hd) * 0.5f, hd, hd, hd * 0.5f, 0, ic);
+            }
+            else
+            {
+               const char *mg = g->port ? "system" : pl->kind == KIND_CART ? "cartridge" : "coin";
+               const float gs = dm * 0.64f;
+               glyph_draw(mg, mx + (dm - gs) * 0.5f, my + (dm - gs) * 0.5f, gs, ic);
+            }
          }
       }
    }
@@ -4113,8 +4116,8 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       const game_stats_t *gs = stats_get(cg->content);
       const float ia = info_a * ua;
       const float c1[4] = { 0.99f, 0.99f, 1.0f, ia }, ctx[4] = { 0.93f, 0.94f, 0.96f, 0.92f * ia }, cgl[4] = { 1, 1, 1, 0.62f * ia };
-      static char cb[3][96];
-      const char *cgly[3];
+      static char cb[4][96];
+      const char *cgly[4];
       float lit[4], ink[4], edge[4], sc, x, y = INFO_Y + info_y;
       int nc = 0;
       lit_color(cg, lit); lit[3] = ia;
@@ -4132,7 +4135,9 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       if (sc < 1.0f) draw_2d(l_title.tex, DASH_X - 2, y, l_title.w * sc, l_title.h * sc, c1, 0);
       else draw_text(&l_title, DASH_X - 2, y, c1);
       y += l_title.h * sc + 10 + info_y * 0.4f;
-      /* chips: players, time played, last played (or "not played yet") */
+      /* chips: a native port (its chip glyph, also on the cover), players, time played, last
+       * played (or "not played yet") */
+      if (cg->port) { snprintf(cb[nc], sizeof(cb[0]), "%s", tr("badge.port")); cgly[nc++] = "system"; }
       if (cg->players[0])
       { trf(cb[nc], sizeof(cb[0]), strcmp(cg->players, "1") ? "card.players" : "card.players_one", "n", cg->players, NULL); cgly[nc++] = "players"; }
       if (gs && gs->seconds > 0)

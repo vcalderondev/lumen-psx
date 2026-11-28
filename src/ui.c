@@ -51,12 +51,33 @@ void ui_rest(float x, float y, float w, float h, float radius, float a)
    ui_shape(x, y, w, h, radius, 1.0f, edge);
 }
 
+/* The focus ring: a dark keyline in the gap (the ring stays crisp over bright art), the ring
+ * itself, 3 px, its corners concentric with the element's, and a soft halo of the focus
+ * colour outside it (the theme's "focus_glow", 0 = none) */
 void ui_ring(float x, float y, float w, float h, float radius, float gap, float a)
 {
-   const float o = gap + 3.0f;
+   const float o = gap + 3.0f, glow = theme_value(TV_FOCUS_GLOW);
    float c[4];
-   theme_color(TC_FOCUS, c); c[3] = 0.95f * a;
-   if (a > 0.003f) ui_shape(x - o, y - o, w + 2 * o, h + 2 * o, radius + o, 3.0f, c);
+   if (a <= 0.003f) return;
+   if (gap > 0.5f)
+   {
+      theme_color(TC_BACKDROP, c); c[3] = 0.55f * a;
+      ui_shape(x - gap, y - gap, w + 2 * gap, h + 2 * gap, radius + gap, gap, c);
+   }
+   theme_color(TC_FOCUS, c);
+   if (glow > 0.003f)
+   {  /* three fainter strokes outside the ring, each wider and lighter: a falloff, not a band */
+      static const float k_off[3] = { 2.0f, 5.0f, 9.0f }, k_w[3] = { 2.0f, 3.0f, 4.0f }, k_a[3] = { 0.20f, 0.09f, 0.04f };
+      int i;
+      for (i = 0; i < 3; i++)
+      {
+         const float e = o + k_off[i];
+         c[3] = k_a[i] * glow * a;
+         ui_shape(x - e, y - e, w + 2 * e, h + 2 * e, radius + e, k_w[i], c);
+      }
+   }
+   c[3] = 0.95f * a;
+   ui_shape(x - o, y - o, w + 2 * o, h + 2 * o, radius + o, 3.0f, c);
 }
 
 void ui_focus(float x, float y, float w, float h, float radius, float a)

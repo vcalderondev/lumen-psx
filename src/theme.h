@@ -29,6 +29,7 @@ enum {
    TV_SCRIM_SETTINGS, /* "scrim_settings": the same behind Settings                         */
    TV_SELECTED,       /* "selected": the glass fill of the focused row, button or key        */
    TV_CARD_LIGHT,     /* "card_light": the glass light down a card (0 = one flat colour)      */
+   TV_FOCUS_GLOW,     /* "focus_glow": the soft halo of the focus colour around the ring       */
    TV_COUNT
 };
 
