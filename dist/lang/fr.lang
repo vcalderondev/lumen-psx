@@ -591,25 +591,12 @@ desc.page_about = Version, jeux, systèmes, profils et espace libre.
 
 # No controller: plug a Bluetooth receiver, then pair a controller unattended (padwait.c)
 hint.not_now = Pas maintenant
-padwait.title_plug = Aucune manette connectée
-padwait.sub_plug = Branchez un récepteur Bluetooth USB sur un port libre pour utiliser des manettes sans fil, ou branchez une manette filaire.
-padwait.step1 = Branchez un récepteur Bluetooth
-padwait.step2 = Mettez votre manette en mode association
-padwait.status_plug = En attente d’un récepteur Bluetooth…
-padwait.title = Associez votre manette
-padwait.title_done = Manette connectée
-padwait.sub = Mettez la manette en mode association : elle se connecte seule, rien d’autre à presser.
-padwait.sub_paired = Appuyez sur PS ou Home sur une manette déjà associée, ou mettez-en une nouvelle en mode association.
-padwait.how_dualsense = maintenez PS et Create
-padwait.how_ds4 = maintenez PS et Share
-padwait.how_switch = maintenez le bouton de synchro
-padwait.how_8bitdo = maintenez Start et Pair
-padwait.starting = Activation du Bluetooth…
-padwait.searching = Recherche de manettes à proximité…
+padwait.pill_ps = Appuyez sur la touche PS pour utiliser votre manette
+padwait.pill_new = Maintenez PS et Create (ou Share) pour associer une manette
+padwait.pill_cable = Branchez une manette avec un câble
+padwait.pill_done = {name} est connectée
 padwait.pairing = Association de {name}…
-padwait.done = C’est fait ! {name} est connectée
 padwait.failed = {name} ne s’est pas associée. Je continue à chercher…
-padwait.noadapter = Le récepteur Bluetooth ne répond pas. Essayez l’autre port.
 
 # modules (docs/modules.md): Settings > Modules, and each built-in module's name and description
 section.modules = Modules

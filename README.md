@@ -32,8 +32,10 @@ made by [Víctor Calderón](https://vcalderon.dev/)
   update, date and time, Sony's stock kernel restore, about)
 - system update over Wi-Fi or cable: only what changed is downloaded and verified, installed
   at a restart, saves and settings untouched
-- with no controller connected, a card that pairs a Bluetooth controller by itself once a
-  USB Bluetooth receiver is plugged in
+- with no controller connected, a quiet screen (the logo, one line on what to do, a
+  controller in outline) that pairs a Bluetooth controller by itself when a USB Bluetooth
+  receiver is there, and leaves as soon as a controller connects by cable or over the air;
+  Bluetooth's state is its glyph in the status bar
 - CRT filter for the dashboard and the games (Off, Soft, Strong)
 - USB transfer between the Lumen stick and a second USB drive, and a library check that
   reports broken games
@@ -300,7 +302,7 @@ src/audit.c                   library check
 src/net.c, src/conn.c         Connections worker and cards
 src/kern.c                    kernel card
 src/update.c                  system update: check, download, verify, stage
-src/padwait.c                 "no controller" card: Bluetooth receiver and unattended pairing
+src/padwait.c                 "no controller" screen and unattended Bluetooth pairing
 src/module.c, src/mod_net.c   modules: registry, extension points, built-in wifi / ethernet / bluetooth (docs/modules.md)
 src/status.c                  top-right clock and network status (the modules add their items: Wi-Fi signal, cable, Bluetooth)
 src/buttons.c                 lumen-buttons: console buttons daemon, demo watcher, game watchdog

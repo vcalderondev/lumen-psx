@@ -21,6 +21,15 @@ verified on a console.
   the one in use, since fonts and pictures still load at start.
 
 ### Changed
+- No controller: the two-step card ("waiting for a Bluetooth receiver", the steps, how each
+  controller pairs) is a quiet screen of its own: the theme's backdrop, the logo, one pill
+  (press PS on a paired controller, hold PS and Create to pair one, or connect one by
+  cable; while pairing, its name), and a controller in outline at the foot, fading out
+  toward its top and sides (`assets/ui/padwait.png`, made by tools/make-illustrations.sh).
+  No help bar; Circle still closes it. It leaves as soon as a controller connects.
+- Status bar: Bluetooth always shows its state: crossed out and faint with no receiver,
+  crossed out with the radio off, faint with nothing connected, "..." while a controller
+  pairs, bright with one connected (new glyph `bluetooth-off`).
 - Covers: the media mark is a white disc with its hole in the top right corner of the
   focused cover (a cartridge or a coin on the same white disc), in the theme's `primary` /
   `on_primary`, flat. A native port carries a chip on that disc on every cover instead of

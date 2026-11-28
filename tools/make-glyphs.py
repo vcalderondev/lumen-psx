@@ -290,6 +290,19 @@ def bluetooth():
     return im
 
 
+def bluetooth_off():
+    """Bluetooth with no adapter or switched off: the rune, crossed out (a gap cut around
+    the slash so it reads as one stroke over the rune)"""
+    im, d = canvas()
+    line(d, [(10.5, 11), (21.5, 21), (16, 26), (16, 6), (21.5, 11), (10.5, 21)])
+    gap, gd = canvas()
+    line(gd, [(7.5, 6.5), (24.5, 25.5)], w=STROKE * 2)   # the cut: twice a stroke wide
+    im = Image.composite(Image.new("RGBA", im.size, (0, 0, 0, 0)), im, gap.split()[3])
+    d = ImageDraw.Draw(im)
+    line(d, [(7.5, 6.5), (24.5, 25.5)])
+    return im
+
+
 def ethernet():
     im, d = canvas()
     # an RJ45 socket: the body, the latch notch and three contacts
@@ -378,7 +391,7 @@ GLYPHS = {
     "disc": disc_badge, "cartridge": cartridge, "coin": coin,
     # status bar glyphs of the built-in modules (docs/modules.md, "status")
     "wifi-0": lambda: wifi(0), "wifi-1": lambda: wifi(1), "wifi-2": lambda: wifi(2), "wifi-3": lambda: wifi(3),
-    "bluetooth": bluetooth, "ethernet": ethernet,
+    "bluetooth": bluetooth, "bluetooth-off": bluetooth_off, "ethernet": ethernet,
     "chevron-right": chevron, "chevron-down": lambda: chevron(True),
     "players": players, "calendar": calendar, "star": star,
     # actions of the game sheet and the pause; sections of the settings' rail

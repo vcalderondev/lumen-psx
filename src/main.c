@@ -2673,8 +2673,6 @@ static const hint_t g_hints[HINTS_COUNT][SET_HINTS] = {
       { { "cross" },    "btn.cross",        "hint.select" },
       { { "circle" },   "btn.circle",       "hint.close" } },
    [HINTS_KERNEL_BUSY] = { { { NULL }, NULL, NULL } },   /* writing: nothing may interrupt it */
-   [HINTS_PADWAIT] = {        /* no controller: plug a receiver / pair one (padwait.h) */
-      { { "circle" },   "btn.circle",       "hint.not_now" } },
    [HINTS_BT] = {             /* Connections, Bluetooth controllers (conn.h) */
       { { "dpad" },     "btn.dpad",         "hint.move" },
       { { "cross" },    "btn.cross",        "hint.pair" },
@@ -2731,7 +2729,7 @@ static struct { const char *name; SDL_Surface *sf; int done; } g_icon_pre[] = {
    { "l1" }, { "r1" }, { "l2" }, { "r2" }, { "pad" }, { "network" }, { "disc" }, { "cartridge" }, { "coin" },
    { "clock" }, { "gallery" }, { "info" }, { "settings" },
    /* the status bar glyphs of the built-in modules (mod_net.c) */
-   { "wifi-0" }, { "wifi-1" }, { "wifi-2" }, { "wifi-3" }, { "bluetooth" }, { "ethernet" },
+   { "wifi-0" }, { "wifi-1" }, { "wifi-2" }, { "wifi-3" }, { "bluetooth" }, { "bluetooth-off" }, { "ethernet" },
    { "chevron-right" }, { "chevron-down" }, { "players" }, { "calendar" }, { "star" },
    { "play" }, { "folder" }, { "save" }, { "exit" },
    { "user" }, { "screen" }, { "sound" }, { "library" }, { "modules" }, { "system" },
@@ -5233,7 +5231,7 @@ int main(int argc, char **argv)
             if (fold) dim_fold(fold_c, fold_a); else dim_none();
          }
          if (blackout) glClearColor(0, 0, 0, 1);
-         else if (padwait_amount() > 0.995f) glClearColor(0.02f, 0.02f, 0.03f, 1);   /* the "no controller" card's backdrop, for free (padwait.c) */
+         else if (padwait_amount() > 0.995f) glClearColor(fold_c[0], fold_c[1], fold_c[2], 1);   /* the "no controller" screen: the theme's backdrop, for free (padwait.c) */
          else glClearColor(bg[0].x * (1 - fold_a) + fold_c[0] * fold_a, bg[1].x * (1 - fold_a) + fold_c[1] * fold_a,
                            bg[2].x * (1 - fold_a) + fold_c[2] * fold_a, 1);
          glClearDepthf(1.0f);
@@ -5350,12 +5348,7 @@ int main(int argc, char **argv)
                glUseProgram(g_prog_2d);
                hints_draw(kern_hint_set(), 672, kern_amount() * (1 - fade));
             }
-            padwait_draw(t);
-            if (padwait_open_now())
-            {
-               glUseProgram(g_prog_2d);
-               hints_draw(HINTS_PADWAIT, 672, padwait_amount() * (1 - fade));
-            }
+            padwait_draw(t);   /* no help bar: the screen is its pill (Circle still closes it) */
             panel_toast_draw(t);
             glUseProgram(g_prog_2d);
             attract_draw(t);

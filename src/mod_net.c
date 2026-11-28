@@ -5,8 +5,9 @@
  * puts its item in the status bar:
  *   wifi       wifi-0 .. wifi-3 by signal, while connected
  *   ethernet   ethernet, while the cable has an address
- *   bluetooth  bluetooth while the radio is up; dim with no device connected, bright with one
- *              (BlueZ's list, or a controller SDL has on the Bluetooth bus) */
+ *   bluetooth  always: bluetooth-off (faint: no adapter; else the radio is off), bluetooth
+ *              faint with nothing connected, bright with a device (BlueZ's list, or a
+ *              controller SDL has on the Bluetooth bus), "..." while one pairs */
 #include <stdio.h>
 #include <string.h>
 #include "lumen.h"
@@ -96,9 +97,16 @@ static void bt_poll(double t)
    static double next;
    static int pads;
    if (t >= next) { pads = bt_pads(); next = t + 1.0; }   /* SDL's list, once a second */
-   if (ns->bt_on && ns->bt == NET_CONNECTED)
-      mod_status_set("bluetooth", "radio", &(mod_status_t){ .glyph = "bluetooth", .dim = ns->connected == 0 && pads == 0, .order = 20 });
-   else mod_status_clear("bluetooth", "radio");
+   /* the state of Bluetooth is this glyph (not a screen of its own): crossed out and faint
+    * with no adapter, crossed out with the radio off, faint while on with nothing connected,
+    * "..." while a controller pairs, bright with one connected */
+   if (!ns->bt_present || ns->bt == NET_NOADAPTER)
+      mod_status_set("bluetooth", "radio", &(mod_status_t){ .glyph = "bluetooth-off", .dim = 1, .order = 20 });
+   else if (!ns->bt_on || ns->bt != NET_CONNECTED)
+      mod_status_set("bluetooth", "radio", &(mod_status_t){ .glyph = "bluetooth-off", .order = 20 });
+   else
+      mod_status_set("bluetooth", "radio", &(mod_status_t){ .glyph = "bluetooth", .dim = ns->connected == 0 && pads == 0,
+                                                             .badge = ns->ap_state == NET_AP_PAIRING ? "\xE2\x80\xA6" : NULL, .order = 20 });
 }
 const lumen_module_t mod_bluetooth = {
    .id = "bluetooth", .api = LUMEN_MODULE_API, .flags = MOD_F_DEFAULT_ON, .version = "1.0",

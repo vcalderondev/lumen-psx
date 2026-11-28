@@ -25,4 +25,21 @@ for svg in assets/ui/*.svg tools/pad-lines/src/*.svg; do
     echo "$n$suf.png ${ow}x${oh}"
   done
 done
-rm -f "$OUT/.render.html"
+# The "no controller" screen draws one controller large, its lower part off the screen:
+# pad2 (the DualShock 4 style) at 760 px wide for 720p and 1140 px for 1080p, in outline
+# only: its dark body transparent and every line and symbol in the same white, so nothing
+# of it tints the backdrop.
+render_wide() {  # <svg> <name> <width at 720p>
+  abs="$OUT/.outline.svg"
+  sed -E -e 's/fill="#0d1118"/fill="none"/g' -e 's/(stroke|fill)="#[0-9a-fA-F]{6}"/\1="#f4f4f7"/g' "$1" > "$abs"
+  w=$(sed -n 's/.* width="\([0-9]*\)" height.*/\1/p' "$1" | head -1); h=$(sed -n 's/.* height="\([0-9]*\)".*/\1/p' "$1" | head -1)
+  for v in ":2" "-1080:3"; do
+    suf=${v%%:*}; q=${v#*:}; ow=$(($3 * q / 2)); oh=$((h * ow / w))
+    printf '<html><body style="margin:0;background:transparent"><img src="file://%s" width="%s" height="%s"></body></html>' "$abs" "$ow" "$oh" > "$OUT/.render.html"
+    "$CHROME" --headless=new --disable-gpu --hide-scrollbars --allow-file-access-from-files --window-size="$ow,$oh" \
+      --default-background-color=00000000 --screenshot="$OUT/$2$suf.png" "file://$OUT/.render.html" >/dev/null 2>&1
+    echo "$2$suf.png ${ow}x${oh}"
+  done
+}
+render_wide tools/pad-lines/src/pad2.svg padwait 760
+rm -f "$OUT/.render.html" "$OUT/.outline.svg"

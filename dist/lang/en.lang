@@ -591,25 +591,12 @@ desc.page_about = Version, games, systems, profiles and free space.
 
 # No controller: plug a Bluetooth receiver, then pair a controller unattended (padwait.c)
 hint.not_now = Not now
-padwait.title_plug = No controller connected
-padwait.sub_plug = Plug a USB Bluetooth receiver into a free port to use wireless controllers, or connect a wired controller.
-padwait.step1 = Plug in a Bluetooth receiver
-padwait.step2 = Put your controller in pairing mode
-padwait.status_plug = Waiting for a Bluetooth receiver…
-padwait.title = Pair your controller
-padwait.title_done = Controller connected
-padwait.sub = Put the controller in pairing mode: it connects by itself, nothing else to press.
-padwait.sub_paired = Press PS or Home on a controller already paired, or put a new one in pairing mode.
-padwait.how_dualsense = hold PS and Create
-padwait.how_ds4 = hold PS and Share
-padwait.how_switch = hold the sync button
-padwait.how_8bitdo = hold Start and Pair
-padwait.starting = Turning Bluetooth on…
-padwait.searching = Looking for controllers nearby…
+padwait.pill_ps = Press the PS button to use your controller
+padwait.pill_new = Hold PS and Create (or Share) to pair a controller
+padwait.pill_cable = Connect a controller by cable
+padwait.pill_done = {name} is connected
 padwait.pairing = Pairing {name}…
-padwait.done = Done! {name} is connected
 padwait.failed = {name} did not pair. Still looking…
-padwait.noadapter = The Bluetooth receiver does not answer. Try the other port.
 
 # modules (docs/modules.md): Settings > Modules, and each built-in module's name and description
 section.modules = Modules
