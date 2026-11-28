@@ -11,8 +11,9 @@ verified on a console.
 ### Added
 - Status bar: each controller's battery after its glyph, a small battery filled to its
   charge (the danger colour at 20 % and below, the accent while charging) with the percent
-  when the kernel gives it (power_supply, scope Device); else SDL's level. A DualSense on
-  the console's kernel (hid-dualsense backport, simple report) reports none yet.
+  when the kernel gives it (power_supply, scope Device); else SDL's level. A DualSense
+  reports it with psc-platform's `hid-dualsense.ko` from its next release (over USB and
+  Bluetooth); a DualShock 4 through the kernel's own hid-sony.
 - The help bar draws Select and Start as the controller in use has them: Create and
   Options marks on a DualSense, SHARE and OPTIONS on a DualShock 4, SELECT and START on
   the others. The controller is told by its vendor and product (the joystick's GUID); the
