@@ -3822,7 +3822,7 @@ static void lit_color(const game_t *g, float o[3])
 static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float pos, double sel_t, double t,
                       float ua, float info_a, float info_y)
 {
-   static label_t l_name, l_title, l_kick, l_clock, l_empty, l_chip[4], l_pos, l_count;
+   static label_t l_name, l_title, l_kick, l_clock, l_empty, l_chip[3], l_pos, l_count;
    float white[4] = { 0.98f, 0.98f, 0.99f, ua };
    char s[320], a1[96], a2[96], num[24];
    int i, k;
@@ -4088,11 +4088,9 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
              * hole), a cartridge or a coin on the focused cover; a native port's chip on
              * every cover, so ports stand out in the shelf (the theme's primary colours) */
             const float k = sz / TILE_SEL, dm = 30.0f * k, mx = x + sw - 14.0f * k - dm, my = ty + 14.0f * k;
-            float wc[4], ic[4];
-            const float sh_[4] = { 0, 0, 0, 0.35f * ta };
+            float wc[4], ic[4];   /* flat: no shadow */
             theme_color(TC_PRIMARY, wc); wc[3] = 0.96f * ta;
             theme_color(TC_ON_PRIMARY, ic); ic[3] = ta;
-            draw_shape(mx - 1, my + 1, dm + 2, dm + 2, (dm + 2) * 0.5f, 0, sh_);
             draw_shape(mx, my, dm, dm, dm * 0.5f, 0, wc);
             if (!g->port && pl->kind != KIND_CART && pl->kind != KIND_ARCADE)
             {
@@ -4116,8 +4114,8 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       const game_stats_t *gs = stats_get(cg->content);
       const float ia = info_a * ua;
       const float c1[4] = { 0.99f, 0.99f, 1.0f, ia }, ctx[4] = { 0.93f, 0.94f, 0.96f, 0.92f * ia }, cgl[4] = { 1, 1, 1, 0.62f * ia };
-      static char cb[4][96];
-      const char *cgly[4];
+      static char cb[3][96];
+      const char *cgly[3];
       float lit[4], ink[4], edge[4], sc, x, y = INFO_Y + info_y;
       int nc = 0;
       lit_color(cg, lit); lit[3] = ia;
@@ -4135,9 +4133,7 @@ static void dash_draw(const platform_t *pl, int sel_plat, int n, int sel, float 
       if (sc < 1.0f) draw_2d(l_title.tex, DASH_X - 2, y, l_title.w * sc, l_title.h * sc, c1, 0);
       else draw_text(&l_title, DASH_X - 2, y, c1);
       y += l_title.h * sc + 10 + info_y * 0.4f;
-      /* chips: a native port (its chip glyph, also on the cover), players, time played, last
-       * played (or "not played yet") */
-      if (cg->port) { snprintf(cb[nc], sizeof(cb[0]), "%s", tr("badge.port")); cgly[nc++] = "system"; }
+      /* chips: players, time played, last played (or "not played yet") */
       if (cg->players[0])
       { trf(cb[nc], sizeof(cb[0]), strcmp(cg->players, "1") ? "card.players" : "card.players_one", "n", cg->players, NULL); cgly[nc++] = "players"; }
       if (gs && gs->seconds > 0)

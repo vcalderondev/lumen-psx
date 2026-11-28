@@ -7,7 +7,6 @@ top.games_one = 1 gioco  ·  {system}
 top.games = {n} giochi  ·  {system}
 empty.library = Aggiungi giochi in /games
 launch.starting = Avvio…
-badge.port = Port nativo
 boot.loading = Caricamento
 card.players_one = {n} giocatore
 card.players = {n} giocatori

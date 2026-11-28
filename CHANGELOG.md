@@ -23,8 +23,8 @@ verified on a console.
 ### Changed
 - Covers: the media mark is a white disc with its hole in the top right corner of the
   focused cover (a cartridge or a coin on the same white disc), in the theme's `primary` /
-  `on_primary`. A native port carries a chip on that disc on every cover instead of the
-  "NATIVE PORT" text, and says so in a chip of the hero ("Native port").
+  `on_primary`, flat. A native port carries a chip on that disc on every cover instead of
+  the "NATIVE PORT" text.
 - The focus ring is finer: a dark keyline between the element and the ring (it stays crisp
   over bright art), corners concentric with the element's, and a soft halo of the focus
   colour (theme key `focus_glow`). The focused cover uses the same ring as every menu.
