@@ -1985,7 +1985,7 @@ void ui_glass_card(float x, float y, float w, float h, float radius, const float
    const float ix1 = floorf((x + w - inset) * k) / k, iy1 = floorf((y + h - inset) * k) / k;
    const float qx = x - blur, qy = y - blur + dy, qw = w + 2 * blur, qh = h + 2 * blur;
    const float sc[4] = { 0, 0, 0, sh_a };
-   const float flat = theme_card_alpha() >= 1.0f ? 1.0f : 0.0f;   /* an opaque theme card is one flat colour: no glass light */
+   const float flat = 1.0f - theme_value(TV_CARD_LIGHT);   /* the glass light down the card: the theme's "card_light" */
    shadow_key_t q;
    GLuint tex = 0;
    int i;
@@ -4417,7 +4417,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          float white[4] = { 1, 1, 1, a }, txt[4], dim[4], scrim[4], red[4];
          theme_color(TC_TEXT, txt); txt[3] = a;
          theme_color(TC_DIM, dim); dim[3] = a;
-         theme_color(TC_BACKDROP, scrim); scrim[3] = 0.86f;
+         theme_color(TC_BACKDROP, scrim); scrim[3] = ui_scrim_alpha();
          theme_color(TC_DANGER, red); red[3] = a;
          for (i = 0; i < n; i++) { rowy[i] = y; y += RW; }
          if (t - t0 < 0.02) pill.x = rowy[sel];
@@ -4431,7 +4431,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          glEnable(GL_BLEND);
          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
          gl_use_2d();
-         if (cover && ui_scrim_alpha() < 1.0f)   /* backdrop: the cover filling the screen, dimmed (flat black in Lumen's own look) */
+         if (cover && ui_scrim_alpha() < 1.0f)   /* backdrop: the cover filling the screen, under the theme's scrim (none when it is opaque) */
          {
             float s2 = fmaxf((float)W / cw_, (float)H / chh), bw = cw_ * s2, bh = chh * s2;
             const float bc[4] = { 1, 1, 1, 0.55f };

@@ -5,19 +5,20 @@
 #ifndef LUMEN_UI_H
 #define LUMEN_UI_H
 #include "lumen.h"
+#include "theme.h"
 
-#define UI_SCRIM     0.60f   /* scrim.menu                                  */
 #define UI_REST      0.08f   /* glass.rest: buttons, keys, "you are here"   */
-#define UI_SELECTED  0.16f   /* glass.selected: the focused element (the ring marks it) */
 #define UI_EDGE      0.16f   /* glass.edge                                  */
 #define UI_CARD_R    22.0f
 #define UI_CTL_R     14.0f   /* buttons and rows: a control is not a pill (chips and keycaps are) */
 
 void ui_scrim_skip(int on);   /* 1: the next ui_scrim() draws nothing (its scrim is folded into the frame) */
 void ui_scrim(float a);                                          /* full screen, under a menu's card */
-float ui_scrim_alpha(void);   /* the scrim fully up: UI_SCRIM, or 1 (flat black) when the theme's cards are opaque */
-#define UI_SCRIM_SETTINGS 0.90f   /* Settings in Lumen's own look: the dashboard just shows behind the black */
-float ui_scrim_settings(void);   /* the scrim under Settings, fully up */
+/* the theme's amounts (theme.h TV_*): the scrim fully up behind the game menu and dialogs,
+ * behind Settings, and the focused element's glass fill */
+#define ui_scrim_alpha()    theme_value(TV_SCRIM)
+#define ui_scrim_settings() theme_value(TV_SCRIM_SETTINGS)
+#define UI_SELECTED         theme_value(TV_SELECTED)
 void ui_card(float x, float y, float w, float h, float a);       /* glass card + elev.3 */
 void ui_rest(float x, float y, float w, float h, float radius, float a);    /* glass.rest shape with its edge */
 void ui_ring(float x, float y, float w, float h, float radius, float gap, float a);   /* 3 px focus ring, gap px away */

@@ -20,6 +20,11 @@ static float s_card_alpha = 1.0f;    /* Lumen's own look: opaque black menus */
 static float s_lit[3];
 static int   s_has_lit;
 static float s_radius = 1.0f;     /* corner rounding of every shape: 1 = Lumen's, 0 = square */
+static float s_val[TV_COUNT];
+static const char *const k_vkeys[TV_COUNT] = { "scrim", "scrim_settings", "selected", "card_light" };
+/* Lumen's own look: menus on flat black (the dashboard just showing behind Settings), a quiet
+ * focus fill, flat cards */
+static const float k_vdefault[TV_COUNT] = { 1.0f, 0.90f, 0.16f, 0.0f };
 
 static const char *const k_keys[TC_COUNT] = { "accent", "card", "text", "dim", "backdrop", "panel", "danger",
                                               "focus", "glass", "primary", "on_primary" };
@@ -113,6 +118,9 @@ static void read_ini(const char *id, char *name, size_t nn, int apply)
       if (!strcmp(k, "card_alpha")) { float a = (float)atof(v); if (a > 0.2f && a <= 1.0f) s_card_alpha = a; continue; }
       if (!strcmp(k, "lit")) { if (parse_rgb(v, s_lit)) s_has_lit = 1; else logf_("theme %s: bad colour lit = %s", id, v); continue; }
       if (!strcmp(k, "radius")) { float r = (float)atof(v); s_radius = r < 0.0f ? 0.0f : r > 1.0f ? 1.0f : r; continue; }
+      for (i = 0; i < TV_COUNT; i++)
+         if (!strcmp(k, k_vkeys[i])) { float a = (float)atof(v); s_val[i] = a < 0.0f ? 0.0f : a > 1.0f ? 1.0f : a; break; }
+      if (i < TV_COUNT) continue;
       for (i = 0; i < TC_COUNT; i++)
          if (!strcmp(k, k_keys[i]) && !parse_rgb(v, s_col[i])) logf_("theme %s: bad colour %s = %s", id, k, v);
    }
@@ -160,6 +168,7 @@ void theme_init(const char *home)
    for (i = 0; i < s_n; i++) read_preview(&s_list[i]);
    memcpy(s_col, k_default, sizeof(s_col));
    s_card_alpha = 1.0f;
+   memcpy(s_val, k_vdefault, sizeof(s_val));
    s_radius = 1.0f;
    s_has_lit = 0;
    want = settings_get("theme", "default");
@@ -177,6 +186,7 @@ int         theme_active_index(void) { return s_active; }
 const char *theme_active_id(void) { return s_list[s_active].id; }
 float       theme_card_alpha(void) { return s_card_alpha; }
 float       theme_radius(void) { return s_radius; }
+float       theme_value(int which) { return which >= 0 && which < TV_COUNT ? s_val[which] : 0.0f; }
 void        theme_preview(int i, float card[3], float lit[3])
 {
    if (i < 0 || i >= s_n) i = 0;

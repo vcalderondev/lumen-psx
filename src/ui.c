@@ -16,11 +16,6 @@ void ui_fill(float x, float y, float w, float h, float radius, const float rgb[3
 static int s_scrim_skip;
 void ui_scrim_skip(int on) { s_scrim_skip = on; }
 
-/* Lumen's own look (opaque cards): a menu sits on flat black, the welcome screen's, not on
- * the dimmed art; a translucent theme keeps the art showing through */
-float ui_scrim_alpha(void) { return theme_card_alpha() >= 1.0f ? 1.0f : UI_SCRIM; }
-float ui_scrim_settings(void) { return theme_card_alpha() >= 1.0f ? UI_SCRIM_SETTINGS : UI_SCRIM; }
-
 void ui_scrim(float a)
 {
    float c[4];
@@ -32,8 +27,8 @@ void ui_scrim(float a)
 
 void ui_card(float x, float y, float w, float h, float a)
 {
-   /* the theme's card colour as one flat fill: opaque in Lumen's own look (card_alpha 1, the
-    * welcome's black); a translucent theme (card_alpha < 1) gets a breath of the glass tint */
+   /* the theme's card colour: opaque in Lumen's own look (card_alpha 1, the welcome's black);
+    * a translucent theme (card_alpha < 1) gets a breath of the glass tint */
    const float ca = theme_card_alpha();
    const float base = ca >= 0.92f ? 0.86f + (ca - 0.92f) * (0.14f / 0.08f) : 0.86f * ca / 0.92f;
    const float tint = ca >= 1.0f ? 0.0f : 0.03f, cover = 1.0f - (1.0f - base) * (1.0f - tint);

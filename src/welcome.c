@@ -142,9 +142,14 @@ static void text(label_t *l, TTF_Font *f, const char *key, float x, float y, con
 void welcome_draw(double t)
 {
    const float a = welcome_amount();
-   const float bg[4] = { 0.016f, 0.024f, 0.031f, a };
-   const float acc[4] = { 0.23f, 0.51f, 0.96f, a };
-   float c1[4] = { 0.98f, 0.98f, 0.99f, a }, c2[4] = { 0.86f, 0.87f, 0.90f, 0.92f * a }, c3[4] = { 0.62f, 0.64f, 0.70f, a };
+   /* the theme's colours (theme.h): its backdrop is the screen, its accent the kicker and the
+    * dots, its text the title and (a little quieter) the lines, its dim the rest */
+   float bg[4], acc[4], c1[4], c2[4], c3[4];
+   theme_color(TC_BACKDROP, bg); bg[3] = a;
+   theme_color(TC_ACCENT, acc); acc[3] = a;
+   theme_color(TC_TEXT, c1); c1[3] = a;
+   theme_color(TC_TEXT, c2); c2[3] = 0.86f * a;
+   theme_color(TC_DIM, c3); c3[3] = a;
    float x = (W - COL_W) * 0.5f + s_slide.x, y = 150.0f;
    int i;
    (void)t;
@@ -178,7 +183,9 @@ void welcome_draw(double t)
    }
    /* don't show again: a box with a tick */
    {
-      const float box[4] = { 1, 1, 1, 0.10f * a }, edge[4] = { 1, 1, 1, 0.45f * a };
+      float box[4], edge[4];   /* the theme's glass tint */
+      theme_color(TC_GLASS, box); box[3] = 0.10f * a;
+      theme_color(TC_GLASS, edge); edge[3] = 0.45f * a;
       float bx = (W - COL_W) * 0.5f, by = 604;
       draw_round_rect(bx, by, 22, 22, 6, s_hide ? acc : box, s_hide ? 0.0f : 0.0f);
       if (!s_hide) draw_round_rect(bx, by, 22, 22, 6, edge, 0.0f), draw_round_rect(bx + 2, by + 2, 18, 18, 5, bg, 0.0f);

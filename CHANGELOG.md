@@ -23,12 +23,15 @@ verified on a console.
 ### Changed
 - Menus are black: in Lumen's own look the cards, the game sheet and the dialogs are one
   opaque flat colour, the black of the welcome screen (the card colour was a translucent
-  dark blue lit from the top), and so is the screen around them: the dashboard's art no
-  longer shows behind the game menu or the pause dialog (the scrim is opaque,
-  `ui_scrim_alpha`); behind Settings it is 90 % black, so the dashboard just shows through
-  (`UI_SCRIM_SETTINGS`). The focused row, button or key is filled with less white (16 %
-  instead of 24 %): on black it read as a grey slab; the white ring still marks it. `card_alpha` defaults to 1; a theme below 1 keeps the glass and the
-  dimmed art. Mono's cards are pure black now.
+  dark blue lit from the top), and so is the screen around the game menu and the dialogs;
+  behind Settings it is 90 % black, so the dashboard just shows through. The focused row,
+  button or key is filled with less white (16 % instead of 24 %); the ring still marks it.
+- All of it is the theme's: new `theme.ini` amounts `scrim`, `scrim_settings`, `selected`
+  and `card_light` (docs/themes.md), whose defaults are the look above; `card_alpha`
+  defaults to 1. Sunset and Retro declare the previous values (art behind the menus, glass
+  cards lit from the top); Mono takes the defaults, so its cards are pure black now. The
+  pause dialog's backdrop follows `scrim` (it was 86 %, with the cover behind it), and the
+  welcome screen takes the theme's colours instead of its own.
 - Pause dialog: the discs are one row, "Change disc", whose value is the disc to put in
   (Left / Right pick it, starting on the next one; Cross switches), instead of a row per
   disc.
