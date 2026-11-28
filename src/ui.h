@@ -15,6 +15,7 @@
 
 void ui_scrim_skip(int on);   /* 1: the next ui_scrim() draws nothing (its scrim is folded into the frame) */
 void ui_scrim(float a);                                          /* full screen, under a menu's card */
+float ui_scrim_alpha(void);   /* the scrim fully up: UI_SCRIM, or 1 (flat black) when the theme's cards are opaque */
 void ui_card(float x, float y, float w, float h, float a);       /* glass card + elev.3 */
 void ui_rest(float x, float y, float w, float h, float radius, float a);    /* glass.rest shape with its edge */
 void ui_ring(float x, float y, float w, float h, float radius, float gap, float a);   /* 3 px focus ring, gap px away */

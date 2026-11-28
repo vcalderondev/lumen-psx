@@ -240,7 +240,7 @@ void gamemenu_draw(double t)
    spring_step(&s_pill, rowy[s_sel], 260, 26, s_dt);
 
    gl_use_2d();
-   ui_scrim(a * 0.55f);
+   ui_scrim(theme_card_alpha() >= 1.0f ? a : a * 0.55f);   /* flat black in Lumen's own look */
    /* the sheet: one flat ink shape to the edge of the screen, lit along its left edge */
    draw_2d(0, cx, 0, W - cx + 1, H, card, 0);
    draw_2d(0, cx, 0, 1, H, edge, 0);

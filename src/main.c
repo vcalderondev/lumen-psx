@@ -4431,7 +4431,7 @@ static int run_dialog(SDL_Window *win, const char *kind)
          glEnable(GL_BLEND);
          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
          gl_use_2d();
-         if (cover)   /* backdrop: the cover filling the screen, dimmed */
+         if (cover && ui_scrim_alpha() < 1.0f)   /* backdrop: the cover filling the screen, dimmed (flat black in Lumen's own look) */
          {
             float s2 = fmaxf((float)W / cw_, (float)H / chh), bw = cw_ * s2, bh = chh * s2;
             const float bc[4] = { 1, 1, 1, 0.55f };
@@ -5226,8 +5226,8 @@ int main(int argc, char **argv)
             theme_color(TC_BACKDROP, fold_c);
             if (!blackout && play_t < 0 && g_scrim_fold)
             {
-               if (pa0 > 0.003f) { fold = 1; fold_a = UI_SCRIM * pa0; }
-               else if (ga0 > 0.003f) { fold = 2; fold_a = UI_SCRIM * ga0; }
+               if (pa0 > 0.003f) { fold = 1; fold_a = ui_scrim_alpha() * pa0; }
+               else if (ga0 > 0.003f) { fold = 2; fold_a = ui_scrim_alpha() * ga0; }
             }
             if (fold) dim_fold(fold_c, fold_a); else dim_none();
          }

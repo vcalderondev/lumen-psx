@@ -16,12 +16,16 @@ void ui_fill(float x, float y, float w, float h, float radius, const float rgb[3
 static int s_scrim_skip;
 void ui_scrim_skip(int on) { s_scrim_skip = on; }
 
+/* Lumen's own look (opaque cards): a menu sits on flat black, the welcome screen's, not on
+ * the dimmed art; a translucent theme keeps the art showing through */
+float ui_scrim_alpha(void) { return theme_card_alpha() >= 1.0f ? 1.0f : UI_SCRIM; }
+
 void ui_scrim(float a)
 {
    float c[4];
    if (s_scrim_skip) { s_scrim_skip = 0; return; }
    if (a <= 0.003f) return;
-   theme_color(TC_BACKDROP, c); c[3] = UI_SCRIM * a;
+   theme_color(TC_BACKDROP, c); c[3] = ui_scrim_alpha() * a;
    draw_2d(0, 0, 0, W, H, c, 0);
 }
 

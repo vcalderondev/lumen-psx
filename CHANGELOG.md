@@ -23,8 +23,10 @@ verified on a console.
 ### Changed
 - Menus are black: in Lumen's own look the cards, the game sheet and the dialogs are one
   opaque flat colour, the black of the welcome screen (the card colour was a translucent
-  dark blue lit from the top). `card_alpha` defaults to 1; a theme below 1 keeps the glass.
-  Mono's cards are pure black now.
+  dark blue lit from the top), and so is the screen around them: the dashboard's art no
+  longer shows behind Settings, the game menu or the pause dialog (the scrim is opaque,
+  `ui_scrim_alpha`). `card_alpha` defaults to 1; a theme below 1 keeps the glass and the
+  dimmed art. Mono's cards are pure black now.
 - Pause dialog: the discs are one row, "Change disc", whose value is the disc to put in
   (Left / Right pick it, starting on the next one; Cross switches), instead of a row per
   disc.
