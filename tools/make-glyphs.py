@@ -125,17 +125,19 @@ def pill(text, width):
 
 def pad_button(kind):
     """the DualSense's Create and Options: no words on that controller, so the pill holds
-    the button's own mark, three rays (Create) or three lines (Options)"""
-    width = 26
+    the button's own mark, centred and in a fine stroke: three rays fanning up from one
+    point (Create), three short lines (Options)"""
+    width = 28
     im, d = canvas(width)
     rrect(d, 1.2, 8, width - 1.2, 24, 0 if SQUARE else 8, FRAME)
+    cx = width / 2
     if kind == "create":
-        for ang in (-90, -140, -40):   # three rays fanning up from a point below them
+        for ang in (-90, -155, -25):   # \ | / : apart at the foot, so it never reads as an arrow
             c, s_ = math.cos(math.radians(ang)), math.sin(math.radians(ang))
-            line(d, [(13 + 2.6 * c, 20.5 + 2.6 * s_), (13 + 8.0 * c, 20.5 + 8.0 * s_)], 1.6)
+            line(d, [(cx + 3.4 * c, 20.6 + 3.4 * s_), (cx + 7.4 * c, 20.6 + 7.4 * s_)], 1.4)
     else:
-        for y in (12.6, 16, 19.4):
-            line(d, [(8.5, y), (17.5, y)], 1.6)
+        for y in (13.4, 16, 18.6):
+            line(d, [(cx - 3.8, y), (cx + 3.8, y)], 1.4)
     return im
 
 
